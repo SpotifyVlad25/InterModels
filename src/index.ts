@@ -467,7 +467,10 @@ async function getSecretaryPhotoData(env: Env, fileId: string): Promise<string> 
   return "data:image/jpeg;base64," + bytesToBase64(bytes);
 }
 function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
-  const name = escapeXml((model.first_name + " " + model.last_name).toUpperCase());
+  const rawName = (model.first_name + " " + model.last_name).toUpperCase();
+  const name = escapeXml(rawName);
+  // Keep long names inside the right-hand text column.
+  const nameSize = rawName.length > 23 ? 28 : rawName.length > 18 ? 34 : rawName.length > 14 ? 39 : 44;
   const values = [
     model.height_cm != null ? "HEIGHT  " + model.height_cm + " CM" : null,
     model.bust_cm != null ? "BUST  " + model.bust_cm + " CM" : null,
@@ -478,23 +481,25 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
     model.hair_color ? "HAIR  " + model.hair_color : null,
     model.eye_color ? "EYES  " + model.eye_color : null,
   ].filter((v): v is string => Boolean(v));
-  const details = values.map((v, i) => `<text x="990" y="${1770 + i * 58}" class="detail">${escapeXml(v)}</text>`).join("");
+  // Eight measurements fit above the footer without touching the logo.
+  const details = values.map((v, i) => `<text x="990" y="${1760 + i * 42}" class="detail">${escapeXml(v)}</text>`).join("");
+  // "meet" preserves the complete source photo: no cropping and no stretching.
   const img = (data: string, x: number, y: number, w: number, h: number) =>
-    `<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice"/>`;
+    `<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet"/>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="800" height="1130" viewBox="0 0 1600 2260">
   <rect width="1600" height="2260" fill="#fff"/>
   <text x="90" y="70" class="brand">INTERMODELS</text><text x="1510" y="70" text-anchor="end" class="small">MODEL PORTFOLIO</text>
   <defs><clipPath id="a"><rect x="90" y="110" width="820" height="1093"/></clipPath><clipPath id="b"><rect x="950" y="110" width="560" height="700"/></clipPath><clipPath id="c"><rect x="950" y="850" width="560" height="700"/></clipPath><clipPath id="d"><rect x="90" y="1240" width="820" height="820"/></clipPath></defs>
-  <g clip-path="url(#a)"><rect x="90" y="110" width="820" height="1093" fill="#eee"/>${img(photos[0],90,110,820,1093)}</g>
-  <g clip-path="url(#b)"><rect x="950" y="110" width="560" height="700" fill="#eee"/>${img(photos[1],950,110,560,700)}</g>
-  <g clip-path="url(#c)"><rect x="950" y="850" width="560" height="700" fill="#eee"/>${img(photos[2],950,850,560,700)}</g>
-  <g clip-path="url(#d)"><rect x="90" y="1240" width="820" height="820" fill="#eee"/>${img(photos[3],90,1240,820,820)}</g>
+  <g clip-path="url(#a)"><rect x="90" y="110" width="820" height="1093" fill="#f1f1f1"/> ${img(photos[0],90,110,820,1093)}</g>
+  <g clip-path="url(#b)"><rect x="950" y="110" width="560" height="700" fill="#f1f1f1"/> ${img(photos[1],950,110,560,700)}</g>
+  <g clip-path="url(#c)"><rect x="950" y="850" width="560" height="700" fill="#f1f1f1"/> ${img(photos[2],950,850,560,700)}</g>
+  <g clip-path="url(#d)"><rect x="90" y="1240" width="820" height="820" fill="#f1f1f1"/> ${img(photos[3],90,1240,820,820)}</g>
   <text x="950" y="1645" class="eyebrow">INTERMODELS / COMPOSITE CARD</text>
-  <text x="950" y="1705" class="name">${name}</text>${details}
+  <text x="950" y="1705" class="name" font-size="${nameSize}">${name}</text>${details}
   <line x1="90" y1="2130" x2="1510" y2="2130" stroke="#222" stroke-width="2"/>
   <text x="90" y="2190" class="brand">INTERMODELS</text><text x="1510" y="2190" text-anchor="end" class="small">PROFESSIONAL MODEL AGENCY</text>
   <style>
-    text{font-family:Roboto,sans-serif;fill:#171717}.brand{font-size:30px;font-weight:700;letter-spacing:8px}.small{font-size:17px;letter-spacing:3px;fill:#777}.eyebrow{font-size:17px;letter-spacing:4px;fill:#777}.name{font-size:44px;font-weight:700;letter-spacing:1px}.detail{font-size:24px;letter-spacing:1.5px}
+    text{font-family:Roboto,sans-serif;fill:#171717}.brand{font-size:30px;font-weight:700;letter-spacing:8px}.small{font-size:17px;letter-spacing:3px;fill:#777}.eyebrow{font-size:17px;letter-spacing:4px;fill:#777}.name{font-size:44px;font-weight:700;letter-spacing:1px}.detail{font-size:20px;letter-spacing:1px}
   </style></svg>`;
 }
 function compositeErrorText(error: unknown): string {
