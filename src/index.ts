@@ -996,7 +996,7 @@ function appHtml(): Response {
   <h1>InterModels</h1><div class="muted">Рабочая панель директора</div>
   <section class="panel"><h2>Ежемесячное обновление</h2><div id="refreshStats" class="stats">Загрузка статистики…</div>
   <button id="refreshAll">Обновить Comp после обновления параметров</button><div class="muted">В очередь попадут только активные модели, обновившие параметры в текущей ежемесячной кампании.</div></section>
-  <section class="panel"><h2>Ручное обновление композиток</h2><button id="manualRefreshAll">Обновить композитки всех активных моделей</button><div class="muted">Можно запускать в любой день. Не зависит от ежемесячной кампании и дедлайна.</div></section>
+  <section class="panel"><h2>Ручное обновление композиток</h2><button id="manualRefreshAll">Обновить композитки всех активных моделей</button><div class="muted">Можно запускать в любой день. Не зависит от ежемесячной кампании и дедлайна.</div><h3>Последние задания генерации</h3><button id="reloadCompositeJobs" class="secondary">Обновить статус</button><div id="compositeJobs" class="stats">Загрузка заданий…</div></section>
   <section class="panel"><h2>База моделей</h2><input id="search" placeholder="Поиск по имени или фамилии">
   <select id="filter"><option value="all">Все модели</option><option value="active">Активные</option><option value="frozen">Замороженные</option></select>
   <div class="toolbar"><button id="selectVisible" class="secondary">Выбрать видимые</button><button id="clearSelection" class="secondary">Снять выбор</button></div>
@@ -1046,7 +1046,9 @@ function appHtml(): Response {
   for(const m of visible){const row=document.createElement('label');row.className='person'+(m.lifecycle_status==='frozen'?' frozen':'');const cb=document.createElement('input');cb.type='checkbox';cb.checked=selected.has(m.id);cb.disabled=m.lifecycle_status!=='active';cb.onchange=()=>{cb.checked?selected.add(m.id):selected.delete(m.id);updateSelection()};const meta=document.createElement('div');meta.className='meta';const name=document.createElement('strong');name.textContent=m.first_name+' '+m.last_name;const line=document.createElement('div');line.className=m.lifecycle_status==='frozen'?'status':'muted';line.textContent=m.lifecycle_status==='frozen'?'Заморожена/Заморожен':'Активна анкета';meta.append(name,line);row.append(cb,meta);root.append(row)}updateSelection()}
   async function loadModels(){try{const d=await api('GET','/api/director/models');models=d.models;renderModels()}catch(e){document.getElementById('models').textContent=e.message}}
   async function loadStats(){try{const d=await api('GET','/api/director/refresh-status');const c=d.campaign;if(!c){document.getElementById('refreshStats').textContent='Кампания ещё не запускалась.';return}document.getElementById('refreshStats').textContent='Моделей: '+c.total+' · Обновлено: '+c.updated+' · Ожидают: '+c.pending+' · Заморожено: '+c.frozen+' · Comp опубликовано: '+c.published+' · Ошибок: '+c.failed}catch(e){document.getElementById('refreshStats').textContent=e.message}}
-  async function queue(ids,manual=false){try{const d=await api('POST','/api/director/composites',{model_ids:ids,manual});st.textContent=(manual?'Ручное обновление: ':'В ежемесячную очередь добавлено: ')+d.queued;await loadStats()}catch(e){st.textContent=e.message}}
+  async function loadCompositeJobs(){const root=document.getElementById('compositeJobs');try{const d=await api('GET','/api/director/composites');root.innerHTML='';if(!d.jobs.length){root.textContent='Заданий пока нет.';return}for(const j of d.jobs){const item=document.createElement('div');item.className='person';const title=document.createElement('strong');title.textContent=(j.first_name||'Модель')+' '+(j.last_name||'')+' · '+({pending:'В очереди',processing:'Генерируется',published:'Опубликована',failed:'Ошибка'}[j.status]||j.status);const info=document.createElement('div');info.className='muted';info.textContent='Попыток: '+j.attempts+' · '+j.updated_at+(j.last_error?' · '+j.last_error:'');item.append(title,info);root.append(item)}}catch(e){root.textContent='Не удалось получить статус: '+e.message}}
+  async function queue(ids,manual=false){try{const d=await api('POST','/api/director/composites',{model_ids:ids,manual});st.textContent=(manual?'Ручное обновление: ':'В ежемесячную очередь добавлено: ')+d.queued;await loadStats();await loadCompositeJobs()}catch(e){st.textContent=e.message}}
+  document.getElementById('reloadCompositeJobs').onclick=loadCompositeJobs;
   document.getElementById('search').oninput=renderModels;document.getElementById('filter').onchange=renderModels;
   document.getElementById('selectVisible').onclick=()=>{const q=document.getElementById('search').value.trim().toLocaleLowerCase('ru'),f=document.getElementById('filter').value;for(const m of models)if(m.lifecycle_status==='active'&&(m.first_name+' '+m.last_name).toLocaleLowerCase('ru').includes(q)&&(f==='all'||m.lifecycle_status===f))selected.add(m.id);renderModels()};
   document.getElementById('clearSelection').onclick=()=>{selected.clear();renderModels()};
@@ -1055,7 +1057,7 @@ function appHtml(): Response {
   async function loadSettings(){try{const d=await api('GET','/api/director/refresh-settings');const x=d.settings;document.getElementById('cycleDay').value=x.cycle_day;document.getElementById('timezone').value=x.timezone;x.reminder_times.forEach((v,i)=>document.getElementById('time'+(i+1)).value=v)}catch(e){st.textContent=e.message}}
   async function loadStaff(){try{const d=await api('GET','/api/director/staff');const root=document.getElementById('staff');root.innerHTML='';if(!d.staff.length){root.textContent='Помощники пока не добавлены.';return}for(const p of d.staff){const el=document.createElement('div');el.className='person';const title=document.createElement('strong');title.textContent=(p.display_name||'Без имени')+' · '+p.telegram_user_id;const info=document.createElement('div');info.className='muted';info.textContent=p.role+' · '+p.permissions.join(', ');const btn=document.createElement('button');btn.textContent='Отозвать';btn.onclick=async()=>{try{await api('DELETE','/api/director/staff?telegram_user_id='+encodeURIComponent(p.telegram_user_id));await loadStaff()}catch(e){st.textContent=e.message}};el.append(title,info,btn);root.append(el)}}catch(e){document.getElementById('staff').textContent=e.message}}
   document.getElementById('grant').onclick=async()=>{try{const id=document.getElementById('uid').value.trim(),permissions=[...document.querySelectorAll('#perms input:checked')].map(x=>x.value);await api('POST','/api/director/staff',{telegram_user_id:id,display_name:document.getElementById('name').value.trim(),role:document.getElementById('role').value,permissions});st.textContent='Доступ сохранён.';document.getElementById('uid').value='';await loadStaff()}catch(e){st.textContent=e.message}};
-  loadModels();loadStats();loadSettings();loadStaff();
+  loadModels();loadStats();loadSettings();loadStaff();loadCompositeJobs();
   </script></body></html>`;
   return new Response(html,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","content-security-policy":"default-src 'self' https://telegram.org; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors https://web.telegram.org https://*.telegram.org"}});
 }
@@ -1135,6 +1137,16 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
   }
   if (path === "/api/director/composites") {
     if (!(await actorHasPermission(env, actor.id, "composite.generate"))) return json({ error: "Недостаточно прав." }, 403);
+    if (request.method === "GET") {
+      const jobs = await env.DB.prepare(
+        `SELECT j.campaign_id,j.model_id,j.status,j.attempts,j.last_error,j.updated_at,
+          m.first_name,m.last_name
+         FROM composite_refresh_jobs j
+         LEFT JOIN models m ON m.id=j.model_id
+         ORDER BY j.created_at DESC LIMIT 100`,
+      ).all<{campaign_id:string;model_id:string;status:string;attempts:number;last_error:string|null;updated_at:string;first_name:string|null;last_name:string|null}>();
+      return json({ok:true,jobs:jobs.results ?? []});
+    }
     if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
     let body: any; try { body = await request.json(); } catch { return json({ error: "Некорректный JSON." }, 400); }
     if (body?.model_ids !== undefined && (!Array.isArray(body.model_ids) || body.model_ids.length > 100 || body.model_ids.some((id: unknown) => typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,50}$/.test(id)))) {
