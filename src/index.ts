@@ -812,6 +812,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   ).bind(resolvedModelId).all<{position:number;telegram_file_id:string}>();
   const oldPhotos = previous.results ?? [];
   if (oldPhotos.length === 4 && oldPhotos.every((p, i) => p.position === i + 1)) {
+    await finishSecretaryOperation(env, albumOperation.id, "completed");
     await env.DB.prepare(
       "INSERT INTO secretary_photo_replacement_pending (chat_id, thread_id, user_id, model_id, photos_json) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, thread_id, user_id) DO UPDATE SET model_id=excluded.model_id, photos_json=excluded.photos_json, created_at=CURRENT_TIMESTAMP",
     ).bind(String(message.chat.id), threadId, senderId, resolvedModelId, JSON.stringify(newPhotos)).run();
