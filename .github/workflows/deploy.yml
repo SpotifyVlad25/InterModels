@@ -166,6 +166,41 @@ jobs:
             --data-urlencode 'allowed_updates=["message","callback_query"]')"
           printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok){console.error("Secretary setWebhook failed:",j.description||"unknown error");process.exit(1)}console.log("Secretary webhook configured.")})'
 
+      - name: Clear legacy Telegram commands and menu buttons
+        shell: bash
+        env:
+          MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
+          DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
+          SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
+          OWNER_TELEGRAM_ID: ${{ secrets.OWNER_TELEGRAM_ID }}
+          DIRECTOR_TELEGRAM_ID: ${{ secrets.DIRECTOR_TELEGRAM_ID }}
+        run: |
+          node <<'NODE'
+          const bots = [
+            ["MODEL_BOT_TOKEN", process.env.MODEL_BOT_TOKEN],
+            ["DIRECTOR_BOT_TOKEN", process.env.DIRECTOR_BOT_TOKEN],
+            ["SECRETARY_BOT_TOKEN", process.env.SECRETARY_BOT_TOKEN],
+          ];
+          const chatIds = [...new Set([process.env.OWNER_TELEGRAM_ID, process.env.DIRECTOR_TELEGRAM_ID].filter(Boolean))];
+          async function call(token, method, body) {
+            const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+              method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body)
+            });
+            const data = await response.json();
+            if (!data.ok) throw new Error(`${method} failed: ${data.description || "unknown Telegram error"}`);
+          }
+          for (const [label, token] of bots) {
+            if (!token) throw new Error(`Missing token: ${label}`);
+            await call(token, "deleteMyCommands", {});
+            await call(token, "setChatMenuButton", {menu_button:{type:"commands"}});
+            for (const chat_id of chatIds) {
+              await call(token, "deleteMyCommands", {scope:{type:"chat",chat_id:Number(chat_id)}});
+              await call(token, "setChatMenuButton", {chat_id:Number(chat_id),menu_button:{type:"commands"}});
+            }
+            console.log(`${label}: legacy commands and custom menu buttons cleared.`);
+          }
+          NODE
+
       - name: Verify Telegram webhook routing
         shell: bash
         env:
