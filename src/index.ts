@@ -611,6 +611,16 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
       return;
     }
   }
+  console.info("Secretary album part received", {
+    chatId: message.chat.id,
+    threadId,
+    uploaderId: senderId,
+    mediaGroupId: albumId,
+    messageId: message.message_id,
+    mediaType: message.photo?.length ? "photo" : "document",
+    hasCaption: Boolean(message.caption?.trim()),
+    fileUniqueIdPresent: Boolean(media.file_unique_id),
+  });
   const caption = (message.caption ?? "").trim();
   let modelId: string | null = null;
   if (caption) {
@@ -641,6 +651,20 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
        telegram_file_id = excluded.telegram_file_id,
        telegram_file_unique_id = excluded.telegram_file_unique_id`,
   ).bind(String(message.chat.id), threadId, senderId, albumId, message.message_id, modelId, media.file_id, media.file_unique_id).run();
+  const storedAlbum = await env.DB.prepare(
+    "SELECT COUNT(*) AS count, MIN(message_id) AS first_message_id, MAX(message_id) AS last_message_id FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?",
+  ).bind(String(message.chat.id), threadId, senderId, albumId)
+    .first<{count:number;first_message_id:number|null;last_message_id:number|null}>();
+  console.info("Secretary album part stored", {
+    chatId: message.chat.id,
+    threadId,
+    uploaderId: senderId,
+    mediaGroupId: albumId,
+    messageId: message.message_id,
+    storedCount: storedAlbum?.count ?? 0,
+    firstMessageId: storedAlbum?.first_message_id ?? null,
+    lastMessageId: storedAlbum?.last_message_id ?? null,
+  });
   if (modelId) {
     await env.DB.prepare(
       "UPDATE secretary_photo_album_items SET model_id = ? WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND model_id IS NULL",
