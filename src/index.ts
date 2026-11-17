@@ -217,7 +217,7 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
   const isOwner = Boolean(env.OWNER_TELEGRAM_ID) && senderId === env.OWNER_TELEGRAM_ID;
   const isGroup = message.chat.type === "group" || message.chat.type === "supergroup";
   if (!isDirector && !isOwner) {
-    if (!isGroup) await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: "Доступ к этому боту ограничен." });
+    if (!isGroup) await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: `Доступ пока не подключён. Ваш Telegram ID: ${senderId}. Передайте его администратору InterModels для активации.` });
     return;
   }
   if (message.text?.startsWith("/start")) {
