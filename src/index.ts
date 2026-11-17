@@ -525,7 +525,7 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
     const svg = compositeSvg(model, photos);
     stage = "prepare_fonts";
     const fontBuffers = await Promise.all([compositeFontBuffer(robotoCyrillic), compositeFontBuffer(robotoLatin)]);
-    if (fontBuffers.some((font) => font.byteLength < 4 || !((font[0] === 0x77 && font[1] === 0x4f && font[2] === 0x46 && font[3] === 0x32) || (font[0] === 0 && font[1] === 1 && font[2] === 0 && font[3] === 0) || (font[0] === 79 && font[1] === 84 && font[2] === 84 && font[3] === 79))) {
+    if (fontBuffers.some((font) => font.byteLength < 4 || !((font[0] === 0x77 && font[1] === 0x4f && font[2] === 0x46 && font[3] === 0x32) || (font[0] === 0 && font[1] === 1 && font[2] === 0 && font[3] === 0) || (font[0] === 79 && font[1] === 84 && font[2] === 84 && font[3] === 79)))) {
       throw new Error("Roboto font asset has an unsupported or invalid signature");
     }
     stage = "create_renderer";
