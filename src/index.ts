@@ -995,12 +995,13 @@ function appHtml(): Response {
   </style></head><body>
   <h1>InterModels</h1><div class="muted">Рабочая панель директора</div>
   <section class="panel"><h2>Ежемесячное обновление</h2><div id="refreshStats" class="stats">Загрузка статистики…</div>
-  <button id="refreshAll">Обновить Comp</button><div class="muted">Будут поставлены в очередь композитки моделей, обновивших параметры в последней кампании.</div></section>
+  <button id="refreshAll">Обновить Comp после обновления параметров</button><div class="muted">В очередь попадут только активные модели, обновившие параметры в текущей ежемесячной кампании.</div></section>
+  <section class="panel"><h2>Ручное обновление композиток</h2><button id="manualRefreshAll">Обновить композитки всех активных моделей</button><div class="muted">Можно запускать в любой день. Не зависит от ежемесячной кампании и дедлайна.</div></section>
   <section class="panel"><h2>База моделей</h2><input id="search" placeholder="Поиск по имени или фамилии">
   <select id="filter"><option value="all">Все модели</option><option value="active">Активные</option><option value="frozen">Замороженные</option></select>
   <div class="toolbar"><button id="selectVisible" class="secondary">Выбрать видимые</button><button id="clearSelection" class="secondary">Снять выбор</button></div>
   <div id="models">Загрузка…</div><div class="muted" id="selectionCount">Выбрано: 0</div>
-  <button id="refreshSelected">Обновить Comp выбранных</button></section>
+  <button id="refreshSelected">Обновить Comp выбранных вручную</button></section>
   <section class="panel"><h2>Расписание обновления</h2><div class="muted">Кампания запускается ежемесячно в выбранный день. Срок для моделей — 48 часов. Расписание применяется к следующим кампаниям.</div>
   <div class="grid"><label>День месяца<input id="cycleDay" type="number" min="1" max="28" value="1"></label><label>Часовой пояс<input id="timezone" value="UTC" placeholder="Europe/Amsterdam"></label>
   <label>День 1 · утро<input id="time1" type="time" value="09:00"></label><label>День 1 · вечер<input id="time2" type="time" value="20:00"></label>
@@ -1045,11 +1046,11 @@ function appHtml(): Response {
   for(const m of visible){const row=document.createElement('label');row.className='person'+(m.lifecycle_status==='frozen'?' frozen':'');const cb=document.createElement('input');cb.type='checkbox';cb.checked=selected.has(m.id);cb.disabled=m.lifecycle_status!=='active';cb.onchange=()=>{cb.checked?selected.add(m.id):selected.delete(m.id);updateSelection()};const meta=document.createElement('div');meta.className='meta';const name=document.createElement('strong');name.textContent=m.first_name+' '+m.last_name;const line=document.createElement('div');line.className=m.lifecycle_status==='frozen'?'status':'muted';line.textContent=m.lifecycle_status==='frozen'?'Заморожена/Заморожен':'Активна анкета';meta.append(name,line);row.append(cb,meta);root.append(row)}updateSelection()}
   async function loadModels(){try{const d=await api('GET','/api/director/models');models=d.models;renderModels()}catch(e){document.getElementById('models').textContent=e.message}}
   async function loadStats(){try{const d=await api('GET','/api/director/refresh-status');const c=d.campaign;if(!c){document.getElementById('refreshStats').textContent='Кампания ещё не запускалась.';return}document.getElementById('refreshStats').textContent='Моделей: '+c.total+' · Обновлено: '+c.updated+' · Ожидают: '+c.pending+' · Заморожено: '+c.frozen+' · Comp опубликовано: '+c.published+' · Ошибок: '+c.failed}catch(e){document.getElementById('refreshStats').textContent=e.message}}
-  async function queue(ids){try{const d=await api('POST','/api/director/composites',{model_ids:ids});st.textContent='В очередь добавлено композиток: '+d.queued;await loadStats()}catch(e){st.textContent=e.message}}
+  async function queue(ids,manual=false){try{const d=await api('POST','/api/director/composites',{model_ids:ids,manual});st.textContent=(manual?'Ручное обновление: ':'В ежемесячную очередь добавлено: ')+d.queued;await loadStats()}catch(e){st.textContent=e.message}}
   document.getElementById('search').oninput=renderModels;document.getElementById('filter').onchange=renderModels;
   document.getElementById('selectVisible').onclick=()=>{const q=document.getElementById('search').value.trim().toLocaleLowerCase('ru'),f=document.getElementById('filter').value;for(const m of models)if(m.lifecycle_status==='active'&&(m.first_name+' '+m.last_name).toLocaleLowerCase('ru').includes(q)&&(f==='all'||m.lifecycle_status===f))selected.add(m.id);renderModels()};
   document.getElementById('clearSelection').onclick=()=>{selected.clear();renderModels()};
-  document.getElementById('refreshSelected').onclick=()=>selected.size?queue([...selected]):st.textContent='Сначала выберите активные модели.';document.getElementById('refreshAll').onclick=()=>queue([]);
+  document.getElementById('refreshSelected').onclick=()=>selected.size?queue([...selected],true):st.textContent='Сначала выберите активные модели.';document.getElementById('refreshAll').onclick=()=>queue([]);document.getElementById('manualRefreshAll').onclick=()=>queue([],true);
   document.getElementById('saveSettings').onclick=async()=>{try{const body={cycle_day:Number(document.getElementById('cycleDay').value),timezone:document.getElementById('timezone').value.trim(),reminder_times:[1,2,3,4].map(i=>document.getElementById('time'+i).value)};await api('PUT','/api/director/refresh-settings',body);st.textContent='Расписание сохранено.'}catch(e){st.textContent=e.message}};
   async function loadSettings(){try{const d=await api('GET','/api/director/refresh-settings');const x=d.settings;document.getElementById('cycleDay').value=x.cycle_day;document.getElementById('timezone').value=x.timezone;x.reminder_times.forEach((v,i)=>document.getElementById('time'+(i+1)).value=v)}catch(e){st.textContent=e.message}}
   async function loadStaff(){try{const d=await api('GET','/api/director/staff');const root=document.getElementById('staff');root.innerHTML='';if(!d.staff.length){root.textContent='Помощники пока не добавлены.';return}for(const p of d.staff){const el=document.createElement('div');el.className='person';const title=document.createElement('strong');title.textContent=(p.display_name||'Без имени')+' · '+p.telegram_user_id;const info=document.createElement('div');info.className='muted';info.textContent=p.role+' · '+p.permissions.join(', ');const btn=document.createElement('button');btn.textContent='Отозвать';btn.onclick=async()=>{try{await api('DELETE','/api/director/staff?telegram_user_id='+encodeURIComponent(p.telegram_user_id));await loadStaff()}catch(e){st.textContent=e.message}};el.append(title,info,btn);root.append(el)}}catch(e){document.getElementById('staff').textContent=e.message}}
@@ -1089,7 +1090,7 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
     if (!(await actorHasPermission(env, actor.id, "profile.view"))) return json({ error: "Недостаточно прав." }, 403);
     if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
     const campaign = await env.DB.prepare(
-      "SELECT id,cycle_key,starts_at,deadline_at,status FROM profile_refresh_campaigns ORDER BY starts_at DESC LIMIT 1",
+      "SELECT id,cycle_key,starts_at,deadline_at,status FROM profile_refresh_campaigns WHERE cycle_key NOT LIKE 'manual:%' ORDER BY starts_at DESC LIMIT 1",
     ).first<{ id: string; cycle_key: string; starts_at: string; deadline_at: string; status: string }>();
     if (!campaign) return json({ ok: true, campaign: null });
     const members = await env.DB.prepare(
@@ -1140,7 +1141,7 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
       return json({ error: "Некорректный список моделей." }, 400);
     }
     try {
-      const result = await queueCompositeRefresh(env, Array.isArray(body?.model_ids) ? body.model_ids : null, actor.id);
+      const result = await queueCompositeRefresh(env, Array.isArray(body?.model_ids) ? body.model_ids : null, actor.id, body?.manual === true);
       return json({ ok: true, ...result });
     } catch (error) { return json({ error: error instanceof Error ? error.message : "Не удалось поставить композитки в очередь." }, 409); }
   }
@@ -1200,25 +1201,31 @@ function localDateTimeToIso(date: string, time: string, timezone: string): strin
 function dateKey(year: number, month: number, day: number): string {
   return String(year).padStart(4, "0") + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
 }
-async function queueCompositeRefresh(env: Env, modelIds: string[] | null, actorId: string): Promise<{ campaignId: string; queued: number }> {
-  const campaign = await env.DB.prepare("SELECT id FROM profile_refresh_campaigns ORDER BY starts_at DESC LIMIT 1").first<{ id: string }>();
-  if (!campaign) throw new Error("Ежемесячная кампания обновления ещё не запускалась.");
+async function queueCompositeRefresh(env: Env, modelIds: string[] | null, actorId: string, manual = false): Promise<{ campaignId: string; queued: number }> {
+  let campaignId: string;
+  if (manual) {
+    campaignId = "manual-" + randomId();
+    await env.DB.prepare("INSERT INTO profile_refresh_campaigns(id,cycle_key,starts_at,deadline_at,status,completed_at) VALUES(?,?,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','completed',CURRENT_TIMESTAMP)")
+      .bind(campaignId, "manual:" + campaignId).run();
+  } else {
+    const campaign = await env.DB.prepare("SELECT id FROM profile_refresh_campaigns WHERE cycle_key NOT LIKE 'manual:%' ORDER BY starts_at DESC LIMIT 1").first<{ id: string }>();
+    if (!campaign) throw new Error("Ежемесячная кампания обновления ещё не запускалась.");
+    campaignId = campaign.id;
+  }
   let rows: { model_id: string }[];
   if (modelIds?.length) {
     const ids = Array.from(new Set(modelIds)).slice(0, 100);
     const placeholders = ids.map(() => "?").join(",");
     const result = await env.DB.prepare(
-      `SELECT r.model_id FROM profile_refresh_members r JOIN models m ON m.id = r.model_id
-       WHERE r.campaign_id = ? AND r.status = 'updated' AND m.is_active = 1
-         AND m.lifecycle_status = 'active' AND r.model_id IN (${placeholders})`,
-    ).bind(campaign.id, ...ids).all<{ model_id: string }>();
+      `SELECT m.id AS model_id FROM models m
+       WHERE m.is_active = 1 AND m.lifecycle_status = 'active' AND m.id IN (${placeholders})`,
+    ).bind(...ids).all<{ model_id: string }>();
     rows = result.results ?? [];
   } else {
     const result = await env.DB.prepare(
-      `SELECT r.model_id FROM profile_refresh_members r JOIN models m ON m.id = r.model_id
-       WHERE r.campaign_id = ? AND r.status = 'updated' AND m.is_active = 1
-         AND m.lifecycle_status = 'active'`,
-    ).bind(campaign.id).all<{ model_id: string }>();
+      `SELECT m.id AS model_id FROM models m
+       WHERE m.is_active = 1 AND m.lifecycle_status = 'active'`,
+    ).all<{ model_id: string }>();
     rows = result.results ?? [];
   }
   for (const row of rows) {
@@ -1229,8 +1236,8 @@ async function queueCompositeRefresh(env: Env, modelIds: string[] | null, actorI
     ).bind(campaign.id, row.model_id).run();
   }
   await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'composite.refresh.queued', ?)")
-    .bind(randomId(), actorId, JSON.stringify({ campaign_id: campaign.id, model_ids: rows.map((row) => row.model_id) })).run();
-  return { campaignId: campaign.id, queued: rows.length };
+    .bind(randomId(), actorId, JSON.stringify({ campaign_id: campaignId, manual, model_ids: rows.map((row) => row.model_id) })).run();
+  return { campaignId, queued: rows.length };
 }
 async function publishCompositeModel(env: Env, campaignId: string, modelId: string): Promise<void> {
   const topic = await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id = 1")
