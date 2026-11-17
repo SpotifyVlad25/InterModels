@@ -1,0 +1,6 @@
+# Copy to .dev.vars for local development. Never commit real values.
+MODEL_BOT_TOKEN=
+DIRECTOR_BOT_TOKEN=
+DIRECTOR_TELEGRAM_ID=
+MODEL_WEBHOOK_SECRET=
+DIRECTOR_WEBHOOK_SECRET=
