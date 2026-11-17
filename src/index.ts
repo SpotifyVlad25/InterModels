@@ -999,9 +999,35 @@ function appHtml(): Response {
   <div id="perms"><label class="perm"><input type="checkbox" value="profile.view" checked> Просмотр анкет</label><label class="perm"><input type="checkbox" value="profile.edit"> Редактирование анкет</label><label class="perm"><input type="checkbox" value="photos.manage"> Управление фотографиями</label><label class="perm"><input type="checkbox" value="composite.generate"> Создание композиток</label><label class="perm"><input type="checkbox" value="requests.manage"> Решение заявок</label></div>
   <button id="grant">Выдать права</button><h3>Действующие доступы</h3><div id="staff">Загрузка…</div></section><div id="status" class="muted" style="position:sticky;top:0;z-index:10;padding:8px;background:var(--tg-theme-bg-color,#fff);border-radius:8px"></div>
   <script>
-  const tg=window.Telegram?.WebApp;tg?.ready();tg?.expand();const getInitData=()=>tg?.initData||'';const st=document.getElementById('status');let models=[];let selected=new Set();
+  const st=document.getElementById('status');let models=[];let selected=new Set();
+  let tg=window.Telegram?.WebApp;
+  async function initTelegramWebApp(){
+    if(!tg){
+      await new Promise(resolve=>{
+        const script=document.createElement('script');
+        script.src='https://telegram.org/js/telegram-web-app.js';
+        script.async=true;
+        script.onload=resolve;
+        script.onerror=resolve;
+        document.head.appendChild(script);
+      });
+      tg=window.Telegram?.WebApp;
+    }
+    if(tg){tg.ready();tg.expand();}
+    return tg;
+  }
+  const telegramReady=initTelegramWebApp();
+  const getInitData=()=>window.Telegram?.WebApp?.initData||tg?.initData||'';
+  function telegramLaunchDiagnostic(){
+    const params=new URLSearchParams(location.hash.replace(/^#/,''));
+    return 'SDK: '+(window.Telegram?.WebApp?'есть':'нет')+
+      ' · initData: '+(getInitData()?'есть':'нет')+
+      ' · launch-параметр: '+(params.has('tgWebAppData')?'есть':'нет')+
+      ' · платформа: '+(window.Telegram?.WebApp?.platform||'не определена')+
+      ' · версия: '+(window.Telegram?.WebApp?.version||'не определена');
+  }
   window.addEventListener('error',e=>{st.textContent='Ошибка интерфейса: '+(e.message||'неизвестная ошибка')});window.addEventListener('unhandledrejection',e=>{st.textContent='Ошибка запроса: '+(e.reason?.message||String(e.reason||'неизвестная ошибка'))});document.addEventListener('click',e=>{const b=e.target.closest('button');if(b&&!st.textContent)st.textContent='Нажатие принято: '+(b.textContent||b.id)},true);
-  async function api(m,p,b){const initData=getInitData();if(!initData){st.textContent='Авторизация: Telegram не передал initData. Закройте Mini App и откройте её кнопкой из @InterModels_bot.';throw Error('Telegram initData отсутствует')}const r=await fetch(p,{method:m,headers:{Authorization:'tma '+initData,'Content-Type':'application/json'},...(b?{body:JSON.stringify(b)}:{})});const d=await r.json();if(!r.ok){if(r.status===401&&d.diagnostic_code)st.textContent='Диагностика авторизации: '+d.diagnostic_code;throw Error((d.error||'Ошибка')+(d.diagnostic_code?' ['+d.diagnostic_code+']':''))}return d}
+  async function api(m,p,b){await telegramReady;await new Promise(resolve=>setTimeout(resolve,250));const initData=getInitData();if(!initData){st.textContent='Telegram initData отсутствует. '+telegramLaunchDiagnostic()+'. Откройте приложение через кнопку «Открыть Mini App» в личном чате @InterModels_director_bot.';throw Error('Telegram initData отсутствует')}const r=await fetch(p,{method:m,headers:{Authorization:'tma '+initData,'Content-Type':'application/json'},...(b?{body:JSON.stringify(b)}:{})});const d=await r.json();if(!r.ok){if(r.status===401&&d.diagnostic_code)st.textContent='Диагностика авторизации: '+d.diagnostic_code;throw Error((d.error||'Ошибка')+(d.diagnostic_code?' ['+d.diagnostic_code+']':''))}return d}
   function updateSelection(){document.getElementById('selectionCount').textContent='Выбрано: '+selected.size}
   function renderModels(){const root=document.getElementById('models');root.innerHTML='';const q=document.getElementById('search').value.trim().toLocaleLowerCase('ru');const filter=document.getElementById('filter').value;const visible=models.filter(m=>(m.first_name+' '+m.last_name).toLocaleLowerCase('ru').includes(q)&&(filter==='all'||m.lifecycle_status===filter));if(!visible.length){root.textContent='Модели не найдены.';return}
   for(const m of visible){const row=document.createElement('label');row.className='person'+(m.lifecycle_status==='frozen'?' frozen':'');const cb=document.createElement('input');cb.type='checkbox';cb.checked=selected.has(m.id);cb.disabled=m.lifecycle_status!=='active';cb.onchange=()=>{cb.checked?selected.add(m.id):selected.delete(m.id);updateSelection()};const meta=document.createElement('div');meta.className='meta';const name=document.createElement('strong');name.textContent=m.first_name+' '+m.last_name;const line=document.createElement('div');line.className=m.lifecycle_status==='frozen'?'status':'muted';line.textContent=m.lifecycle_status==='frozen'?'Заморожена/Заморожен':'Активна анкета';meta.append(name,line);row.append(cb,meta);root.append(row)}updateSelection()}
