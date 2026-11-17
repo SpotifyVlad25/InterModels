@@ -1,0 +1,1 @@
+ALTER TABLE profile_refresh_members ADD COLUMN notified_at TEXT;
