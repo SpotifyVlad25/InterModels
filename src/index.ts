@@ -447,16 +447,16 @@ async function getSecretaryPhotoData(env: Env, fileId: string): Promise<string> 
   const path = file.result?.file_path;
   if (typeof path !== "string" || !path) throw new Error("Telegram photo path missing");
   const imageUrl = "https://api.telegram.org/file/bot" + env.SECRETARY_BOT_TOKEN + "/" + path;
-  // Resize at Cloudflare's edge before the source image is embedded into the SVG.
-  // The card layout uses each photo in a bounded frame, so 1200px is sufficient
-  // while avoiding large source bitmaps during Resvg rasterization.
+  // Resize at Cloudflare's edge before embedding source images into SVG.
+  // 800px inputs and an 800x1130 output reduce WASM rasterization CPU/memory
+  // while retaining enough resolution for Telegram's portrait comp card.
   const response = await fetch(imageUrl, {
     cf: {
       image: {
         fit: "scale-down",
-        width: 1200,
-        height: 1200,
-        quality: 82,
+        width: 800,
+        height: 800,
+        quality: 76,
         format: "jpeg",
       },
     },
@@ -481,7 +481,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   const details = values.map((v, i) => `<text x="990" y="${1770 + i * 58}" class="detail">${escapeXml(v)}</text>`).join("");
   const img = (data: string, x: number, y: number, w: number, h: number) =>
     `<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice"/>`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1200" height="1695" viewBox="0 0 1600 2260">
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="800" height="1130" viewBox="0 0 1600 2260">
   <rect width="1600" height="2260" fill="#fff"/>
   <text x="90" y="70" class="brand">INTERMODELS</text><text x="1510" y="70" text-anchor="end" class="small">MODEL PORTFOLIO</text>
   <defs><clipPath id="a"><rect x="90" y="110" width="820" height="1093"/></clipPath><clipPath id="b"><rect x="950" y="110" width="560" height="700"/></clipPath><clipPath id="c"><rect x="950" y="850" width="560" height="700"/></clipPath><clipPath id="d"><rect x="90" y="1240" width="820" height="820"/></clipPath></defs>
