@@ -375,18 +375,6 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
   }
   if (message.text?.startsWith("/start")) {
     if (isDirector) await saveTopic(env, "director", message);
-    // A reply-keyboard Web App button is intended for simple data-entry flows.
-    // Use Telegram's per-chat menu button for the authenticated Director Mini App.
-    if ((isDirector || isOwner) && message.chat.type === "private") {
-      await telegram(env.DIRECTOR_BOT_TOKEN, "setChatMenuButton", {
-        chat_id: message.chat.id,
-        menu_button: {
-          type: "web_app",
-          text: "Открыть Mini App",
-          web_app: { url: "https://intermodels.spotify-vlad25.workers.dev/app" },
-        },
-      });
-    }
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
       ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
@@ -395,9 +383,6 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
         : isOwner
           ? "InterModels Owner подключён. На период настройки у вас временный полный доступ, включая решения по заявкам."
           : "InterModels Assistant подключён. Ваши возможности определяются выданными директором правами.",
-      ...((isDirector || isOwner) && message.chat.type === "private" ? {
-        reply_markup: { keyboard: [[{ text: "Обновить Comp" }]], resize_keyboard: true },
-      } : {}),
     });
   } else if (message.text?.startsWith("/help")) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
