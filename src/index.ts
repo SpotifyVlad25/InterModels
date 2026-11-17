@@ -98,7 +98,8 @@ async function handleModelMessage(env: Env, message: TelegramMessage): Promise<v
   if (!user || !["private", "group", "supergroup"].includes(message.chat.type)) return;
   const replyChatId = message.chat.id;
   const replyThreadId = message.message_thread_id;
-  if (message.text?.startsWith("/start")) {\n    await saveTopic(env, "model", message);
+  if (message.text?.startsWith("/start")) {
+    await saveTopic(env, "model", message);
     await env.DB.prepare(
       `INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
        VALUES (?, 'awaiting_name', '{}', CURRENT_TIMESTAMP)
