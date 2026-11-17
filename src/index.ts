@@ -445,12 +445,34 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
     text{font-family:Roboto,sans-serif;fill:#171717}.brand{font-size:30px;font-weight:700;letter-spacing:8px}.small{font-size:17px;letter-spacing:3px;fill:#777}.eyebrow{font-size:17px;letter-spacing:4px;fill:#777}.name{font-size:44px;font-weight:700;letter-spacing:1px}.detail{font-size:24px;letter-spacing:1.5px}
   </style></svg>`;
 }
+function compositeErrorText(error: unknown): string {
+  if (error instanceof Error) return error.stack || error.message;
+  if (error instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(error)) || "ArrayBuffer (" + error.byteLength + " bytes)";
+  if (ArrayBuffer.isView(error)) {
+    const view = new Uint8Array(error.buffer, error.byteOffset, error.byteLength);
+    return new TextDecoder().decode(view) || Object.prototype.toString.call(error) + " (" + view.byteLength + " bytes)";
+  }
+  try { return JSON.stringify(error); } catch { return String(error); }
+}
 async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: string[]): Promise<Uint8Array> {
-  await ensureResvg();
-  const photos = await Promise.all(fileIds.map((id) => getSecretaryPhotoData(env, id)));
-  const svg = compositeSvg(model, photos);
-  const renderer = new Resvg(svg, { font: { fontBuffers: [robotoCyrillic, robotoLatin], defaultFontFamily: "Roboto", loadSystemFonts: false } });
-  try { return renderer.render().asPng(); } finally { renderer.free(); }
+  let stage = "init_wasm";
+  try {
+    await ensureResvg();
+    stage = "download_photos";
+    const photos = await Promise.all(fileIds.map((id) => getSecretaryPhotoData(env, id)));
+    stage = "build_svg";
+    const svg = compositeSvg(model, photos);
+    stage = "create_renderer";
+    const renderer = new Resvg(svg, { font: { fontBuffers: [robotoCyrillic, robotoLatin], defaultFontFamily: "Roboto", loadSystemFonts: false } });
+    try {
+      stage = "rasterize_png";
+      return renderer.render().asPng();
+    } finally { renderer.free(); }
+  } catch (error) {
+    const details = compositeErrorText(error);
+    console.error("Composite PNG render stage failed", { modelId: model.id, renderStage: stage, error: details });
+    throw new Error("Composite PNG " + stage + ": " + details.slice(0, 1800));
+  }
 }
 
 async function saveSecretaryPhotoSet(
