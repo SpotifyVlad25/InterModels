@@ -635,6 +635,9 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
       "UPDATE secretary_photo_album_items SET model_id = ? WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND model_id IS NULL",
     ).bind(modelId, String(message.chat.id), threadId, senderId, albumId).run();
   }
+  // Telegram delivers each media-group item as a separate webhook update.
+  // Give sibling updates time to persist before deciding that the album is incomplete.
+  await new Promise((resolve) => setTimeout(resolve, 1800));
   const album = await env.DB.prepare(
     "SELECT message_id, model_id, telegram_file_id AS file_id, telegram_file_unique_id AS file_unique_id FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? ORDER BY message_id",
   ).bind(String(message.chat.id), threadId, senderId, albumId)
