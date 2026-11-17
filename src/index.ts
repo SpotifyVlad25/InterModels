@@ -522,7 +522,8 @@ async function sendCompositePng(env: Env, chatId: number, threadId: number, png:
 }
 async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawName: string): Promise<void> {
   const query = normalizeName(rawName);
-  const models = await findSecretaryModels(env, rawName);
+  const surname = rawName.trim().split(/\\s+/).filter(Boolean).at(-1) ?? rawName;
+  const models = await findSecretaryModels(env, surname);
   const exact = models.filter((m) => normalizeName(m.first_name + " " + m.last_name) === query);
   const matches = exact.length ? exact : models;
   if (!matches.length) {
