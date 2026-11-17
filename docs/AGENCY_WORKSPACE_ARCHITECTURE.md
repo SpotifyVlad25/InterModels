@@ -35,7 +35,7 @@
 - предпросмотр и ручной запуск генерации;
 - историю версий композитки.
 
-Каждый API-запрос Mini App должен проверять Telegram Web App `initData` на сервере и сверять Telegram ID с `DIRECTOR_TELEGRAM_ID`. Нельзя доверять переданному клиентом user ID или username.
+Каждый API-запрос Mini App должен проверять Telegram Web App `initData` на сервере и сверять Telegram ID с серверной системой прав. Нельзя доверять переданному клиентом user ID или username. `OWNER_TELEGRAM_ID` и `DIRECTOR_TELEGRAM_ID` — bootstrap-администраторы с полным доступом; владелец имеет временные полные права на период настройки. В Mini App нужен раздел «Права доступа»: выдача/отзыв доступа по Telegram ID, роли «Помощник» и «Наблюдатель», настройка разрешений по категориям, отключение пользователя и журнал изменений.
 
 ### 3. Secretary bot
 Отдельный webhook route `/webhook/secretary` и отдельный секрет `SECRETARY_BOT_TOKEN` / `SECRETARY_WEBHOOK_SECRET`.
@@ -84,7 +84,7 @@
 ## Текущее состояние, проверенное по репозиторию
 
 - Worker `intermodels`, D1 binding `DB`, два webhook route: model и director.
-- Текущие переменные Worker включают MODEL/DIRECTOR bot tokens и webhook secrets, OWNER и DIRECTOR Telegram IDs.
+- Текущие переменные Worker включают MODEL/DIRECTOR bot tokens и webhook secrets, OWNER и DIRECTOR Telegram IDs. Владелец временно получает те же права на решения по заявкам, что и директор; отдельный hotfix уже отправлен в main и развёртывается.
 - Таблицы: models, registration_requests, model_profiles, bot_sessions, bot_topics.
 - В текущем коде регистрация допускает поиск отдельно по ФИО или телефону. Это ещё не согласованный двухшаговый сценарий ФИО → запрос контакта.
 - В проекте пока нет R2 binding, Mini App, Secretary webhook, загрузки фото и генератора композиток.
