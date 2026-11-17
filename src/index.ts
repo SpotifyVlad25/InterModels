@@ -624,13 +624,28 @@ async function saveSecretaryPhotoSet(
 ): Promise<void> {
   await assertSecretaryOperationActive(env, operationId);
   if (photos.length !== 4) throw new Error("Для сохранения нужны ровно четыре фотографии.");
-  const statements = [
-    env.DB.prepare("DELETE FROM model_telegram_photos WHERE model_id = ?").bind(modelId),
-    ...photos.map((photo, index) => env.DB.prepare(
-      "INSERT INTO model_telegram_photos (model_id, position, telegram_file_id, telegram_file_unique_id, uploaded_by, source_chat_id, source_thread_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).bind(modelId, index + 1, photo.file_id, photo.file_unique_id, senderId, String(chatId), threadId)),
-  ];
+  const statements = operationId
+    ? [
+        env.DB.prepare("DELETE FROM model_telegram_photos WHERE model_id=? AND EXISTS (SELECT 1 FROM secretary_operations WHERE id=? AND status='running')")
+          .bind(modelId, operationId),
+        ...photos.map((photo, index) => env.DB.prepare(
+          "INSERT INTO model_telegram_photos (model_id,position,telegram_file_id,telegram_file_unique_id,uploaded_by,source_chat_id,source_thread_id) SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM secretary_operations WHERE id=? AND status='running')",
+        ).bind(modelId, index + 1, photo.file_id, photo.file_unique_id, senderId, String(chatId), threadId, operationId)),
+        env.DB.prepare("UPDATE secretary_operations SET status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'")
+          .bind(operationId),
+      ]
+    : [
+        env.DB.prepare("DELETE FROM model_telegram_photos WHERE model_id = ?").bind(modelId),
+        ...photos.map((photo, index) => env.DB.prepare(
+          "INSERT INTO model_telegram_photos (model_id, position, telegram_file_id, telegram_file_unique_id, uploaded_by, source_chat_id, source_thread_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ).bind(modelId, index + 1, photo.file_id, photo.file_unique_id, senderId, String(chatId), threadId)),
+      ];
   await env.DB.batch(statements);
+  if (operationId) {
+    const state = await env.DB.prepare("SELECT status FROM secretary_operations WHERE id=?")
+      .bind(operationId).first<{status:string}>();
+    if (state?.status !== "completed") throw new Error("SECRETARY_OPERATION_CANCELLED");
+  }
 }
 async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, senderId: string): Promise<void> {
   const albumId = message.media_group_id!;
