@@ -2,6 +2,10 @@ name: Diagnose Model Bot token
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/model-token-diagnostics.yml'
 
 permissions:
   contents: read
@@ -73,3 +77,32 @@ jobs:
           else
             echo "Director control token is missing."
           fi
+
+  alternate-runner:
+    name: Compare Telegram API from a separate runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Compare Model and Director Bot API responses
+        shell: bash
+        env:
+          MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
+          DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
+        run: |
+          set +e
+          for entry in "model:$MODEL_BOT_TOKEN" "director:$DIRECTOR_BOT_TOKEN"; do
+            label="${entry%%:*}"
+            token="${entry#*:}"
+            if [ -z "$token" ]; then
+              echo "$label token missing"
+              continue
+            fi
+            echo "Testing $label on ubuntu-24.04"
+            curl -4 --silent --show-error --max-time 20 \
+              --output "/tmp/$label.json" \
+              --write-out "${label}_http_status=%{http_code} elapsed_seconds=%{time_total}\n" \
+              "https://api.telegram.org/bot${token}/getMe"
+            code=$?
+            echo "${label}_curl_exit_code=$code"
+            node -e 'try { const x=require(process.argv[1]); console.log(JSON.stringify({test:process.argv[2],ok:x.ok??null,errorCode:x.error_code??null,description:x.description??null,username:x.result?.username??null})); } catch { console.log(JSON.stringify({test:process.argv[2],result:"NO_VALID_JSON"})); }' "/tmp/$label.json" "$label"
+          done
