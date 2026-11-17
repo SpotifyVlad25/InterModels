@@ -169,9 +169,11 @@ async function handleModelProfileStep(env: Env, telegramId: string, chatId: numb
 }
 async function showModelProfilePrompt(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
   const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?").bind(telegramId).first<{state:string}>();
+  const model = await env.DB.prepare("SELECT lifecycle_status FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(telegramId).first<{lifecycle_status:string}>();
   const step = PROFILE_STEPS.find((item) => item.state === session?.state);
   if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\\n\\n" + step.prompt, threadId);
-  else if (session?.state === "profile_complete") await sendModel(env, chatId, "Ваша анкета подключена и заполнена. Чтобы изменить параметры, отправьте /profile.", threadId);
+  else if (model?.lifecycle_status === "frozen") await sendModel(env, chatId, "🥶\\n\\nУпс, ваша анкета заморожена и временно не отображается в активной базе.\\nОтправьте /profile, чтобы обновить параметры и восстановить доступ.", threadId);
+  else if (session?.state === "profile_complete") await sendModel(env, chatId, "Ваша анкета подключена и заполнена. Чтобы изменить данные, отправьте /profile.", threadId);
   else await beginModelProfile(env, telegramId, chatId, threadId);
 }
 
@@ -327,7 +329,7 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
   const senderId = String(message.from.id);
   const isDirector = senderId === env.DIRECTOR_TELEGRAM_ID;
   const isOwner = Boolean(env.OWNER_TELEGRAM_ID) && senderId === env.OWNER_TELEGRAM_ID;
-  const isStaff = await hasStaffPermission(env, senderId, "profile.view");
+  const isStaff = await hasStaffPermission(env, senderId, "profile.view") || await hasStaffPermission(env, senderId, "composite.generate");
   const isGroup = message.chat.type === "group" || message.chat.type === "supergroup";
   if (!isDirector && !isOwner && !isStaff) {
     if (!isGroup) await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: `Доступ пока не подключён. Ваш Telegram ID: ${senderId}. Передайте его администратору InterModels для активации.` });
@@ -971,7 +973,7 @@ function appHtml(): Response {
   document.getElementById('search').oninput=renderModels;document.getElementById('filter').onchange=renderModels;
   document.getElementById('selectVisible').onclick=()=>{const q=document.getElementById('search').value.trim().toLocaleLowerCase('ru'),f=document.getElementById('filter').value;for(const m of models)if(m.lifecycle_status==='active'&&(m.first_name+' '+m.last_name).toLocaleLowerCase('ru').includes(q)&&(f==='all'||m.lifecycle_status===f))selected.add(m.id);renderModels()};
   document.getElementById('clearSelection').onclick=()=>{selected.clear();renderModels()};
-  document.getElementById('refreshSelected').onclick=()=>queue([...selected]);document.getElementById('refreshAll').onclick=()=>queue([]);
+  document.getElementById('refreshSelected').onclick=()=>selected.size?queue([...selected]):st.textContent='Сначала выберите активные модели.';document.getElementById('refreshAll').onclick=()=>queue([]);
   document.getElementById('saveSettings').onclick=async()=>{try{const body={cycle_day:Number(document.getElementById('cycleDay').value),timezone:document.getElementById('timezone').value.trim(),reminder_times:[1,2,3,4].map(i=>document.getElementById('time'+i).value)};await api('PUT','/api/director/refresh-settings',body);st.textContent='Расписание сохранено.'}catch(e){st.textContent=e.message}};
   async function loadSettings(){try{const d=await api('GET','/api/director/refresh-settings');const x=d.settings;document.getElementById('cycleDay').value=x.cycle_day;document.getElementById('timezone').value=x.timezone;x.reminder_times.forEach((v,i)=>document.getElementById('time'+(i+1)).value=v)}catch(e){st.textContent=e.message}}
   async function loadStaff(){try{const d=await api('GET','/api/director/staff');const root=document.getElementById('staff');root.innerHTML='';if(!d.staff.length){root.textContent='Помощники пока не добавлены.';return}for(const p of d.staff){const el=document.createElement('div');el.className='person';const title=document.createElement('strong');title.textContent=(p.display_name||'Без имени')+' · '+p.telegram_user_id;const info=document.createElement('div');info.className='muted';info.textContent=p.role+' · '+p.permissions.join(', ');const btn=document.createElement('button');btn.textContent='Отозвать';btn.onclick=async()=>{try{await api('DELETE','/api/director/staff?telegram_user_id='+encodeURIComponent(p.telegram_user_id));await loadStaff()}catch(e){st.textContent=e.message}};el.append(title,info,btn);root.append(el)}}catch(e){document.getElementById('staff').textContent=e.message}}
