@@ -1,0 +1,79 @@
+name: Cloudflare Telegram API probe (temporary)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check out diagnostic branch
+        uses: actions/checkout@v4
+        with:
+          ref: diagnostics/cloudflare-telegram-probe
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Wrangler
+        run: npm install --no-save --no-audit --no-fund wrangler@4.45.0
+
+      - name: Deploy temporary probe Worker
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "::error::Cloudflare credentials are not configured in GitHub Actions secrets."
+            exit 1
+          fi
+          npx wrangler deploy --config wrangler.probe.toml --account-id "$CLOUDFLARE_ACCOUNT_ID" 2>&1 | tee /tmp/probe-deploy.log
+          PROBE_URL="$(grep -Eo 'https://[^[:space:]]+workers\.dev' /tmp/probe-deploy.log | tail -n 1 | sed 's/[),]$//')"
+          if [ -z "$PROBE_URL" ]; then
+            echo "::error::Could not determine the temporary Worker URL from Wrangler output."
+            exit 1
+          fi
+          echo "probe_url=$PROBE_URL" >> "$GITHUB_OUTPUT"
+          echo "Temporary diagnostic Worker deployed."
+
+      - name: Set temporary probe secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
+          DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e 'process.stdout.write(JSON.stringify({
+            MODEL_BOT_TOKEN: process.env.MODEL_BOT_TOKEN,
+            DIRECTOR_BOT_TOKEN: process.env.DIRECTOR_BOT_TOKEN
+          }))' | npx wrangler secret bulk --name intermodels-telegram-probe --config wrangler.probe.toml --account-id "$CLOUDFLARE_ACCOUNT_ID"
+
+      - name: Call probe Worker
+        env:
+          PROBE_URL: ${{ steps.deploy.outputs.probe_url }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 20 "$PROBE_URL/probe" | tee /tmp/probe-result.json
+          echo
+          node -e 'const x=require("/tmp/probe-result.json"); for (const r of x.results||[]) console.log(JSON.stringify(r))'
+
+      - name: Delete temporary probe Worker
+        if: always()
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            npx wrangler delete --name intermodels-telegram-probe --force --account-id "$CLOUDFLARE_ACCOUNT_ID" || true
+          fi
