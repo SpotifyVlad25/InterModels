@@ -1,6 +1,9 @@
 declare module "*.wasm" { const module: WebAssembly.Module; export default module; }
 declare module "*.woff2" { const bytes: Uint8Array; export default bytes; }
 
+declare module "*.wasm" { const module: WebAssembly.Module; export default module; }
+declare module "*.woff2" { const bytes: Uint8Array; export default bytes; }
+
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
 import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
 import robotoCyrillic from "@fontsource/roboto/files/roboto-cyrillic-400-normal.woff2";
