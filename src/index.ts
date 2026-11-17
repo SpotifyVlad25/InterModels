@@ -273,10 +273,49 @@ async function canManageRequests(env: Env, telegramId: string): Promise<boolean>
   return hasStaffPermission(env, telegramId, "requests.manage");
 }
 async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery): Promise<void> {
+  const data = callback.data ?? "";
+  const refreshMatch = data.match(/^comprefresh:([a-f0-9]{12})$/);
+  if (refreshMatch) {
+    const actorId = String(callback.from.id);
+    if (!(await actorHasPermission(env, actorId, "composite.generate"))) {
+      await answerCallback(env, callback, "Недостаточно прав для обновления композиток.", true); return;
+    }
+    const campaignId = refreshMatch[1];
+    const campaign = await env.DB.prepare("SELECT id,status FROM profile_refresh_campaigns WHERE id=?")
+      .bind(campaignId).first<{id:string;status:string}>();
+    if (!campaign || campaign.status !== "completed") {
+      await answerCallback(env, callback, "Кампания не найдена или ещё не завершена.", true); return;
+    }
+    const updated = await env.DB.prepare(
+      "SELECT model_id FROM profile_refresh_members WHERE campaign_id=? AND status='updated'",
+    ).bind(campaignId).all<{model_id:string}>();
+    let queued = 0;
+    for (const row of updated.results ?? []) {
+      const inserted = await env.DB.prepare(
+        "INSERT OR IGNORE INTO composite_refresh_jobs(campaign_id,model_id,status,attempts,last_error,updated_at) VALUES(?,?,'pending',0,NULL,CURRENT_TIMESTAMP)",
+      ).bind(campaignId, row.model_id).run();
+      queued += inserted.meta?.changes ?? 0;
+    }
+    await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'composite.refresh.campaign_queued', ?)")
+      .bind(randomId(), actorId, JSON.stringify({campaign_id:campaignId,updated_models:updated.results?.length ?? 0,queued})).run();
+    await answerCallback(env, callback, queued
+      ? "В очередь добавлено моделей: " + queued
+      : "Все обновлённые модели уже обработаны или находятся в очереди.");
+    if (callback.message) {
+      try {
+        await telegram(env.DIRECTOR_BOT_TOKEN, "editMessageReplyMarkup", {
+          chat_id: callback.message.chat.id, message_id: callback.message.message_id, reply_markup: { inline_keyboard: [] },
+        });
+      } catch (error) { console.error("Unable to remove used composite refresh button", error); }
+    }
+    if (queued) {
+      await sendDirector(env, "🔄 Обновление Comp запущено по завершённой кампании. В очереди: " + queued + " моделей. Уже опубликованные композитки повторно в очередь не попадают.");
+    }
+    return;
+  }
   if (!(await canManageRequests(env, String(callback.from.id)))) {
     await answerCallback(env, callback, "Недостаточно прав.", true); return;
   }
-  const data = callback.data ?? "";
   if (data === "composite:create") {
     const msg = callback.message;
     if (!msg || msg.chat.type !== "supergroup" || !msg.message_thread_id) {
@@ -353,24 +392,6 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
   const isGroup = message.chat.type === "group" || message.chat.type === "supergroup";
   if (!isDirector && !isOwner && !isStaff) {
     if (!isGroup) await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: `Доступ пока не подключён. Ваш Telegram ID: ${senderId}. Передайте его администратору InterModels для активации.` });
-    return;
-  }
-  if (message.chat.type === "private" && (message.text?.trim() === "Обновить Comp" || /^\/refresh_comp(?:@\w+)?$/i.test(message.text?.trim() ?? ""))) {
-    if (!(await actorHasPermission(env, senderId, "composite.generate"))) {
-      await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: "У вас нет права запускать обновление композиток." });
-      return;
-    }
-    try {
-      const result = await queueCompositeRefresh(env, null, senderId);
-      await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
-        chat_id: message.chat.id,
-        text: result.queued
-          ? "Обновление Comp запущено. В очереди: " + result.queued + " моделей. Результаты появятся в теме «КОМПОЗИТКИ»."
-          : "Нет моделей с обновлёнными параметрами для публикации Comp.",
-      });
-    } catch (error) {
-      await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: error instanceof Error ? error.message : "Не удалось запустить обновление Comp." });
-    }
     return;
   }
   if (message.text?.startsWith("/start")) {
@@ -1767,9 +1788,18 @@ async function processRefreshCampaigns(env: Env): Promise<void> {
           catch (error) { console.error("Unable to send model freeze notice", { modelId: model.id, error: compositeErrorText(error) }); }
         }
       }
+      const finalStats = await env.DB.prepare(
+        "SELECT COUNT(*) AS total, SUM(CASE WHEN status='updated' THEN 1 ELSE 0 END) AS updated, SUM(CASE WHEN status='frozen' THEN 1 ELSE 0 END) AS frozen FROM profile_refresh_members WHERE campaign_id=?",
+      ).bind(campaign.id).first<{total:number;updated:number|null;frozen:number|null}>();
       await env.DB.prepare("UPDATE profile_refresh_campaigns SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'open'")
         .bind(campaign.id).run();
-      await sendDirector(env, "Ежемесячное обновление параметров завершено.\nЗаморожено моделей: " + (late.results?.length ?? 0) + ".");
+      const updatedCount = finalStats?.updated ?? 0;
+      const finalText = "Ежемесячное обновление параметров завершено.\n\nВсего моделей: " + (finalStats?.total ?? 0) +
+        "\nОбновили анкету: " + updatedCount +
+        "\nЗаморожено: " + (finalStats?.frozen ?? late.results?.length ?? 0) + ".";
+      await sendDirector(env, finalText, updatedCount > 0 ? {
+        inline_keyboard: [[{ text: "🔄 Обновить Comp", callback_data: "comprefresh:" + campaign.id }]],
+      } : undefined);
     }
   }
 }
@@ -1788,11 +1818,32 @@ export default {
     const isDirector = url.pathname === "/webhook/director";
     const isSecretary = url.pathname === "/webhook/secretary";
     if (!isModel && !isDirector && !isSecretary) return json({ error: "Not found" }, 404);
+    const route = isModel ? "model" : isDirector ? "director" : "secretary";
     const secret = isModel ? env.MODEL_WEBHOOK_SECRET : isDirector ? env.DIRECTOR_WEBHOOK_SECRET : env.SECRETARY_WEBHOOK_SECRET;
-    if (!secret || request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== secret) return json({ error: "Unauthorized" }, 401);
+    const suppliedSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+    if (!secret || suppliedSecret !== secret) {
+      console.warn("Telegram webhook authorization rejected", {
+        route, method: request.method, secretConfigured: Boolean(secret),
+        secretHeaderPresent: suppliedSecret !== null, secretHeaderLength: suppliedSecret?.length ?? 0,
+        configuredSecretLength: secret?.length ?? 0,
+      });
+      return json({ error: "Unauthorized" }, 401);
+    }
     let update: TelegramUpdate;
     try { update = await request.json() as TelegramUpdate; }
-    catch { return json({ error: "Invalid JSON" }, 400); }
+    catch (error) {
+      console.error("Telegram webhook received invalid JSON", { route, error: compositeErrorText(error) });
+      return json({ error: "Invalid JSON" }, 400);
+    }
+    console.info("Telegram webhook update received", {
+      route, updateId: update.update_id ?? null,
+      updateType: update.message ? "message" : update.callback_query ? "callback_query" : "other",
+      chatType: update.message?.chat?.type ?? update.callback_query?.message?.chat?.type ?? null,
+      chatId: update.message?.chat?.id ?? update.callback_query?.message?.chat?.id ?? null,
+      senderId: update.message?.from?.id ?? update.callback_query?.from?.id ?? null,
+      text: (update.message?.text ?? "").slice(0, 100),
+      callbackData: (update.callback_query?.data ?? "").slice(0, 80),
+    });
     try {
       const isCompositeUpdate = isSecretary && (
         /^\/comp(?:@\w+)?\s+/i.test(update.message?.text ?? "") ||
@@ -1809,9 +1860,10 @@ export default {
       if (isDirector && update.callback_query) await handleDirectorCallback(env, update.callback_query);
       if (isSecretary && update.message) await handleSecretaryMessage(env, update.message);
       if (isSecretary && update.callback_query) await handleSecretaryCallback(env, update.callback_query);
+      console.info("Telegram webhook update processed", { route, updateId: update.update_id ?? null });
       return json({ ok: true });
     } catch (error) {
-      console.error("Webhook handler failed", error);
+      console.error("Webhook handler failed", { route, updateId: update.update_id ?? null, error: compositeErrorText(error) });
       return json({ ok: false }, 500);
     }
   },
