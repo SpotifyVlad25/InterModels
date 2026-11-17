@@ -732,7 +732,11 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
     .bind(String(message.chat.id), threadId, senderId, albumId).run();
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
-  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "Готово: альбом из 4 фотографий для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранён в правильном порядке." });
+  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+    chat_id: message.chat.id, message_thread_id: threadId,
+    text: "Готово: альбом из 4 фотографий для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранён в правильном порядке.",
+    reply_markup: { inline_keyboard: [[{ text: "➕ Создать фотоанкету", callback_data: "photo:create" }]] },
+  });
 }
 async function sendCompositePng(env: Env, chatId: number, threadId: number, png: Uint8Array, caption: string): Promise<number> {
   const endpoint = `https://api.telegram.org/bot${env.SECRETARY_BOT_TOKEN}/`;
@@ -1059,7 +1063,9 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     .bind(next, JSON.stringify(stagedPhotos), String(message.chat.id), message.message_thread_id, senderId).run();
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(batch.model_id).first<{first_name:string;last_name:string}>();
   if (next === 5) await saveSecretaryPhotoSet(env, batch.model_id, stagedPhotos, senderId, message.chat.id, message.message_thread_id);
-  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: next === 5 ? "Готово: для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранены все 4 фотографии." : "Фото " + batch.next_position + " из 4 принято. Осталось " + (4 - batch.next_position) + "." });
+  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: next === 5 ? "Готово: для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранены все 4 фотографии." : "Фото " + batch.next_position + " из 4 принято. Осталось " + (4 - batch.next_position) + ".",
+    ...(next === 5 ? { reply_markup: { inline_keyboard: [[{ text: "➕ Создать фотоанкету", callback_data: "photo:create" }]] } } : {}),
+  });
 }
 async function sendSecretaryCompositeSources(env: Env, chatId: number, model: SecretaryModelRow): Promise<void> {
   const result = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position").bind(model.id).all<{position:number;telegram_file_id:string}>();
@@ -1127,6 +1133,26 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     return;
   }
   const data = callback.data ?? "";
+  if (data === "photo:create") {
+    const msg = callback.message;
+    if (!msg || msg.chat.type !== "supergroup" || !msg.message_thread_id) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Кнопка работает только в теме «MODEL BANK».", show_alert: true });
+      return;
+    }
+    const topic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_photo_topics WHERE id = 1")
+      .first<{ chat_id: string; thread_id: number }>();
+    if (!topic || topic.chat_id !== String(msg.chat.id) || topic.thread_id !== msg.message_thread_id) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Это не зарегистрированная тема MODEL BANK.", show_alert: true });
+      return;
+    }
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Готово. Можно загружать фото." });
+    await telegram(env.SECRETARY_BOT_TOKEN, "editMessageReplyMarkup", { chat_id: msg.chat.id, message_id: msg.message_id, reply_markup: { inline_keyboard: [] } });
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+      chat_id: msg.chat.id, message_thread_id: msg.message_thread_id,
+      text: "Начните новую фотоанкету: отправьте первое фото с подписью «Имя Фамилия», затем ещё три фото подряд (или одним альбомом из четырёх).",
+    });
+    return;
+  }
   if (data === "photo_replace:yes" || data === "photo_replace:no") {
     const msg = callback.message;
     if (!msg || msg.chat.type !== "supergroup" || !msg.message_thread_id) {
@@ -1148,7 +1174,11 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       }
       await saveSecretaryPhotoSet(env, pendingPhotoSet.model_id, newPhotos, String(callback.from.id), msg.chat.id, msg.message_thread_id);
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Фотографии заменены." });
-      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: msg.chat.id, message_thread_id: msg.message_thread_id, text: "✅ Новые фотографии успешно сохранены." });
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: msg.chat.id, message_thread_id: msg.message_thread_id,
+        text: "✅ Новые фотографии успешно сохранены.",
+        reply_markup: { inline_keyboard: [[{ text: "➕ Создать фотоанкету", callback_data: "photo:create" }]] },
+      });
     } else {
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Оставили прежние фотографии." });
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: msg.chat.id, message_thread_id: msg.message_thread_id, text: "Хорошо, прежние фотографии оставлены без изменений." });
