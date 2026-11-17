@@ -100,6 +100,56 @@ async function createRequest(
   await sendModel(env, replyChatId, "Совпадение найдено. Заявка отправлена директору на проверку. Доступ откроется только после её подтверждения.", replyThreadId);
 }
 
+
+const PROFILE_STEPS = [
+  { state: "profile_height", field: "height_cm", prompt: "Укажите рост в сантиметрах (например, 183). Можно отправить «пропустить».", numeric: true },
+  { state: "profile_weight", field: "weight_kg", prompt: "Укажите вес в килограммах (например, 72). Можно отправить «пропустить».", numeric: true },
+  { state: "profile_bust", field: "bust_cm", prompt: "Обхват груди в сантиметрах. Можно отправить «пропустить».", numeric: true },
+  { state: "profile_waist", field: "waist_cm", prompt: "Обхват талии в сантиметрах. Можно отправить «пропустить».", numeric: true },
+  { state: "profile_hips", field: "hips_cm", prompt: "Обхват бёдер в сантиметрах. Можно отправить «пропустить».", numeric: true },
+  { state: "profile_clothing", field: "clothing_size", prompt: "Укажите размер одежды (например, 46 / M). Можно отправить «пропустить».", numeric: false },
+  { state: "profile_shoe", field: "shoe_size", prompt: "Укажите размер обуви (например, 42). Можно отправить «пропустить».", numeric: false },
+  { state: "profile_hair", field: "hair_color", prompt: "Укажите цвет волос. Можно отправить «пропустить».", numeric: false },
+  { state: "profile_eyes", field: "eye_color", prompt: "Укажите цвет глаз. Можно отправить «пропустить».", numeric: false },
+] as const;
+async function beginModelProfile(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
+  await env.DB.prepare("INSERT INTO model_profiles (model_id) SELECT id FROM models WHERE telegram_user_id = ? ON CONFLICT(model_id) DO NOTHING").bind(telegramId).run();
+  const first = PROFILE_STEPS[0];
+  await env.DB.prepare("INSERT INTO bot_sessions (telegram_user_id,state,data_json,updated_at) VALUES (?, ?, '{}', CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state=excluded.state,data_json='{}',updated_at=CURRENT_TIMESTAMP").bind(telegramId, first.state).run();
+  await sendModel(env, chatId, "Подключение подтверждено! Давайте заполним вашу анкету. Это займёт несколько коротких шагов.\n\n" + first.prompt, threadId);
+}
+async function handleModelProfileStep(env: Env, telegramId: string, chatId: number, text: string, threadId?: number): Promise<boolean> {
+  const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?").bind(telegramId).first<{state:string}>();
+  const index = PROFILE_STEPS.findIndex((step) => step.state === session?.state);
+  if (index < 0) return false;
+  const step = PROFILE_STEPS[index], value = text.trim(), skipped = /^(пропустить|skip|—)$/i.test(value);
+  let stored: string | number | null = skipped ? null : value;
+  if (!skipped && step.numeric) {
+    const number = Number(value.replace(",", "."));
+    if (!Number.isFinite(number) || number <= 0 || number > 300) {
+      await sendModel(env, chatId, "Введите корректное число или отправьте «пропустить».\n\n" + step.prompt, threadId); return true;
+    }
+    stored = number;
+  }
+  await env.DB.prepare("INSERT INTO model_profiles (model_id) SELECT id FROM models WHERE telegram_user_id = ? ON CONFLICT(model_id) DO NOTHING").bind(telegramId).run();
+  await env.DB.prepare(`UPDATE model_profiles SET ${step.field} = ?, updated_at = CURRENT_TIMESTAMP WHERE model_id = (SELECT id FROM models WHERE telegram_user_id = ?)`).bind(stored, telegramId).run();
+  const next = PROFILE_STEPS[index + 1];
+  if (next) {
+    await env.DB.prepare("UPDATE bot_sessions SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE telegram_user_id = ?").bind(next.state, telegramId).run();
+    await sendModel(env, chatId, next.prompt, threadId);
+  } else {
+    await env.DB.prepare("UPDATE bot_sessions SET state = 'profile_complete', updated_at = CURRENT_TIMESTAMP WHERE telegram_user_id = ?").bind(telegramId).run();
+    await sendModel(env, chatId, "Спасибо! Основные параметры анкеты сохранены. Если нужно изменить данные, отправьте /profile.", threadId);
+  }
+  return true;
+}
+async function showModelProfilePrompt(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
+  const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?").bind(telegramId).first<{state:string}>();
+  const step = PROFILE_STEPS.find((item) => item.state === session?.state);
+  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\n\n" + step.prompt, threadId);
+  else await sendModel(env, chatId, "Ваша анкета подключена. Отправьте /profile, чтобы заполнить или обновить параметры.", threadId);
+}
+
 async function handleModelMessage(env: Env, message: TelegramMessage): Promise<void> {
   const user = message.from;
   if (!user || !["private", "group", "supergroup"].includes(message.chat.type)) return;
@@ -107,19 +157,24 @@ async function handleModelMessage(env: Env, message: TelegramMessage): Promise<v
   const replyThreadId = message.message_thread_id;
   if (message.text?.startsWith("/start")) {
     await saveTopic(env, "model", message);
-    await env.DB.prepare(
-      `INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
-       VALUES (?, 'awaiting_name', '{}', CURRENT_TIMESTAMP)
-       ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', data_json = '{}', updated_at = CURRENT_TIMESTAMP`,
-    ).bind(String(user.id)).run();
+    const linked = await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(String(user.id)).first<{id:string}>();
+    if (linked) { await showModelProfilePrompt(env, String(user.id), replyChatId, replyThreadId); return; }
+    await env.DB.prepare(`INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
+      VALUES (?, 'awaiting_name', '{}', CURRENT_TIMESTAMP)
+      ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', data_json = '{}', updated_at = CURRENT_TIMESTAMP`).bind(String(user.id)).run();
     await telegram(env.MODEL_BOT_TOKEN, "sendMessage", {
-      chat_id: replyChatId,
-      ...(replyThreadId ? { message_thread_id: replyThreadId } : {}),
+      chat_id: replyChatId, ...(replyThreadId ? { message_thread_id: replyThreadId } : {}),
       text: "Добро пожаловать в InterModels!\n\nВведите имя и фамилию точно так, как они указаны в агентстве. Либо отправьте свой номер телефона кнопкой ниже.",
       reply_markup: { keyboard: [[{ text: "Поделиться контактом", request_contact: true }]], resize_keyboard: true, one_time_keyboard: true },
     });
     return;
   }
+  if (message.text === "/profile") {
+    const linked = await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(String(user.id)).first<{id:string}>();
+    if (!linked) { await sendModel(env, replyChatId, "Сначала дождитесь подтверждения подключения директором.", replyThreadId); return; }
+    await beginModelProfile(env, String(user.id), replyChatId, replyThreadId); return;
+  }
+  if (message.text && await handleModelProfileStep(env, String(user.id), replyChatId, message.text, replyThreadId)) return;
   if (message.contact) {
     if (message.contact.user_id !== user.id) {
       await sendModel(env, replyChatId, "Отправьте именно свой контакт через кнопку Telegram, а не контакт другого человека.", replyThreadId);
@@ -211,7 +266,8 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
     await env.DB.prepare("UPDATE registration_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP, decided_by = ? WHERE id = ? AND status = 'pending'")
       .bind(String(callback.from.id), requestId).run();
     await env.DB.prepare("INSERT INTO model_profiles (model_id) VALUES (?) ON CONFLICT(model_id) DO NOTHING").bind(modelId).run();
-    await sendModel(env, req.telegram_user_id, `Добро пожаловать в InterModels, ${model.first_name}! Ваша регистрация подтверждена. Следующим этапом добавим заполнение параметров профиля.`);
+    await sendModel(env, req.telegram_user_id, `Добро пожаловать в InterModels, ${model.first_name}! Ваша регистрация подтверждена.`);
+    await beginModelProfile(env, req.telegram_user_id, Number(req.telegram_user_id));
     await answerCallback(env, callback, "Модель успешно подключена.");
     if (callback.message) await telegram(env.DIRECTOR_BOT_TOKEN, "editMessageReplyMarkup", {
       chat_id: callback.message.chat.id, message_id: callback.message.message_id, reply_markup: { inline_keyboard: [] },
