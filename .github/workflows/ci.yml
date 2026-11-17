@@ -16,3 +16,5 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run typecheck
+      - name: Verify D1 migrations locally
+        run: npx wrangler d1 migrations apply intermodels-db --local
