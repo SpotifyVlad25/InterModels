@@ -340,26 +340,32 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       return;
     }
     const model = matches[0];
-    await env.DB.prepare("DELETE FROM model_telegram_photos WHERE model_id = ?").bind(model.id).run();
-    await env.DB.prepare("INSERT INTO model_telegram_photos (model_id, position, telegram_file_id, telegram_file_unique_id, uploaded_by, source_chat_id, source_thread_id) VALUES (?, 1, ?, ?, ?, ?, ?)")
-      .bind(model.id, bestPhoto.file_id, bestPhoto.file_unique_id, senderId, String(message.chat.id), message.message_thread_id).run();
-    await env.DB.prepare("INSERT INTO secretary_photo_batches (chat_id, thread_id, uploader_id, model_id, next_position, updated_at) VALUES (?, ?, ?, ?, 2, CURRENT_TIMESTAMP) ON CONFLICT(chat_id, thread_id, uploader_id) DO UPDATE SET model_id=excluded.model_id, next_position=2, updated_at=CURRENT_TIMESTAMP")
-      .bind(String(message.chat.id), message.message_thread_id, senderId, model.id).run();
+    const initialPhotos = [{ file_id: bestPhoto.file_id, file_unique_id: bestPhoto.file_unique_id }];
+    await env.DB.prepare("INSERT INTO secretary_photo_batches (chat_id, thread_id, uploader_id, model_id, next_position, photos_json, updated_at) VALUES (?, ?, ?, ?, 2, ?, CURRENT_TIMESTAMP) ON CONFLICT(chat_id, thread_id, uploader_id) DO UPDATE SET model_id=excluded.model_id, next_position=2, photos_json=excluded.photos_json, updated_at=CURRENT_TIMESTAMP")
+      .bind(String(message.chat.id), message.message_thread_id, senderId, model.id, JSON.stringify(initialPhotos)).run();
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Принято: " + model.first_name + " " + model.last_name + ". Фото 1 из 4. Отправьте ещё три фото подряд." });
     return;
   }
-  const batch = await env.DB.prepare("SELECT model_id, next_position FROM secretary_photo_batches WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND updated_at >= datetime('now', '-30 minutes')")
-    .bind(String(message.chat.id), message.message_thread_id, senderId).first<{model_id:string;next_position:number}>();
+  const batch = await env.DB.prepare("SELECT model_id, next_position, photos_json FROM secretary_photo_batches WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND updated_at >= datetime('now', '-30 minutes')")
+    .bind(String(message.chat.id), message.message_thread_id, senderId).first<{model_id:string;next_position:number;photos_json:string}>();
   if (!batch || batch.next_position < 2 || batch.next_position > 4) {
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Начните набор с первого фото и подписи «Имя Фамилия»." });
     return;
   }
-  await env.DB.prepare("INSERT INTO model_telegram_photos (model_id, position, telegram_file_id, telegram_file_unique_id, uploaded_by, source_chat_id, source_thread_id) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(model_id, position) DO UPDATE SET telegram_file_id=excluded.telegram_file_id, telegram_file_unique_id=excluded.telegram_file_unique_id, uploaded_by=excluded.uploaded_by, source_chat_id=excluded.source_chat_id, source_thread_id=excluded.source_thread_id, updated_at=CURRENT_TIMESTAMP")
-    .bind(batch.model_id, batch.next_position, bestPhoto.file_id, bestPhoto.file_unique_id, senderId, String(message.chat.id), message.message_thread_id).run();
+  const stagedPhotos = JSON.parse(batch.photos_json) as Array<{file_id:string;file_unique_id:string}>;
+  stagedPhotos.push({ file_id: bestPhoto.file_id, file_unique_id: bestPhoto.file_unique_id });
   const next = batch.next_position + 1;
-  await env.DB.prepare("UPDATE secretary_photo_batches SET next_position = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND thread_id = ? AND uploader_id = ?")
-    .bind(next, String(message.chat.id), message.message_thread_id, senderId).run();
+  await env.DB.prepare("UPDATE secretary_photo_batches SET next_position = ?, photos_json = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND thread_id = ? AND uploader_id = ?")
+    .bind(next, JSON.stringify(stagedPhotos), String(message.chat.id), message.message_thread_id, senderId).run();
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(batch.model_id).first<{first_name:string;last_name:string}>();
+  if (next === 5) {
+    await env.DB.prepare("DELETE FROM model_telegram_photos WHERE model_id = ?").bind(batch.model_id).run();
+    for (let index = 0; index < stagedPhotos.length; index++) {
+      const photo = stagedPhotos[index];
+      await env.DB.prepare("INSERT INTO model_telegram_photos (model_id, position, telegram_file_id, telegram_file_unique_id, uploaded_by, source_chat_id, source_thread_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(batch.model_id, index + 1, photo.file_id, photo.file_unique_id, senderId, String(message.chat.id), message.message_thread_id).run();
+    }
+  }
   await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: next === 5 ? "Готово: для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранены все 4 фотографии." : "Фото " + batch.next_position + " из 4 принято. Осталось " + (4 - batch.next_position) + "." });
 }
 async function sendSecretaryCompositeSources(env: Env, chatId: number, model: SecretaryModelRow): Promise<void> {
