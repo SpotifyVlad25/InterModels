@@ -99,18 +99,16 @@ async function createRequest(
 
   const candidateLines = candidates.map((m) => `• ${m.first_name} ${m.last_name} (анкета ${m.id})`).join("\n");
   const userLabel = user.username ? `@${user.username}` : "без username";
-  const message = `Мария, поступила новая заявка на подключение InterModels\n\nПользователь: ${user.first_name ?? ""} ${user.last_name ?? ""} (${userLabel})\nTelegram ID: ${user.id}\nСпособ поиска: ${method === "name" ? "ФИО" : "телефон"}\nВведённые данные: ${submittedValue}\n\nНайденные анкеты:\n${candidateLines}\n\nВыберите правильную анкету или отклоните заявку.`;
+  const message = `Поступила новая заявка на подключение InterModels\n\nПользователь: ${user.first_name ?? ""} ${user.last_name ?? ""} (${userLabel})\nTelegram ID: ${user.id}\nСпособ поиска: ${method === "name" ? "ФИО" : "телефон"}\nВведённые данные: ${submittedValue}\n\nНайденные анкеты:\n${candidateLines}\n\nДиректору отправлено уведомление с кнопками для решения. Заявка также отображается в рабочем кабинете.`;
   const keyboard = [
     ...candidates.map((m) => [{ text: `Принять: ${m.first_name} ${m.last_name}`.slice(0, 60), callback_data: `a:${requestId}:${m.id}` }]),
     [{ text: "Отклонить заявку", callback_data: `r:${requestId}` }],
   ];
   await sendDirector(env, message, { inline_keyboard: keyboard });
-  // The owner has full request-management permissions and receives the same decision controls as the director.
   if (env.OWNER_TELEGRAM_ID && env.OWNER_TELEGRAM_ID !== env.DIRECTOR_TELEGRAM_ID) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: env.OWNER_TELEGRAM_ID,
       text: message,
-      reply_markup: { inline_keyboard: keyboard },
       disable_web_page_preview: true,
     });
   }
@@ -256,21 +254,8 @@ async function answerCallback(env: Env, callback: TelegramCallbackQuery, text: s
     callback_query_id: callback.id, text, show_alert: alert,
   });
 }
-async function hasStaffPermission(env: Env, telegramId: string, permission: string): Promise<boolean> {
-  const row = await env.DB.prepare(
-    "SELECT permissions_json FROM agency_staff_access WHERE telegram_user_id = ? AND is_active = 1",
-  ).bind(telegramId).first<{ permissions_json: string }>();
-  if (!row) return false;
-  try {
-    const permissions = JSON.parse(row.permissions_json) as Record<string, boolean>;
-    return permissions[permission] === true || permissions["*"] === true;
-  } catch {
-    return false;
-  }
-}
-async function canManageRequests(env: Env, telegramId: string): Promise<boolean> {  // OWNER_TELEGRAM_ID is the temporary full-access account during setup.
-  if (hasDirectorAccess(env, telegramId)) return true;
-  return hasStaffPermission(env, telegramId, "requests.manage");
+async function canManageRequests(env: Env, telegramId: string): Promise<boolean> {
+  return hasDirectorAccess(env, telegramId);
 }
 async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery): Promise<void> {
   const data = callback.data ?? "";
@@ -387,10 +372,8 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
   if (!message.from || !["private", "group", "supergroup"].includes(message.chat.type)) return;
   const senderId = String(message.from.id);
   const isDirector = hasDirectorAccess(env, senderId);
-  const isOwner = Boolean(env.OWNER_TELEGRAM_ID) && senderId === env.OWNER_TELEGRAM_ID;
-  const isStaff = await hasStaffPermission(env, senderId, "profile.view") || await hasStaffPermission(env, senderId, "composite.generate");
   const isGroup = message.chat.type === "group" || message.chat.type === "supergroup";
-  if (!isDirector && !isOwner && !isStaff) {
+  if (!isDirector) {
     if (!isGroup) await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: `Доступ пока не подключён. Ваш Telegram ID: ${senderId}. Передайте его администратору InterModels для активации.` });
     return;
   }
@@ -399,19 +382,13 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
       ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
-      text: isDirector
-        ? "InterModels Director подключён. У вас полный доступ."
-        : isOwner
-          ? "InterModels Owner подключён. На период настройки у вас временный полный доступ, включая решения по заявкам."
-          : "InterModels Assistant подключён. Ваши возможности определяются выданными директором правами.",
+      text: "InterModels Director подключён. У вас полный доступ.",
     });
   } else if (message.text?.startsWith("/help")) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
       ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
-      text: isDirector || isOwner
-        ? "Команды:\n/start — подключить бота\n/help — помощь\n\nУ вас полный доступ к управлению заявками."
-        : "Команды:\n/start — подключить бота\n/help — помощь\n\nДоступные действия определяются выданными вам правами.",
+      text: "Команды:\n/start — подключить бота\n/help — помощь\n\nУ вас полный доступ к управлению агентством.",
     });
   }
 }
@@ -419,8 +396,7 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
 
 
 async function secretaryAllowed(env: Env, telegramId: string): Promise<boolean> {
-  if (hasDirectorAccess(env, telegramId)) return true;
-  return hasStaffPermission(env, telegramId, "composite.generate");
+  return hasDirectorAccess(env, telegramId);
 }
 async function findSecretaryModels(env: Env, surname: string): Promise<SecretaryModelRow[]> {
   // SQLite's built-in lower() only folds ASCII by default, so Cyrillic surnames
@@ -1306,12 +1282,10 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
   await generateCompositeInTopic(env, callback.message, model.first_name + " " + model.last_name);
 }
 
-const STAFF_PERMISSIONS = ["profile.view","profile.edit","photos.manage","composite.generate","requests.manage","staff.manage"] as const;
 const DELEGATED_ADMIN_TELEGRAM_IDS = new Set(["727737302"]);
 function hasDirectorAccess(env: Env, telegramId: string): boolean {
   return telegramId === env.OWNER_TELEGRAM_ID || telegramId === env.DIRECTOR_TELEGRAM_ID || DELEGATED_ADMIN_TELEGRAM_IDS.has(telegramId);
 }
-type StaffPermission = typeof STAFF_PERMISSIONS[number];
 interface MiniAppActor { id: string; first_name?: string; last_name?: string; username?: string; }
 function bytesToHex(bytes: ArrayBuffer): string { return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2,"0")).join(""); }
 async function hmacSha256(key: ArrayBuffer | Uint8Array, data: string): Promise<ArrayBuffer> {
@@ -1355,9 +1329,8 @@ async function miniAppActor(request: Request, env: Env): Promise<MiniAppAuthResu
   if (!match) return { actor: null, reason: "authorization_header_missing_or_invalid" };
   return validateMiniAppInitData(match[1], env.DIRECTOR_BOT_TOKEN);
 }
-async function actorHasPermission(env: Env, actorId: string, permission: StaffPermission): Promise<boolean> {
-  if(hasDirectorAccess(env, actorId)) return true;
-  return hasStaffPermission(env,actorId,permission);
+async function actorHasPermission(env: Env, actorId: string, _permission: string): Promise<boolean> {
+  return hasDirectorAccess(env, actorId);
 }
 function appHtml(): Response {
   const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>InterModels</title><script src="https://telegram.org/js/telegram-web-app.js"></script><style>
@@ -1394,11 +1367,7 @@ input,select,button{box-sizing:border-box;width:100%;padding:11px;margin:5px 0;b
   <label>День 1 · утро<input id="time1" type="time" value="09:00"></label><label>День 1 · вечер<input id="time2" type="time" value="20:00"></label>
   <label>День 2 · утро<input id="time3" type="time" value="09:00"></label><label>День 2 · вечер<input id="time4" type="time" value="20:00"></label></div>
   <button id="saveSettings">Сохранить расписание</button></section>
-  <section class="panel" id="accessPanel"><h2>Управление доступом</h2><h3>Выдать доступ</h3><input id="uid" inputmode="numeric" placeholder="Telegram ID помощника"><input id="name" placeholder="Имя (необязательно)">
-  <select id="role"><option value="helper">Помощник</option><option value="viewer">Наблюдатель</option></select>
-  <div id="perms"><label class="perm"><input type="checkbox" value="profile.view" checked> Просмотр анкет</label><label class="perm"><input type="checkbox" value="profile.edit"> Редактирование анкет</label><label class="perm"><input type="checkbox" value="photos.manage"> Управление фотографиями</label><label class="perm"><input type="checkbox" value="composite.generate"> Создание композиток</label><label class="perm"><input type="checkbox" value="requests.manage"> Решение заявок</label></div>
-  <button id="grant">Выдать права</button><h3>Действующие доступы</h3><div id="staff">Загрузка…</div></section>
-  <nav class="im-bottom-nav" aria-label="Основная навигация"><a href="#home" data-page="home" class="active"><span class="nav-icon">⌂</span>Главная</a><a href="#models" data-page="models"><span class="nav-icon">👥</span>Модели</a><a href="#composites" data-page="composites"><span class="nav-icon">▦</span>Композитки</a><a href="#tasks" data-page="tasks"><span class="nav-icon">☑</span>Задания</a><a href="#more" data-page="more"><span class="nav-icon">•••</span>Ещё</a></nav>
+  <nav class="im-bottom-nav" aria-label="Основная навигация"><a href="#home" data-page="home" class="active"><span class="nav-icon">⌂</span>Главная</a><a href="#models" data-page="models"><span class="nav-icon">👥</span>Модели</a><a href="#composites" data-page="composites"><span class="nav-icon">▦</span>Композитки</a><a href="#tasks" data-page="tasks"><span class="nav-icon">☑</span>Задания</a></nav>
   <script>
   const st=document.getElementById('status');let models=[];const themes=['emerald','ruby','sapphire','amethyst','topaz'];let themeUser='anonymous';const themePanel=document.getElementById('themePanel');
   // Build real, mutually exclusive app screens; keep existing feature DOM and handlers intact.
@@ -1409,10 +1378,9 @@ input,select,button{box-sizing:border-box;width:100%;padding:11px;margin:5px 0;b
     home:['#dashboardHome','.im-greeting','#status','.im-metrics','.im-section'],
     models:['#modelsPanel'],
     composites:['#compositesPanel'],
-    tasks:['#tasksPanel','#schedulePanel'],
-    more:['#accessPanel']
+    tasks:['#tasksPanel','#schedulePanel']
   };
-  const pageTitles={models:'Модели',composites:'Композитки',tasks:'Задания',more:'Управление'};
+  const pageTitles={models:'Модели',composites:'Композитки',tasks:'Задания'};
   for(const [key,selectors] of Object.entries(pageNodes)){
     const page=document.createElement('section');page.className='im-page'+(key==='home'?' active':'');page.dataset.screen=key;
     if(pageTitles[key]){const title=document.createElement('div');title.className='im-page-title';title.textContent=pageTitles[key];page.append(title)}
@@ -1474,9 +1442,7 @@ input,select,button{box-sizing:border-box;width:100%;padding:11px;margin:5px 0;b
   document.getElementById('search').oninput=renderModels;document.getElementById('filter').onchange=renderModels;
   document.getElementById('saveSettings').onclick=async()=>{try{const body={cycle_day:Number(document.getElementById('cycleDay').value),timezone:document.getElementById('timezone').value.trim(),reminder_times:[1,2,3,4].map(i=>document.getElementById('time'+i).value)};await api('PUT','/api/director/refresh-settings',body);st.textContent='Расписание сохранено.'}catch(e){st.textContent=e.message}};
   async function loadSettings(){try{const d=await api('GET','/api/director/refresh-settings');const x=d.settings;document.getElementById('cycleDay').value=x.cycle_day;document.getElementById('timezone').value=x.timezone;x.reminder_times.forEach((v,i)=>document.getElementById('time'+(i+1)).value=v)}catch(e){st.textContent=e.message}}
-  async function loadStaff(){try{const d=await api('GET','/api/director/staff');const root=document.getElementById('staff');root.innerHTML='';if(!d.staff.length){root.textContent='Помощники пока не добавлены.';return}for(const p of d.staff){const el=document.createElement('div');el.className='person';const title=document.createElement('strong');title.textContent=(p.display_name||'Без имени')+' · '+p.telegram_user_id;const info=document.createElement('div');info.className='muted';info.textContent=p.role+' · '+p.permissions.join(', ');const btn=document.createElement('button');btn.textContent='Отозвать';btn.onclick=async()=>{try{await api('DELETE','/api/director/staff?telegram_user_id='+encodeURIComponent(p.telegram_user_id));await loadStaff()}catch(e){st.textContent=e.message}};el.append(title,info,btn);root.append(el)}}catch(e){document.getElementById('staff').textContent=e.message}}
-  document.getElementById('grant').onclick=async()=>{try{const id=document.getElementById('uid').value.trim(),permissions=[...document.querySelectorAll('#perms input:checked')].map(x=>x.value);await api('POST','/api/director/staff',{telegram_user_id:id,display_name:document.getElementById('name').value.trim(),role:document.getElementById('role').value,permissions});st.textContent='Доступ сохранён.';document.getElementById('uid').value='';await loadStaff()}catch(e){st.textContent=e.message}};
-  initTheme();loadModels();loadStats();loadSettings();loadStaff();loadCompositeJobs();loadDashboard();
+  initTheme();loadModels();loadStats();loadSettings();loadCompositeJobs();loadDashboard();
   </script></body></html>`;
   return new Response(html,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","content-security-policy":"default-src 'self' https://telegram.org; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors https://web.telegram.org https://*.telegram.org"}});
 }
@@ -1601,37 +1567,7 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
       return json({ ok: true, ...result });
     } catch (error) { return json({ error: error instanceof Error ? error.message : "Не удалось поставить композитки в очередь." }, 409); }
   }
-  if (path !== "/api/director/staff") return json({ error: "Not found" }, 404);
-  if (!(await actorHasPermission(env, actor.id, "staff.manage"))) return json({ error: "Недостаточно прав." }, 403);
-  if (request.method === "GET") {
-    const result = await env.DB.prepare("SELECT telegram_user_id,display_name,role,permissions_json,is_active FROM agency_staff_access ORDER BY created_at DESC").all<{ telegram_user_id: string; display_name: string | null; role: string; permissions_json: string; is_active: number }>();
-    const staff = (result.results ?? []).map((row) => {
-      let permissions: string[] = [];
-      try { permissions = Object.keys(JSON.parse(row.permissions_json)).filter((key) => STAFF_PERMISSIONS.includes(key as StaffPermission)); } catch {}
-      return { telegram_user_id: row.telegram_user_id, display_name: row.display_name, role: row.role, permissions, is_active: row.is_active === 1 };
-    });
-    return json({ ok: true, staff });
-  }
-  if (request.method === "POST") {
-    let body: any; try { body = await request.json(); } catch { return json({ error: "Некорректный JSON." }, 400); }
-    const id = String(body?.telegram_user_id ?? "").trim(), role = body?.role;
-    const displayName = typeof body?.display_name === "string" ? body.display_name.trim().slice(0, 100) : null;
-    const permissions: string[] = Array.isArray(body?.permissions) ? Array.from(new Set<string>(body.permissions.filter((p: unknown) => typeof p === "string").map((p: unknown) => String(p)))) : [];
-    if (!/^[0-9]{5,20}$/.test(id) || !["helper", "viewer"].includes(role) || permissions.some((p) => !STAFF_PERMISSIONS.includes(p as StaffPermission) || p === "staff.manage")) return json({ error: "Проверьте Telegram ID, роль и разрешения." }, 400);
-    if (hasDirectorAccess(env, id)) return json({ error: "Нельзя менять доступ владельца, директора или назначенного администратора." }, 400);
-    if (role === "viewer" && permissions.some((p) => p !== "profile.view")) return json({ error: "Наблюдателю доступен только просмотр." }, 400);
-    await env.DB.prepare("INSERT INTO agency_staff_access(telegram_user_id,display_name,role,permissions_json,granted_by) VALUES(?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET display_name=excluded.display_name,role=excluded.role,permissions_json=excluded.permissions_json,is_active=1,granted_by=excluded.granted_by,updated_at=CURRENT_TIMESTAMP").bind(id, displayName, role, JSON.stringify(Object.fromEntries(permissions.map((p) => [p, true]))), actor.id).run();
-    await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'staff.grant', ?)").bind(randomId(), actor.id, JSON.stringify({ telegram_user_id: id, role, permissions })).run();
-    return json({ ok: true });
-  }
-  if (request.method === "DELETE") {
-    const id = (url.searchParams.get("telegram_user_id") ?? "").trim();
-    if (!/^[0-9]{5,20}$/.test(id) || hasDirectorAccess(env, id)) return json({ error: "Некорректный или защищённый Telegram ID." }, 400);
-    await env.DB.prepare("UPDATE agency_staff_access SET is_active=0,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(id).run();
-    await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'staff.revoke', ?)").bind(randomId(), actor.id, JSON.stringify({ telegram_user_id: id })).run();
-    return json({ ok: true });
-  }
-  return json({ error: "Method not allowed" }, 405);
+  return json({ error: "Not found" }, 404);
 }
 
 function localDateParts(date: Date, timezone: string): { year: number; month: number; day: number; hour: number; minute: number } {
