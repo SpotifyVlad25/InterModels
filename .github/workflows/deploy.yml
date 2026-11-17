@@ -187,7 +187,7 @@ jobs:
               method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body)
             });
             const data = await response.json();
-            if (!data.ok && allowMissingChat && /chat not found/i.test(data.description || "")) {
+            if (!data.ok && allowMissingChat && /(chat|user) not found/i.test(data.description || "")) {
               console.log(`${method}: chat has not started this bot; per-chat reset skipped.`);
               return;
             }
