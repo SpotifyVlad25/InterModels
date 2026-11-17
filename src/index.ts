@@ -2,10 +2,12 @@ interface Env {
   DB: D1Database;
   MODEL_BOT_TOKEN: string;
   DIRECTOR_BOT_TOKEN: string;
+  SECRETARY_BOT_TOKEN: string;
   DIRECTOR_TELEGRAM_ID: string;
   OWNER_TELEGRAM_ID: string;
   MODEL_WEBHOOK_SECRET: string;
   DIRECTOR_WEBHOOK_SECRET: string;
+  SECRETARY_WEBHOOK_SECRET: string;
 }
 interface TelegramUser { id: number; first_name?: string; last_name?: string; username?: string; }
 interface TelegramMessage {
@@ -16,6 +18,11 @@ interface TelegramCallbackQuery { id: string; from: TelegramUser; data?: string;
 interface TelegramUpdate { message?: TelegramMessage; callback_query?: TelegramCallbackQuery; }
 interface ModelRow { id: string; first_name: string; last_name: string; phone: string | null; telegram_user_id: string | null; }
 interface RegistrationRow { id: string; telegram_user_id: string; candidate_model_ids: string; status: string; }
+interface SecretaryModelRow {
+  id: string; first_name: string; last_name: string;
+  height_cm: number | null; bust_cm: number | null; waist_cm: number | null; hips_cm: number | null;
+  clothing_size: string | null; shoe_size: string | null; hair_color: string | null; eye_color: string | null;
+}
 
 const json = (data: unknown, status = 200): Response => new Response(JSON.stringify(data), {
   status, headers: { "content-type": "application/json; charset=utf-8" },
@@ -264,6 +271,109 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
 }
 
 
+
+async function secretaryAllowed(env: Env, telegramId: string): Promise<boolean> {
+  if (telegramId === env.OWNER_TELEGRAM_ID || telegramId === env.DIRECTOR_TELEGRAM_ID) return true;
+  return hasStaffPermission(env, telegramId, "composite.generate");
+}
+async function findSecretaryModels(env: Env, surname: string): Promise<SecretaryModelRow[]> {
+  const result = await env.DB.prepare(
+    `SELECT m.id, m.first_name, m.last_name,
+      p.height_cm, p.bust_cm, p.waist_cm, p.hips_cm,
+      p.clothing_size, p.shoe_size, p.hair_color, p.eye_color
+     FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
+     WHERE m.is_active = 1 AND lower(m.last_name) LIKE lower(?)
+     ORDER BY m.last_name, m.first_name LIMIT 20`,
+  ).bind(`%${surname}%`).all<SecretaryModelRow>();
+  return result.results ?? [];
+}
+function secretaryProfileText(model: SecretaryModelRow): string {
+  const lines = [
+    `Анкета найдена: ${model.first_name} ${model.last_name}`,
+    model.height_cm != null ? `Рост: ${model.height_cm} см` : null,
+    model.bust_cm != null ? `Грудь: ${model.bust_cm} см` : null,
+    model.waist_cm != null ? `Талия: ${model.waist_cm} см` : null,
+    model.hips_cm != null ? `Бёдра: ${model.hips_cm} см` : null,
+    model.clothing_size ? `Одежда: ${model.clothing_size}` : null,
+    model.shoe_size ? `Обувь: ${model.shoe_size}` : null,
+    model.hair_color ? `Волосы: ${model.hair_color}` : null,
+    model.eye_color ? `Глаза: ${model.eye_color}` : null,
+  ].filter((line): line is string => Boolean(line));
+  lines.push("", "Генерация графической композитки ещё подключается. Сейчас доступен поиск анкеты и её параметров.");
+  return lines.join("\n");
+}
+async function sendSecretary(env: Env, chatId: number, text: string, replyMarkup?: Record<string, unknown>): Promise<void> {
+  const payload: Record<string, unknown> = { chat_id: chatId, text, disable_web_page_preview: true };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
+  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", payload);
+}
+async function handleSecretaryMessage(env: Env, message: TelegramMessage): Promise<void> {
+  if (!message.from || message.chat.type !== "private") return;
+  const userId = String(message.from.id);
+  if (!(await secretaryAllowed(env, userId))) {
+    await sendSecretary(env, message.chat.id, "Доступ к секретарю InterModels не подключён.");
+    return;
+  }
+  const text = (message.text ?? "").trim();
+  if (text.startsWith("/start") || text.startsWith("/help")) {
+    await sendSecretary(env, message.chat.id,
+      "Секретарь InterModels\n\n/comp Фамилия — найти анкету модели.\n\nЕсли совпадений несколько, выберите нужную модель из списка.");
+    return;
+  }
+  const command = text.match(/^\/comp(?:@\w+)?(?:\s+(.+))?$/i);
+  if (!command) {
+    await sendSecretary(env, message.chat.id, "Используйте команду: /comp Фамилия");
+    return;
+  }
+  const surname = (command[1] ?? "").trim();
+  if (!surname) {
+    await sendSecretary(env, message.chat.id, "Укажите фамилию: /comp Фамилия");
+    return;
+  }
+  if (surname.length > 80 || /[\r\n]/.test(surname)) {
+    await sendSecretary(env, message.chat.id, "Проверьте фамилию и попробуйте ещё раз.");
+    return;
+  }
+  const models = await findSecretaryModels(env, surname);
+  if (!models.length) {
+    await sendSecretary(env, message.chat.id, `Модели с фамилией «${surname}» не найдены.`);
+    return;
+  }
+  if (models.length === 1) {
+    await sendSecretary(env, message.chat.id, secretaryProfileText(models[0]));
+    return;
+  }
+  const keyboard = models.map((model) => [{
+    text: `${model.first_name} ${model.last_name}`.slice(0, 60),
+    callback_data: `comp:${model.id}`,
+  }]);
+  await sendSecretary(env, message.chat.id, "Найдено несколько моделей. Выберите нужную:", { inline_keyboard: keyboard });
+}
+async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery): Promise<void> {
+  if (!(await secretaryAllowed(env, String(callback.from.id)))) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
+      callback_query_id: callback.id, text: "Доступ не подключён.", show_alert: true,
+    });
+    return;
+  }
+  const match = (callback.data ?? "").match(/^comp:([a-zA-Z0-9_-]{1,50})$/);
+  if (!match || !callback.message || callback.message.chat.type !== "private") {
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Не удалось выбрать анкету." });
+    return;
+  }
+  const model = await env.DB.prepare(
+    `SELECT m.id, m.first_name, m.last_name,
+      p.height_cm, p.bust_cm, p.waist_cm, p.hips_cm,
+      p.clothing_size, p.shoe_size, p.hair_color, p.eye_color
+     FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
+     WHERE m.id = ? AND m.is_active = 1`,
+  ).bind(match[1]).first<SecretaryModelRow>();
+  await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
+    callback_query_id: callback.id, text: model ? "Модель выбрана." : "Анкета не найдена.",
+  });
+  if (model) await sendSecretary(env, callback.message.chat.id, secretaryProfileText(model));
+}
+
 const STAFF_PERMISSIONS = ["profile.view","profile.edit","photos.manage","composite.generate","requests.manage","staff.manage"] as const;
 type StaffPermission = typeof STAFF_PERMISSIONS[number];
 interface MiniAppActor { id: string; first_name?: string; last_name?: string; username?: string; }
@@ -339,8 +449,9 @@ export default {
     if (request.method !== "POST") return json({ error: "Not found" }, 404);
     const isModel = url.pathname === "/webhook/model";
     const isDirector = url.pathname === "/webhook/director";
-    if (!isModel && !isDirector) return json({ error: "Not found" }, 404);
-    const secret = isModel ? env.MODEL_WEBHOOK_SECRET : env.DIRECTOR_WEBHOOK_SECRET;
+    const isSecretary = url.pathname === "/webhook/secretary";
+    if (!isModel && !isDirector && !isSecretary) return json({ error: "Not found" }, 404);
+    const secret = isModel ? env.MODEL_WEBHOOK_SECRET : isDirector ? env.DIRECTOR_WEBHOOK_SECRET : env.SECRETARY_WEBHOOK_SECRET;
     if (!secret || request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== secret) return json({ error: "Unauthorized" }, 401);
     let update: TelegramUpdate;
     try { update = await request.json() as TelegramUpdate; }
@@ -349,6 +460,8 @@ export default {
       if (isModel && update.message) await handleModelMessage(env, update.message);
       if (isDirector && update.message) await handleDirectorMessage(env, update.message);
       if (isDirector && update.callback_query) await handleDirectorCallback(env, update.callback_query);
+      if (isSecretary && update.message) await handleSecretaryMessage(env, update.message);
+      if (isSecretary && update.callback_query) await handleSecretaryCallback(env, update.callback_query);
       return json({ ok: true });
     } catch (error) {
       console.error("Webhook handler failed", error);
