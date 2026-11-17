@@ -50,7 +50,13 @@ async function telegram(token: string, method: string, payload: Record<string, u
   });
   const result: any = await response.json();
   if (!response.ok || !result.ok) {
-    console.error("Telegram API error", method, result);
+    console.error("Telegram API error", {
+      method,
+      chatId: payload.chat_id ?? null,
+      threadId: payload.message_thread_id ?? null,
+      errorCode: result.error_code ?? response.status,
+      description: result.description ?? "Unknown Telegram API error",
+    });
     throw new Error(`Telegram API request failed: ${method}`);
   }
   return result;
@@ -168,6 +174,12 @@ async function handleModelMessage(env: Env, message: TelegramMessage): Promise<v
   if (message.chat.type !== "private") return;
   const user = message.from;
   if (!user) return;
+  console.info("Model private update", {
+    chatId: message.chat.id,
+    chatType: message.chat.type,
+    senderId: user.id,
+    command: (message.text ?? "").trim().slice(0, 80),
+  });
   const replyChatId = message.chat.id;
   const replyThreadId = message.message_thread_id;
   if (message.text?.startsWith("/start")) {
