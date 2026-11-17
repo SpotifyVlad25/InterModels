@@ -22,7 +22,7 @@ jobs:
           node-version: 22
 
       - name: Install Wrangler
-        run: npm install --no-save --no-audit --no-fund wrangler@4.45.0
+        run: npm install --no-save --no-audit --no-fund --legacy-peer-deps wrangler@4.45.0
 
       - name: Deploy temporary probe Worker
         id: deploy
@@ -36,7 +36,7 @@ jobs:
             echo "::error::Cloudflare credentials are not configured in GitHub Actions secrets."
             exit 1
           fi
-          npx wrangler deploy --config wrangler.probe.toml --account-id "$CLOUDFLARE_ACCOUNT_ID" 2>&1 | tee /tmp/probe-deploy.log
+          npx wrangler deploy --config wrangler.probe.toml 2>&1 | tee /tmp/probe-deploy.log
           PROBE_URL="$(grep -Eo 'https://[^[:space:]]+workers\.dev' /tmp/probe-deploy.log | tail -n 1 | sed 's/[),]$//')"
           if [ -z "$PROBE_URL" ]; then
             echo "::error::Could not determine the temporary Worker URL from Wrangler output."
@@ -57,7 +57,7 @@ jobs:
           node -e 'process.stdout.write(JSON.stringify({
             MODEL_BOT_TOKEN: process.env.MODEL_BOT_TOKEN,
             DIRECTOR_BOT_TOKEN: process.env.DIRECTOR_BOT_TOKEN
-          }))' | npx wrangler secret bulk --name intermodels-telegram-probe --config wrangler.probe.toml --account-id "$CLOUDFLARE_ACCOUNT_ID"
+          }))' | npx wrangler secret bulk --name intermodels-telegram-probe --config wrangler.probe.toml
 
       - name: Call probe Worker
         env:
@@ -75,5 +75,5 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-            npx wrangler delete --name intermodels-telegram-probe --force --account-id "$CLOUDFLARE_ACCOUNT_ID" || true
+            npx wrangler delete intermodels-telegram-probe --config wrangler.probe.toml --force || true
           fi
