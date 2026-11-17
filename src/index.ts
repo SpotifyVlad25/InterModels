@@ -486,12 +486,34 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
 }
 function compositeErrorText(error: unknown): string {
   if (error instanceof Error) return error.stack || error.message;
-  if (error instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(error)) || "ArrayBuffer (" + error.byteLength + " bytes)";
-  if (ArrayBuffer.isView(error)) {
-    const view = new Uint8Array(error.buffer, error.byteOffset, error.byteLength);
-    return new TextDecoder().decode(view) || Object.prototype.toString.call(error) + " (" + view.byteLength + " bytes)";
-  }
+  if (error instanceof ArrayBuffer) return "Binary error payload (" + error.byteLength + " bytes)";
+  if (ArrayBuffer.isView(error)) return "Binary error payload (" + error.byteLength + " bytes)";
   try { return JSON.stringify(error); } catch { return String(error); }
+}
+async function compositeFontBuffer(value: unknown): Promise<Uint8Array> {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (typeof value === "string") {
+    const comma = value.indexOf(",");
+    if (value.startsWith("data:") && comma >= 0) {
+      const payload = value.slice(comma + 1);
+      if (value.slice(0, comma).includes(";base64")) {
+        const decoded = atob(payload);
+        const bytes = new Uint8Array(decoded.length);
+        for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
+        return bytes;
+      }
+      return new TextEncoder().encode(decodeURIComponent(payload));
+    }
+    if (value.startsWith("wOF2") || value.startsWith("\\u0000\\u0001\\u0000\\u0000")) {
+      const bytes = new Uint8Array(value.length);
+      for (let i = 0; i < value.length; i++) bytes[i] = value.charCodeAt(i) & 255;
+      return bytes;
+    }
+    throw new Error("Font asset import returned a URL/string instead of font bytes");
+  }
+  throw new Error("Unsupported font asset type: " + Object.prototype.toString.call(value));
 }
 async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: string[]): Promise<Uint8Array> {
   let stage = "init_wasm";
@@ -501,8 +523,13 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
     const photos = await Promise.all(fileIds.map((id) => getSecretaryPhotoData(env, id)));
     stage = "build_svg";
     const svg = compositeSvg(model, photos);
+    stage = "prepare_fonts";
+    const fontBuffers = await Promise.all([compositeFontBuffer(robotoCyrillic), compositeFontBuffer(robotoLatin)]);
+    if (fontBuffers.some((font) => font.byteLength < 4 || !((font[0] === 0x77 && font[1] === 0x4f && font[2] === 0x46 && font[3] === 0x32) || (font[0] === 0 && font[1] === 1 && font[2] === 0 && font[3] === 0) || (font[0] === 79 && font[1] === 84 && font[2] === 84 && font[3] === 79))) {
+      throw new Error("Roboto font asset has an unsupported or invalid signature");
+    }
     stage = "create_renderer";
-    const renderer = new Resvg(svg, { font: { fontBuffers: [robotoCyrillic, robotoLatin], defaultFontFamily: "Roboto", loadSystemFonts: false } });
+    const renderer = new Resvg(svg, { font: { fontBuffers, defaultFontFamily: "Roboto", loadSystemFonts: false } });
     try {
       stage = "rasterize_png";
       return renderer.render().asPng();
