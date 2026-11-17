@@ -501,10 +501,13 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   <g clip-path="url(#d)"><rect x="90" y="1240" width="820" height="820" fill="#f1f1f1"/> ${img(photos[3],90,1240,820,820)}</g>
   <text x="950" y="1645" class="eyebrow">INTERMODELS / COMPOSITE CARD</text>
   <text x="950" y="1705" class="name" font-size="${nameSize}">${name}</text>${details}
-  <line x1="90" y1="2130" x2="1510" y2="2130" stroke="#222" stroke-width="2"/>
-  <text x="90" y="2190" class="brand">INTERMODELS</text><text x="1510" y="2190" text-anchor="end" class="small">PROFESSIONAL MODEL AGENCY</text>
+  <line x1="90" y1="2110" x2="1510" y2="2110" stroke="#222" stroke-width="2"/>
+  <text x="445" y="2160" text-anchor="middle" class="contact">https://inter-models.ru</text>
+  <text x="1155" y="2160" text-anchor="middle" class="contact">+7 902 632-32-72</text>
+  <text x="1510" y="2210" text-anchor="end" class="logo">INTERMODELS</text>
+  <text x="1510" y="2242" text-anchor="end" class="logo-sub">MODEL AGENCY</text>
   <style>
-    text{font-family:Roboto,sans-serif;fill:#171717}.brand{font-size:30px;font-weight:700;letter-spacing:8px}.small{font-size:17px;letter-spacing:3px;fill:#777}.eyebrow{font-size:17px;letter-spacing:4px;fill:#777}.name{font-size:44px;font-weight:700;letter-spacing:1px}.detail{font-size:20px;letter-spacing:1px}
+    text{font-family:Roboto,sans-serif;fill:#171717}.brand{font-size:30px;font-weight:700;letter-spacing:8px}.small{font-size:17px;letter-spacing:3px;fill:#777}.eyebrow{font-size:17px;letter-spacing:4px;fill:#777}.name{font-size:44px;font-weight:700;letter-spacing:1px}.detail{font-size:20px;letter-spacing:1px}.contact{font-size:21px;font-weight:500;letter-spacing:1px}.logo{font-size:38px;font-weight:800;letter-spacing:8px}.logo-sub{font-size:17px;font-weight:500;letter-spacing:6px;fill:#777}
   </style></svg>`;
 }
 function compositeErrorText(error: unknown): string {
