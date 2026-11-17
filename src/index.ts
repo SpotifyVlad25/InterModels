@@ -158,8 +158,25 @@ async function answerCallback(env: Env, callback: TelegramCallbackQuery, text: s
     callback_query_id: callback.id, text, show_alert: alert,
   });
 }
+async function hasStaffPermission(env: Env, telegramId: string, permission: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "SELECT permissions_json FROM agency_staff_access WHERE telegram_user_id = ? AND is_active = 1",
+  ).bind(telegramId).first<{ permissions_json: string }>();
+  if (!row) return false;
+  try {
+    const permissions = JSON.parse(row.permissions_json) as Record<string, boolean>;
+    return permissions[permission] === true || permissions["*"] === true;
+  } catch {
+    return false;
+  }
+}
+async function canManageRequests(env: Env, telegramId: string): Promise<boolean> {
+  // OWNER_TELEGRAM_ID is the temporary full-access account during setup.
+  if (telegramId === env.OWNER_TELEGRAM_ID || telegramId === env.DIRECTOR_TELEGRAM_ID) return true;
+  return hasStaffPermission(env, telegramId, "requests.manage");
+}
 async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery): Promise<void> {
-  if (String(callback.from.id) !== env.DIRECTOR_TELEGRAM_ID) {
+  if (!(await canManageRequests(env, String(callback.from.id)))) {
     await answerCallback(env, callback, "Недостаточно прав.", true); return;
   }
   const data = callback.data ?? "";
@@ -215,8 +232,9 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
   const senderId = String(message.from.id);
   const isDirector = senderId === env.DIRECTOR_TELEGRAM_ID;
   const isOwner = Boolean(env.OWNER_TELEGRAM_ID) && senderId === env.OWNER_TELEGRAM_ID;
+  const isStaff = await hasStaffPermission(env, senderId, "profile.view");
   const isGroup = message.chat.type === "group" || message.chat.type === "supergroup";
-  if (!isDirector && !isOwner) {
+  if (!isDirector && !isOwner && !isStaff) {
     if (!isGroup) await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: `Доступ пока не подключён. Ваш Telegram ID: ${senderId}. Передайте его администратору InterModels для активации.` });
     return;
   }
@@ -226,16 +244,18 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
       chat_id: message.chat.id,
       ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
       text: isDirector
-        ? "InterModels Director подключён. У вас полный доступ к решениям по заявкам."
-        : "InterModels Owner подключён. Вы можете получать уведомления и контролировать заявки. Решения по заявкам принимает директор.",
+        ? "InterModels Director подключён. У вас полный доступ."
+        : isOwner
+          ? "InterModels Owner подключён. На период настройки у вас временный полный доступ, включая решения по заявкам."
+          : "InterModels Assistant подключён. Ваши возможности определяются выданными директором правами.",
     });
   } else if (message.text?.startsWith("/help")) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
       ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
-      text: isDirector
-        ? "Команды:\n/start — подключить бота\n/help — помощь\n\nВы можете принимать и отклонять заявки."
-        : "Команды:\n/start — подключить бота\n/help — помощь\n\nУ вас доступ к уведомлениям. Подтверждать и отклонять заявки может только директор.",
+      text: isDirector || isOwner
+        ? "Команды:\n/start — подключить бота\n/help — помощь\n\nУ вас полный доступ к управлению заявками."
+        : "Команды:\n/start — подключить бота\n/help — помощь\n\nДоступные действия определяются выданными вам правами.",
     });
   }
 }
