@@ -5,5 +5,5 @@ compatibility_date = "2026-11-17"
 [[d1_databases]]
 binding = "DB"
 database_name = "intermodels-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "e97ca55b-7a3a-40dc-84fc-84004180cfdb"
 migrations_dir = "migrations"
