@@ -684,7 +684,24 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "В альбоме должно быть ровно 4 фотографии. Отправьте комплект заново." });
     return;
   }
-  if (items.length !== 4 || items.some((item) => !item.model_id)) return;
+  if (items.length !== 4) {
+    if (items.length > 0 && message.message_id === Math.max(...items.map((item) => item.message_id))) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id, message_thread_id: threadId,
+        text: `Получено фотографий: ${items.length} из 4. Если вы отправляете альбом, дождитесь загрузки всех четырёх снимков. Если отправляете по одному — продолжайте отправку.`,
+      });
+    }
+    return;
+  }
+  if (items.some((item) => !item.model_id)) {
+    await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
+      .bind(String(message.chat.id), threadId, senderId, albumId).run();
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+      chat_id: message.chat.id, message_thread_id: threadId,
+      text: "Не вижу подпись с именем и фамилией модели. Добавьте «Имя Фамилия» к первому фото альбома и отправьте комплект заново.",
+    });
+    return;
+  }
   const resolvedModelId = items[0].model_id!;
   const claim = await env.DB.prepare(
     "UPDATE secretary_photo_album_items SET processed_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND processed_at IS NULL",
@@ -801,10 +818,19 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     text: "Готовлю композитку для " + model.first_name + " " + model.last_name + "…",
   });
   const statusMessageId = status.result?.message_id;
+  const startedAt = Date.now();
   let compositeStage = "render_png";
+  const updateStage = async (stage: string) => {
+    if (!statusMessageId) return;
+    await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
+      chat_id: message.chat.id, message_id: statusMessageId,
+      text: `Создаю композитку для ${model.first_name} ${model.last_name}…\\n${stage}`,
+    });
+  };
   try {
-    const png = await renderCompositePng(env, model, photos.map((p) => p.telegram_file_id));
+    const png = await renderCompositePng(env, model, photos.map((p) => p.telegram_file_id), updateStage);
     compositeStage = "deliver_png";
+    await updateStage("Публикация готового PNG");
     const newMessageId = await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels");
     const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
       .bind(model.id).first<{ chat_id: string; message_id: number }>();
@@ -818,6 +844,7 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
        ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
          message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP`,
     ).bind(model.id, String(message.chat.id), message.message_thread_id!, newMessageId).run();
+    console.info("Composite generation completed", { modelId: model.id, elapsedMs: Date.now() - startedAt, pngBytes: png.byteLength });
     compositeStage = "delete_status";
     if (statusMessageId) {
       await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", {
@@ -1016,7 +1043,17 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   }
   const topic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_photo_topics WHERE id = 1").first<{chat_id:string;thread_id:number}>();
   if (!topic || topic.chat_id !== String(message.chat.id) || topic.thread_id !== message.message_thread_id) return;
-  if (!(await secretaryAllowed(env, senderId)) || (!message.photo?.length && !message.document)) return;
+  if (!(await secretaryAllowed(env, senderId))) {
+    if (message.photo?.length || message.document) {
+      console.warn("MODEL BANK photo upload rejected: sender has no photo/composite permission", { senderId, chatId: message.chat.id, threadId: message.message_thread_id ?? null });
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id, message_thread_id: message.message_thread_id,
+        text: "У вас нет доступа к загрузке фотографий в MODEL BANK. Попросите владельца или директора выдать доступ «Управление фотографиями» или «Создание композиток».",
+      });
+    }
+    return;
+  }
+  if (!message.photo?.length && !message.document) return;
   if (message.document) {
     const mime = (message.document.mime_type ?? "").toLowerCase();
     const fileName = (message.document.file_name ?? "").toLowerCase();
