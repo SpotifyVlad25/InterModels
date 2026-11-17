@@ -163,8 +163,11 @@ async function showModelProfilePrompt(env: Env, telegramId: string, chatId: numb
 }
 
 async function handleModelMessage(env: Env, message: TelegramMessage): Promise<void> {
+  // Model onboarding and profile updates are private-chat only.
+  // Group updates must never be answered or persisted as model topics.
+  if (message.chat.type !== "private") return;
   const user = message.from;
-  if (!user || !["private", "group", "supergroup"].includes(message.chat.type)) return;
+  if (!user) return;
   const replyChatId = message.chat.id;
   const replyThreadId = message.message_thread_id;
   if (message.text?.startsWith("/start")) {
