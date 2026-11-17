@@ -527,16 +527,28 @@ async function sendCompositePng(env: Env, chatId: number, threadId: number, png:
 }
 async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawName: string): Promise<void> {
   const query = normalizeName(rawName);
-  const surname = query.split(" ").at(-1) ?? rawName;
+  const parts = query.split(" ");
+  const surname = parts[parts.length - 1] ?? rawName;
   const models = await findSecretaryModels(env, surname);
   const exact = models.filter((m) => normalizeName(m.first_name + " " + m.last_name) === query);
   const matches = exact.length ? exact : models;
   if (!matches.length) {
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: `Модель «${rawName}» не найдена.` }); return;
   }
-  if (matches.length !== 1) {
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Найдено несколько моделей. Укажите имя и фамилию полностью: /comp Имя Фамилия" }); return;
+  if (matches.length > 1) {
+    await env.DB.prepare(
+      `INSERT INTO secretary_composite_pending (chat_id, thread_id, user_id, surname)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(chat_id, thread_id, user_id) DO UPDATE SET surname = excluded.surname, created_at = CURRENT_TIMESTAMP`,
+    ).bind(String(message.chat.id), message.message_thread_id!, String(message.from!.id), matches[0].last_name).run();
+    const names = matches.map((m) => m.first_name).filter((name, i, all) => all.indexOf(name) === i);
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+      chat_id: message.chat.id, message_thread_id: message.message_thread_id,
+      text: `Нашёл несколько моделей с фамилией «${matches[0].last_name}». Уточните имя одним сообщением.${names.length ? "\nВарианты: " + names.join(", ") : ""}`,
+    }); return;
   }
+  await env.DB.prepare("DELETE FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
+    .bind(String(message.chat.id), message.message_thread_id!, String(message.from!.id)).run();
   const model = matches[0];
   const photoResult = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position").bind(model.id).all<{position:number;telegram_file_id:string}>();
   const photos = photoResult.results ?? [];
@@ -563,11 +575,26 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   if (compositeTopic && compositeTopic.chat_id === String(message.chat.id) && compositeTopic.thread_id === message.message_thread_id) {
     if (!(await secretaryAllowed(env, senderId))) return;
     const compCommand = command.match(/^\/comp(?:@\w+)?\s+(.+)$/i);
-    if (!compCommand) {
-      if (command.startsWith("/")) await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Команда: /comp Имя Фамилия" });
+    if (compCommand) {
+      await generateCompositeInTopic(env, message, compCommand[1].trim()); return;
+    }
+    if (command.startsWith("/")) {
+      await env.DB.prepare("DELETE FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
+        .bind(String(message.chat.id), message.message_thread_id, senderId).run();
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Команда: /comp Фамилия или /comp Имя Фамилия" });
       return;
     }
-    await generateCompositeInTopic(env, message, compCommand[1].trim()); return;
+    if (command) {
+      const pending = await env.DB.prepare(
+        "SELECT surname FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ? AND created_at >= datetime('now', '-15 minutes')",
+      ).bind(String(message.chat.id), message.message_thread_id, senderId).first<{surname:string}>();
+      if (pending) {
+        await env.DB.prepare("DELETE FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
+          .bind(String(message.chat.id), message.message_thread_id, senderId).run();
+        await generateCompositeInTopic(env, message, command + " " + pending.surname);
+      }
+    }
+    return;
   }
   if (/^\/comp_setup(?:@\w+)?$/i.test(command)) {
     if (senderId !== env.OWNER_TELEGRAM_ID && senderId !== env.DIRECTOR_TELEGRAM_ID) {
