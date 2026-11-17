@@ -559,7 +559,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
   await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "Готово: альбом из 4 фотографий для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранён в правильном порядке." });
 }
-async function sendCompositePng(env: Env, chatId: number, threadId: number, png: Uint8Array, caption: string): Promise<void> {
+async function sendCompositePng(env: Env, chatId: number, threadId: number, png: Uint8Array, caption: string): Promise<number> {
   const endpoint = `https://api.telegram.org/bot${env.SECRETARY_BOT_TOKEN}/`;
   const makeForm = (field: "photo" | "document") => {
     const form = new FormData();
@@ -571,10 +571,8 @@ async function sendCompositePng(env: Env, chatId: number, threadId: number, png:
   };
   const photoResponse = await fetch(endpoint + "sendPhoto", { method: "POST", body: makeForm("photo") });
   const photoResult: any = await photoResponse.json().catch(() => null);
-  if (photoResponse.ok && photoResult?.ok) return;
+  if (photoResponse.ok && photoResult?.ok) return Number(photoResult.result?.message_id);
 
-  // Telegram's sendPhoto limit is stricter than sendDocument. Preserve the PNG
-  // as a downloadable document when the image endpoint rejects a large render.
   const photoError = photoResult?.description ?? `HTTP ${photoResponse.status}`;
   const documentResponse = await fetch(endpoint + "sendDocument", { method: "POST", body: makeForm("document") });
   const documentResult: any = await documentResponse.json().catch(() => null);
@@ -582,6 +580,7 @@ async function sendCompositePng(env: Env, chatId: number, threadId: number, png:
     const documentError = documentResult?.description ?? `HTTP ${documentResponse.status}`;
     throw new Error(`Telegram delivery failed (sendPhoto: ${photoError}; sendDocument: ${documentError})`);
   }
+  return Number(documentResult.result?.message_id);
 }
 async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawName: string): Promise<void> {
   const query = normalizeName(rawName);
@@ -969,6 +968,97 @@ function localDateTimeToIso(date: string, time: string, timezone: string): strin
 function dateKey(year: number, month: number, day: number): string {
   return String(year).padStart(4, "0") + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
 }
+async function queueCompositeRefresh(env: Env, modelIds: string[] | null, actorId: string): Promise<{ campaignId: string; queued: number }> {
+  const campaign = await env.DB.prepare("SELECT id FROM profile_refresh_campaigns ORDER BY starts_at DESC LIMIT 1").first<{ id: string }>();
+  if (!campaign) throw new Error("Ежемесячная кампания обновления ещё не запускалась.");
+  let rows: { model_id: string }[];
+  if (modelIds?.length) {
+    const ids = Array.from(new Set(modelIds)).slice(0, 100);
+    const placeholders = ids.map(() => "?").join(",");
+    const result = await env.DB.prepare(
+      `SELECT r.model_id FROM profile_refresh_members r JOIN models m ON m.id = r.model_id
+       WHERE r.campaign_id = ? AND r.status = 'updated' AND m.is_active = 1
+         AND m.lifecycle_status = 'active' AND r.model_id IN (${placeholders})`,
+    ).bind(campaign.id, ...ids).all<{ model_id: string }>();
+    rows = result.results ?? [];
+  } else {
+    const result = await env.DB.prepare(
+      `SELECT r.model_id FROM profile_refresh_members r JOIN models m ON m.id = r.model_id
+       WHERE r.campaign_id = ? AND r.status = 'updated' AND m.is_active = 1
+         AND m.lifecycle_status = 'active'`,
+    ).bind(campaign.id).all<{ model_id: string }>();
+    rows = result.results ?? [];
+  }
+  for (const row of rows) {
+    await env.DB.prepare(
+      `INSERT INTO composite_refresh_jobs(campaign_id,model_id,status,attempts,last_error,updated_at)
+       VALUES(?,?,'pending',0,NULL,CURRENT_TIMESTAMP)
+       ON CONFLICT(campaign_id,model_id) DO UPDATE SET status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP`,
+    ).bind(campaign.id, row.model_id).run();
+  }
+  await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'composite.refresh.queued', ?)")
+    .bind(randomId(), actorId, JSON.stringify({ campaign_id: campaign.id, model_ids: rows.map((row) => row.model_id) })).run();
+  return { campaignId: campaign.id, queued: rows.length };
+}
+async function publishCompositeModel(env: Env, campaignId: string, modelId: string): Promise<void> {
+  const topic = await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id = 1")
+    .first<{ chat_id: string; thread_id: number }>();
+  if (!topic) throw new Error("Тема «КОМПОЗИТКИ» не подключена.");
+  const model = await env.DB.prepare(
+    `SELECT m.id,m.first_name,m.last_name,p.height_cm,p.bust_cm,p.waist_cm,p.hips_cm,
+      p.clothing_size,p.shoe_size,p.hair_color,p.eye_color
+     FROM models m LEFT JOIN model_profiles p ON p.model_id=m.id
+     WHERE m.id=? AND m.is_active=1 AND m.lifecycle_status='active'`,
+  ).bind(modelId).first<SecretaryModelRow>();
+  if (!model) throw new Error("Модель не найдена в активной базе.");
+  const result = await env.DB.prepare("SELECT position,telegram_file_id FROM model_telegram_photos WHERE model_id=? ORDER BY position")
+    .bind(modelId).all<{ position: number; telegram_file_id: string }>();
+  const photos = result.results ?? [];
+  if (photos.length !== 4 || photos.some((photo, index) => photo.position !== index + 1)) {
+    throw new Error("Для модели не загружены все четыре фотографии.");
+  }
+  const png = await renderCompositePng(env, model, photos.map((photo) => photo.telegram_file_id));
+  const messageId = await sendCompositePng(env, Number(topic.chat_id), topic.thread_id, png, model.first_name + " " + model.last_name + " · InterModels");
+  if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("Telegram не вернул ID новой композитки.");
+  const old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
+    .bind(modelId).first<{ chat_id: string; message_id: number }>();
+  if (old) {
+    try {
+      await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: old.chat_id, message_id: old.message_id });
+    } catch (error) {
+      console.error("Old composite publication could not be deleted after new publication", { modelId, oldMessageId: old.message_id, error: compositeErrorText(error) });
+    }
+  }
+  await env.DB.prepare(
+    `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at)
+     VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+     ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
+       message_id=excluded.message_id,campaign_id=excluded.campaign_id,published_at=CURRENT_TIMESTAMP`,
+  ).bind(modelId, topic.chat_id, topic.thread_id, messageId, campaignId).run();
+}
+async function processCompositeRefreshJobs(env: Env): Promise<void> {
+  const jobs = await env.DB.prepare(
+    `SELECT campaign_id,model_id FROM composite_refresh_jobs
+     WHERE status='pending' ORDER BY created_at LIMIT 2`,
+  ).all<{ campaign_id: string; model_id: string }>();
+  for (const job of jobs.results ?? []) {
+    const claim = await env.DB.prepare(
+      "UPDATE composite_refresh_jobs SET status='processing',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND status='pending'",
+    ).bind(job.campaign_id, job.model_id).run();
+    if (!claim.meta.changes) continue;
+    try {
+      await publishCompositeModel(env, job.campaign_id, job.model_id);
+      await env.DB.prepare("UPDATE composite_refresh_jobs SET status='published',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=?")
+        .bind(job.campaign_id, job.model_id).run();
+    } catch (error) {
+      const details = compositeErrorText(error).slice(0, 1500);
+      await env.DB.prepare("UPDATE composite_refresh_jobs SET status='failed',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=?")
+        .bind(details, job.campaign_id, job.model_id).run();
+      console.error("Composite refresh job failed", { campaignId: job.campaign_id, modelId: job.model_id, error: details });
+    }
+  }
+}
+
 async function createDueRefreshCampaign(env: Env, now: Date): Promise<void> {
   const settings = await env.DB.prepare(
     "SELECT cycle_day, timezone, campaign_start_time, reminder_times_json FROM director_refresh_settings WHERE id = 1",
@@ -1116,6 +1206,6 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(processRefreshCampaigns(env));
+    ctx.waitUntil(Promise.all([processRefreshCampaigns(env), processCompositeRefreshJobs(env)]).then(() => undefined));
   },
 };
