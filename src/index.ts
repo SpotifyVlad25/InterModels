@@ -708,8 +708,27 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     });
     return;
   }
-  const match = (callback.data ?? "").match(/^csel:([a-zA-Z0-9_-]{1,50})$/);
-  if (!match || !callback.message || callback.message.chat.type !== "supergroup" || !callback.message.message_thread_id) {
+  const data = callback.data ?? "";
+  const match = data.match(/^(csel|comp):([a-zA-Z0-9_-]{1,50})$/);
+  if (!match || !callback.message) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Не удалось выбрать модель." });
+    return;
+  }
+  if (match[1] === "comp" && callback.message.chat.type === "private") {
+    const model = await env.DB.prepare(
+      `SELECT m.id, m.first_name, m.last_name,
+        p.height_cm, p.bust_cm, p.waist_cm, p.hips_cm,
+        p.clothing_size, p.shoe_size, p.hair_color, p.eye_color
+       FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
+       WHERE m.id = ? AND m.is_active = 1`,
+    ).bind(match[2]).first<SecretaryModelRow>();
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
+      callback_query_id: callback.id, text: model ? "Модель выбрана." : "Анкета не найдена.",
+    });
+    if (model) await sendSecretaryCompositeSources(env, callback.message.chat.id, model);
+    return;
+  }
+  if (match[1] !== "csel" || callback.message.chat.type !== "supergroup" || !callback.message.message_thread_id) {
     await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Не удалось выбрать модель." });
     return;
   }
@@ -726,7 +745,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       p.clothing_size, p.shoe_size, p.hair_color, p.eye_color
      FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
      WHERE m.id = ? AND m.is_active = 1`,
-  ).bind(match[1]).first<SecretaryModelRow>();
+  ).bind(match[2]).first<SecretaryModelRow>();
   if (!model || normalizeName(model.last_name) !== normalizeName(pending.surname)) {
     await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Эта модель больше недоступна.", show_alert: true });
     return;
