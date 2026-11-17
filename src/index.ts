@@ -645,7 +645,19 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
   try {
     const png = await renderCompositePng(env, model, photos.map((p) => p.telegram_file_id));
     compositeStage = "deliver_png";
-    await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels");
+    const newMessageId = await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels");
+    const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
+      .bind(model.id).first<{ chat_id: string; message_id: number }>();
+    if (oldPublication) {
+      try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: oldPublication.chat_id, message_id: oldPublication.message_id }); }
+      catch (deleteError) { console.error("Previous composite could not be deleted", { modelId: model.id, error: compositeErrorText(deleteError) }); }
+    }
+    await env.DB.prepare(
+      `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at)
+       VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP)
+       ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
+         message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP`,
+    ).bind(model.id, String(message.chat.id), message.message_thread_id!, newMessageId).run();
     compositeStage = "delete_status";
     if (statusMessageId) {
       await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", {
@@ -1182,6 +1194,7 @@ async function publishCompositeModel(env: Env, campaignId: string, modelId: stri
   ).bind(modelId, topic.chat_id, topic.thread_id, messageId, campaignId).run();
 }
 async function processCompositeRefreshJobs(env: Env): Promise<void> {
+  await env.DB.prepare("UPDATE composite_refresh_jobs SET status='pending',updated_at=CURRENT_TIMESTAMP WHERE status='processing' AND updated_at < datetime('now','-10 minutes')").run();
   const jobs = await env.DB.prepare(
     `SELECT campaign_id,model_id FROM composite_refresh_jobs
      WHERE status='pending' ORDER BY created_at LIMIT 2`,
