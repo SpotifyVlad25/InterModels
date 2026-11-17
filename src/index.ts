@@ -248,6 +248,9 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
         : isOwner
           ? "InterModels Owner подключён. На период настройки у вас временный полный доступ, включая решения по заявкам."
           : "InterModels Assistant подключён. Ваши возможности определяются выданными директором правами.",
+      ...((isDirector || isOwner) && message.chat.type === "private" ? {
+        reply_markup: { keyboard: [[{ text: "Открыть Mini App", web_app: { url: "https://intermodels.spotify-vlad25.workers.dev/app" } }]], resize_keyboard: true },
+      } : {}),
     });
   } else if (message.text?.startsWith("/help")) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
