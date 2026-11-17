@@ -325,7 +325,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   const caption = (message.caption ?? "").trim();
   let modelId: string | null = null;
   if (caption) {
-    if (caption.length > 100 || /[\\r\\n]/.test(caption)) {
+    if (caption.length > 100 || /[\r\n]/.test(caption)) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "В подписи укажите только имя и фамилию модели." });
       return;
     }
@@ -337,6 +337,11 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
       return;
     }
     modelId = matches[0].id;
+  } else {
+    const existing = await env.DB.prepare(
+      "SELECT model_id FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND model_id IS NOT NULL LIMIT 1",
+    ).bind(String(message.chat.id), message.message_thread_id, senderId, albumId).first<{model_id:string}>();
+    modelId = existing?.model_id ?? null;
   }
   await env.DB.prepare(
     `INSERT INTO secretary_photo_album_items
@@ -381,7 +386,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup") || !message.message_thread_id) return;
   const senderId = String(message.from.id);
   const command = (message.text ?? "").trim();
-  if (/^\\/comp_setup(?:@\\w+)?$/i.test(command)) {
+  if (/^\/comp_setup(?:@\w+)?$/i.test(command)) {
     if (senderId !== env.OWNER_TELEGRAM_ID && senderId !== env.DIRECTOR_TELEGRAM_ID) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Настроить фототеку может только владелец или директор." });
       return;
@@ -401,7 +406,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   const bestPhoto = message.photo[message.photo.length - 1];
   const caption = (message.caption ?? "").trim();
   if (caption) {
-    if (caption.length > 100 || /[\\r\\n]/.test(caption)) {
+    if (caption.length > 100 || /[\r\n]/.test(caption)) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "В подписи укажите только имя и фамилию модели." });
       return;
     }
