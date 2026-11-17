@@ -502,8 +502,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   <text x="950" y="1645" class="eyebrow">INTERMODELS / COMPOSITE CARD</text>
   <text x="950" y="1705" class="name" font-size="${nameSize}">${name}</text>${details}
   <line x1="90" y1="2110" x2="1510" y2="2110" stroke="#222" stroke-width="2"/>
-  <text x="445" y="2160" text-anchor="middle" class="contact">https://inter-models.ru</text>
-  <text x="1155" y="2160" text-anchor="middle" class="contact">+7 902 632-32-72</text>
+  <text x="445" y="101" text-anchor="middle" class="contact">https://inter-models.ru</text>
+  <text x="1155" y="101" text-anchor="middle" class="contact">+7 902 632-32-72</text>
   <text x="1510" y="2210" text-anchor="end" class="logo">INTERMODELS</text>
   <text x="1510" y="2242" text-anchor="end" class="logo-sub">MODEL AGENCY</text>
   <style>
