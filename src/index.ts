@@ -99,11 +99,12 @@ async function createRequest(
     [{ text: "Отклонить заявку", callback_data: `r:${requestId}` }],
   ];
   await sendDirector(env, message, { inline_keyboard: keyboard });
-  // The owner receives visibility into new requests but no approval/rejection controls.
+  // The owner has full request-management permissions and receives the same decision controls as the director.
   if (env.OWNER_TELEGRAM_ID && env.OWNER_TELEGRAM_ID !== env.DIRECTOR_TELEGRAM_ID) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: env.OWNER_TELEGRAM_ID,
-      text: message.replace("\n\nВыберите правильную анкету или отклоните заявку.", "\n\nСтатус: ожидает решения директора."),
+      text: message,
+      reply_markup: { inline_keyboard: keyboard },
       disable_web_page_preview: true,
     });
   }
