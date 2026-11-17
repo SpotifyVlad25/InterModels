@@ -739,7 +739,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   const albumOperation = await getOrStartSecretaryOperation(
     env, "photo_upload", senderId, message.chat.id, threadId, albumSourceKey,
   );
-  if (albumOperation.status === "cancelled") {
+  if (albumOperation.status !== "running") {
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?")
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
     await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?")
