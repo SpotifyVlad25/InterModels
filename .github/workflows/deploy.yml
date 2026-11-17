@@ -38,12 +38,15 @@ jobs:
       - name: Upload Worker secrets
         shell: bash
         run: |
-          for name in MODEL_BOT_TOKEN DIRECTOR_BOT_TOKEN SECRETARY_BOT_TOKEN MODEL_WEBHOOK_SECRET DIRECTOR_WEBHOOK_SECRET SECRETARY_WEBHOOK_SECRET OWNER_TELEGRAM_ID DIRECTOR_TELEGRAM_ID; do
+          for name in MODEL_BOT_TOKEN DIRECTOR_BOT_TOKEN SECRETARY_BOT_TOKEN MODEL_WEBHOOK_SECRET DIRECTOR_WEBHOOK_SECRET OWNER_TELEGRAM_ID DIRECTOR_TELEGRAM_ID; do
             if [ -z "${!name}" ]; then
               echo "::error::Missing GitHub Actions secret: $name"
               exit 1
             fi
           done
+          SECRETARY_WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          echo "SECRETARY_WEBHOOK_SECRET=$SECRETARY_WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          export SECRETARY_WEBHOOK_SECRET
           node -e 'process.stdout.write(JSON.stringify({
             MODEL_BOT_TOKEN: process.env.MODEL_BOT_TOKEN,
             DIRECTOR_BOT_TOKEN: process.env.DIRECTOR_BOT_TOKEN,
@@ -62,7 +65,6 @@ jobs:
           SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
           MODEL_WEBHOOK_SECRET: ${{ secrets.MODEL_WEBHOOK_SECRET }}
           DIRECTOR_WEBHOOK_SECRET: ${{ secrets.DIRECTOR_WEBHOOK_SECRET }}
-          SECRETARY_WEBHOOK_SECRET: ${{ secrets.SECRETARY_WEBHOOK_SECRET }}
           OWNER_TELEGRAM_ID: ${{ secrets.OWNER_TELEGRAM_ID }}
           DIRECTOR_TELEGRAM_ID: ${{ secrets.DIRECTOR_TELEGRAM_ID }}
 
@@ -76,7 +78,6 @@ jobs:
         shell: bash
         env:
           SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
-          SECRETARY_WEBHOOK_SECRET: ${{ secrets.SECRETARY_WEBHOOK_SECRET }}
         run: |
           set -euo pipefail
           expected_url="https://intermodels.spotify-vlad25.workers.dev/webhook/secretary"
