@@ -610,9 +610,24 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
   }
 }
 async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): Promise<void> {
-  if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup") || !message.message_thread_id) return;
+  if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup")) return;
   const senderId = String(message.from.id);
   const command = (message.text ?? "").trim();
+  console.info("Secretary group update", {
+    chatId: message.chat.id,
+    threadId: message.message_thread_id ?? null,
+    senderId,
+    command: command.slice(0, 120),
+  });
+  if (!message.message_thread_id) {
+    if (/^\\/comp(?:@\\w+)?(?:\\s|$)/i.test(command)) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id,
+        text: "Композитку можно запросить только внутри темы «КОМПОЗИТКИ».",
+      });
+    }
+    return;
+  }
   if (/^\/composite_setup(?:@\w+)?$/i.test(command)) {
     if (senderId !== env.OWNER_TELEGRAM_ID && senderId !== env.DIRECTOR_TELEGRAM_ID) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Настроить тему композиток может только владелец или директор." }); return;
