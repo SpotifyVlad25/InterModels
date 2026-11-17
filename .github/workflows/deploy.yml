@@ -32,6 +32,40 @@ jobs:
       - name: Type-check Worker
         run: npm run typecheck
 
+      - name: Verify Telegram bot identities
+        shell: bash
+        env:
+          MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
+          DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
+          SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
+        run: |
+          node <<'NODE'
+          const bots = [
+            ["MODEL_BOT_TOKEN", process.env.MODEL_BOT_TOKEN],
+            ["DIRECTOR_BOT_TOKEN", process.env.DIRECTOR_BOT_TOKEN],
+            ["SECRETARY_BOT_TOKEN", process.env.SECRETARY_BOT_TOKEN],
+          ];
+          const identities = [];
+          for (const [label, token] of bots) {
+            if (!token) throw new Error(`Missing ${label}`);
+            const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+            const data = await response.json();
+            if (!data.ok || !data.result?.username) {
+              throw new Error(`Telegram getMe failed for ${label}`);
+            }
+            const username = data.result.username;
+            console.log(`${label} = @${username}`);
+            identities.push([label, username.toLowerCase()]);
+          }
+          const director = identities.find(([label]) => label === "DIRECTOR_BOT_TOKEN");
+          if (director?.[1] !== "intermodels_bot") {
+            throw new Error("DIRECTOR_BOT_TOKEN must belong to @InterModels_bot. Deployment stopped before changing production.");
+          }
+          if (new Set(identities.map(([, username]) => username)).size !== 3) {
+            throw new Error("The three bot token secrets must belong to three different Telegram bots. Deployment stopped.");
+          }
+          NODE
+
       - name: Apply D1 migrations
         run: npx wrangler d1 migrations apply intermodels-db --remote
         env:
@@ -122,4 +156,31 @@ jobs:
             --data-urlencode "url=$expected_url" \
             --data-urlencode "secret_token=${SECRETARY_WEBHOOK_SECRET}" \
             --data-urlencode 'allowed_updates=["message","callback_query"]')"
-          printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok){console.error("Telegram setWebhook failed:",j.description||"unknown error");process.exit(1)}console.log("Secretary webhook configured.")})'
+          printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok){console.error("Secretary setWebhook failed:",j.description||"unknown error");process.exit(1)}console.log("Secretary webhook configured.")})'
+
+      - name: Verify Telegram webhook routing
+        shell: bash
+        env:
+          MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
+          DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
+          SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
+        run: |
+          node <<'NODE'
+          const checks = [
+            ["MODEL_BOT_TOKEN", process.env.MODEL_BOT_TOKEN, "/webhook/model"],
+            ["DIRECTOR_BOT_TOKEN", process.env.DIRECTOR_BOT_TOKEN, "/webhook/director"],
+            ["SECRETARY_BOT_TOKEN", process.env.SECRETARY_BOT_TOKEN, "/webhook/secretary"],
+          ];
+          for (const [label, token, path] of checks) {
+            const response = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+            const data = await response.json();
+            const actual = data.ok ? data.result?.url || "" : "";
+            const expected = `https://intermodels.spotify-vlad25.workers.dev${path}`;
+            if (actual !== expected) {
+              console.error(`${label}: webhook route mismatch (expected ${path}, got ${actual || "none"})`);
+              process.exitCode = 1;
+            } else {
+              console.log(`${label}: webhook route OK (${path})`);
+            }
+          }
+          NODE
