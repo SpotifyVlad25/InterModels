@@ -905,6 +905,7 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
   await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
     chat_id: chatId, message_thread_id: threadId,
     text: `Обработка списка завершена: ${completed} из ${names.length} композиток создано.`,
+    reply_markup: { inline_keyboard: [[{ text: "➕ Создать композитку", callback_data: "composite:create" }]] },
   });
 }
 async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): Promise<void> {
@@ -1155,6 +1156,35 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
       .bind(String(msg.chat.id), msg.message_thread_id, String(callback.from.id)).run();
     await telegram(env.SECRETARY_BOT_TOKEN, "editMessageReplyMarkup", { chat_id: msg.chat.id, message_id: msg.message_id, reply_markup: { inline_keyboard: [] } });
+    return;
+  }
+  if (data === "composite:create") {
+    const msg = callback.message;
+    if (!msg || msg.chat.type !== "supergroup" || !msg.message_thread_id) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
+        callback_query_id: callback.id, text: "Кнопка работает только в теме «КОМПОЗИТКИ».", show_alert: true,
+      });
+      return;
+    }
+    const topic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_composite_topics WHERE id = 1")
+      .first<{ chat_id: string; thread_id: number }>();
+    if (!topic || topic.chat_id !== String(msg.chat.id) || topic.thread_id !== msg.message_thread_id) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
+        callback_query_id: callback.id, text: "Это не зарегистрированная тема композиток.", show_alert: true,
+      });
+      return;
+    }
+    await env.DB.prepare(
+      "INSERT INTO secretary_composite_input_pending(chat_id, thread_id, user_id) VALUES(?,?,?) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET created_at=CURRENT_TIMESTAMP",
+    ).bind(String(msg.chat.id), msg.message_thread_id, String(callback.from.id)).run();
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Готово. Жду список моделей." });
+    await telegram(env.SECRETARY_BOT_TOKEN, "editMessageReplyMarkup", {
+      chat_id: msg.chat.id, message_id: msg.message_id, reply_markup: { inline_keyboard: [] },
+    });
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+      chat_id: msg.chat.id, message_thread_id: msg.message_thread_id,
+      text: "Отправьте от 1 до 20 фамилий или ФИО — по одной модели на строку.",
+    });
     return;
   }
   const match = data.match(/^(csel|comp):([a-zA-Z0-9_-]{1,50})$/);
