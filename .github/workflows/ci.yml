@@ -18,3 +18,5 @@ jobs:
       - run: npm run typecheck
       - name: Verify D1 migrations locally
         run: npx wrangler d1 migrations apply intermodels-db --local
+      - name: Verify Worker bundle
+        run: npx wrangler deploy --dry-run

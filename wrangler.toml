@@ -7,3 +7,13 @@ binding = "DB"
 database_name = "intermodels-db"
 database_id = "e97ca55b-7a3a-40dc-84fc-84004180cfdb"
 migrations_dir = "migrations"
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true
+
+[[rules]]
+type = "Data"
+globs = ["**/*.woff2"]
+fallthrough = true

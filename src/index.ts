@@ -1,3 +1,13 @@
+import { initWasm, Resvg } from "@resvg/resvg-wasm";
+import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
+import robotoCyrillic from "@fontsource/roboto/files/roboto-cyrillic-400-normal.woff2";
+import robotoLatin from "@fontsource/roboto/files/roboto-latin-400-normal.woff2";
+
+let resvgReady: Promise<void> | undefined;
+async function ensureResvg(): Promise<void> {
+  resvgReady ??= initWasm(resvgWasm);
+  await resvgReady;
+}
 interface Env {
   DB: D1Database;
   MODEL_BOT_TOKEN: string;
@@ -100,6 +110,57 @@ async function createRequest(
   await sendModel(env, replyChatId, "Совпадение найдено. Заявка отправлена директору на проверку. Доступ откроется только после её подтверждения.", replyThreadId);
 }
 
+
+const PROFILE_STEPS = [
+  { state: "profile_height", field: "height_cm", prompt: "Укажите рост в сантиметрах (например, 183). Можно отправить «пропустить».", numeric: true },
+  { state: "profile_weight", field: "weight_kg", prompt: "Укажите вес в килограммах (например, 72). Можно отправить «пропустить».", numeric: true },
+  { state: "profile_bust", field: "bust_cm", prompt: "Обхват груди в сантиметрах. Можно отправить «пропустить».", numeric: true },
+  { state: "profile_waist", field: "waist_cm", prompt: "Обхват талии в сантиметрах. Можно отправить «пропустить».", numeric: true },
+  { state: "profile_hips", field: "hips_cm", prompt: "Обхват бёдер в сантиметрах. Можно отправить «пропустить».", numeric: true },
+  { state: "profile_clothing", field: "clothing_size", prompt: "Укажите размер одежды (например, 46 / M). Можно отправить «пропустить».", numeric: false },
+  { state: "profile_shoe", field: "shoe_size", prompt: "Укажите размер обуви (например, 42). Можно отправить «пропустить».", numeric: false },
+  { state: "profile_hair", field: "hair_color", prompt: "Укажите цвет волос. Можно отправить «пропустить».", numeric: false },
+  { state: "profile_eyes", field: "eye_color", prompt: "Укажите цвет глаз. Можно отправить «пропустить».", numeric: false },
+] as const;
+async function beginModelProfile(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
+  await env.DB.prepare("INSERT INTO model_profiles (model_id) SELECT id FROM models WHERE telegram_user_id = ? ON CONFLICT(model_id) DO NOTHING").bind(telegramId).run();
+  const first = PROFILE_STEPS[0];
+  await env.DB.prepare("INSERT INTO bot_sessions (telegram_user_id,state,data_json,updated_at) VALUES (?, ?, '{}', CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state=excluded.state,data_json='{}',updated_at=CURRENT_TIMESTAMP").bind(telegramId, first.state).run();
+  await sendModel(env, chatId, "Подключение подтверждено! Давайте заполним вашу анкету. Это займёт несколько коротких шагов.\n\n" + first.prompt, threadId);
+}
+async function handleModelProfileStep(env: Env, telegramId: string, chatId: number, text: string, threadId?: number): Promise<boolean> {
+  const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?").bind(telegramId).first<{state:string}>();
+  const index = PROFILE_STEPS.findIndex((step) => step.state === session?.state);
+  if (index < 0) return false;
+  const step = PROFILE_STEPS[index], value = text.trim(), skipped = /^(пропустить|skip|—)$/i.test(value);
+  let stored: string | number | null = skipped ? null : value;
+  if (!skipped && step.numeric) {
+    const number = Number(value.replace(",", "."));
+    if (!Number.isFinite(number) || number <= 0 || number > 300) {
+      await sendModel(env, chatId, "Введите корректное число или отправьте «пропустить».\n\n" + step.prompt, threadId); return true;
+    }
+    stored = number;
+  }
+  await env.DB.prepare("INSERT INTO model_profiles (model_id) SELECT id FROM models WHERE telegram_user_id = ? ON CONFLICT(model_id) DO NOTHING").bind(telegramId).run();
+  await env.DB.prepare(`UPDATE model_profiles SET ${step.field} = ?, updated_at = CURRENT_TIMESTAMP WHERE model_id = (SELECT id FROM models WHERE telegram_user_id = ?)`).bind(stored, telegramId).run();
+  const next = PROFILE_STEPS[index + 1];
+  if (next) {
+    await env.DB.prepare("UPDATE bot_sessions SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE telegram_user_id = ?").bind(next.state, telegramId).run();
+    await sendModel(env, chatId, next.prompt, threadId);
+  } else {
+    await env.DB.prepare("UPDATE bot_sessions SET state = 'profile_complete', updated_at = CURRENT_TIMESTAMP WHERE telegram_user_id = ?").bind(telegramId).run();
+    await sendModel(env, chatId, "Спасибо! Основные параметры анкеты сохранены. Если нужно изменить данные, отправьте /profile.", threadId);
+  }
+  return true;
+}
+async function showModelProfilePrompt(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
+  const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?").bind(telegramId).first<{state:string}>();
+  const step = PROFILE_STEPS.find((item) => item.state === session?.state);
+  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\\n\\n" + step.prompt, threadId);
+  else if (session?.state === "profile_complete") await sendModel(env, chatId, "Ваша анкета подключена и заполнена. Чтобы изменить параметры, отправьте /profile.", threadId);
+  else await beginModelProfile(env, telegramId, chatId, threadId);
+}
+
 async function handleModelMessage(env: Env, message: TelegramMessage): Promise<void> {
   const user = message.from;
   if (!user || !["private", "group", "supergroup"].includes(message.chat.type)) return;
@@ -107,19 +168,24 @@ async function handleModelMessage(env: Env, message: TelegramMessage): Promise<v
   const replyThreadId = message.message_thread_id;
   if (message.text?.startsWith("/start")) {
     await saveTopic(env, "model", message);
-    await env.DB.prepare(
-      `INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
-       VALUES (?, 'awaiting_name', '{}', CURRENT_TIMESTAMP)
-       ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', data_json = '{}', updated_at = CURRENT_TIMESTAMP`,
-    ).bind(String(user.id)).run();
+    const linked = await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(String(user.id)).first<{id:string}>();
+    if (linked) { await showModelProfilePrompt(env, String(user.id), replyChatId, replyThreadId); return; }
+    await env.DB.prepare(`INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
+      VALUES (?, 'awaiting_name', '{}', CURRENT_TIMESTAMP)
+      ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', data_json = '{}', updated_at = CURRENT_TIMESTAMP`).bind(String(user.id)).run();
     await telegram(env.MODEL_BOT_TOKEN, "sendMessage", {
-      chat_id: replyChatId,
-      ...(replyThreadId ? { message_thread_id: replyThreadId } : {}),
+      chat_id: replyChatId, ...(replyThreadId ? { message_thread_id: replyThreadId } : {}),
       text: "Добро пожаловать в InterModels!\n\nВведите имя и фамилию точно так, как они указаны в агентстве. Либо отправьте свой номер телефона кнопкой ниже.",
       reply_markup: { keyboard: [[{ text: "Поделиться контактом", request_contact: true }]], resize_keyboard: true, one_time_keyboard: true },
     });
     return;
   }
+  if (message.text === "/profile") {
+    const linked = await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(String(user.id)).first<{id:string}>();
+    if (!linked) { await sendModel(env, replyChatId, "Сначала дождитесь подтверждения подключения директором.", replyThreadId); return; }
+    await beginModelProfile(env, String(user.id), replyChatId, replyThreadId); return;
+  }
+  if (message.text && await handleModelProfileStep(env, String(user.id), replyChatId, message.text, replyThreadId)) return;
   if (message.contact) {
     if (message.contact.user_id !== user.id) {
       await sendModel(env, replyChatId, "Отправьте именно свой контакт через кнопку Telegram, а не контакт другого человека.", replyThreadId);
@@ -211,7 +277,8 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
     await env.DB.prepare("UPDATE registration_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP, decided_by = ? WHERE id = ? AND status = 'pending'")
       .bind(String(callback.from.id), requestId).run();
     await env.DB.prepare("INSERT INTO model_profiles (model_id) VALUES (?) ON CONFLICT(model_id) DO NOTHING").bind(modelId).run();
-    await sendModel(env, req.telegram_user_id, `Добро пожаловать в InterModels, ${model.first_name}! Ваша регистрация подтверждена. Следующим этапом добавим заполнение параметров профиля.`);
+    await sendModel(env, req.telegram_user_id, `Добро пожаловать в InterModels, ${model.first_name}! Ваша регистрация подтверждена.`);
+    await beginModelProfile(env, req.telegram_user_id, Number(req.telegram_user_id));
     await answerCallback(env, callback, "Модель успешно подключена.");
     if (callback.message) await telegram(env.DIRECTOR_BOT_TOKEN, "editMessageReplyMarkup", {
       chat_id: callback.message.chat.id, message_id: callback.message.message_id, reply_markup: { inline_keyboard: [] },
@@ -307,6 +374,65 @@ async function sendSecretary(env: Env, chatId: number, text: string, replyMarkup
   await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", payload);
 }
 
+function escapeXml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  return btoa(binary);
+}
+async function getSecretaryPhotoData(env: Env, fileId: string): Promise<string> {
+  const file = await telegram(env.SECRETARY_BOT_TOKEN, "getFile", { file_id: fileId });
+  const path = file.result?.file_path;
+  if (typeof path !== "string" || !path) throw new Error("Telegram photo path missing");
+  const response = await fetch("https://api.telegram.org/file/bot" + env.SECRETARY_BOT_TOKEN + "/" + path);
+  if (!response.ok) throw new Error("Unable to download Telegram photo");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 12 * 1024 * 1024) throw new Error("Photo size is invalid");
+  const mime = path.toLowerCase().endsWith(".png") ? "image/png" : path.toLowerCase().endsWith(".webp") ? "image/webp" : "image/jpeg";
+  return "data:" + mime + ";base64," + bytesToBase64(bytes);
+}
+function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
+  const name = escapeXml((model.first_name + " " + model.last_name).toUpperCase());
+  const values = [
+    model.height_cm != null ? "HEIGHT  " + model.height_cm + " CM" : null,
+    model.bust_cm != null ? "BUST  " + model.bust_cm + " CM" : null,
+    model.waist_cm != null ? "WAIST  " + model.waist_cm + " CM" : null,
+    model.hips_cm != null ? "HIPS  " + model.hips_cm + " CM" : null,
+    model.clothing_size ? "CLOTHING  " + model.clothing_size : null,
+    model.shoe_size ? "SHOES  " + model.shoe_size : null,
+    model.hair_color ? "HAIR  " + model.hair_color : null,
+    model.eye_color ? "EYES  " + model.eye_color : null,
+  ].filter((v): v is string => Boolean(v));
+  const details = values.map((v, i) => `<text x="990" y="${1770 + i * 58}" class="detail">${escapeXml(v)}</text>`).join("");
+  const img = (data: string, x: number, y: number, w: number, h: number) =>
+    `<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1600" height="2260" viewBox="0 0 1600 2260">
+  <rect width="1600" height="2260" fill="#fff"/>
+  <text x="90" y="70" class="brand">INTERMODELS</text><text x="1510" y="70" text-anchor="end" class="small">MODEL PORTFOLIO</text>
+  <defs><clipPath id="a"><rect x="90" y="110" width="820" height="1093"/></clipPath><clipPath id="b"><rect x="950" y="110" width="560" height="700"/></clipPath><clipPath id="c"><rect x="950" y="850" width="560" height="700"/></clipPath><clipPath id="d"><rect x="90" y="1240" width="820" height="820"/></clipPath></defs>
+  <g clip-path="url(#a)"><rect x="90" y="110" width="820" height="1093" fill="#eee"/>${img(photos[0],90,110,820,1093)}</g>
+  <g clip-path="url(#b)"><rect x="950" y="110" width="560" height="700" fill="#eee"/>${img(photos[1],950,110,560,700)}</g>
+  <g clip-path="url(#c)"><rect x="950" y="850" width="560" height="700" fill="#eee"/>${img(photos[2],950,850,560,700)}</g>
+  <g clip-path="url(#d)"><rect x="90" y="1240" width="820" height="820" fill="#eee"/>${img(photos[3],90,1240,820,820)}</g>
+  <text x="950" y="1645" class="eyebrow">INTERMODELS / COMPOSITE CARD</text>
+  <text x="950" y="1705" class="name">${name}</text>${details}
+  <line x1="90" y1="2130" x2="1510" y2="2130" stroke="#222" stroke-width="2"/>
+  <text x="90" y="2190" class="brand">INTERMODELS</text><text x="1510" y="2190" text-anchor="end" class="small">PROFESSIONAL MODEL AGENCY</text>
+  <style>
+    text{font-family:Roboto,sans-serif;fill:#171717}.brand{font-size:30px;font-weight:700;letter-spacing:8px}.small{font-size:17px;letter-spacing:3px;fill:#777}.eyebrow{font-size:17px;letter-spacing:4px;fill:#777}.name{font-size:44px;font-weight:700;letter-spacing:1px}.detail{font-size:24px;letter-spacing:1.5px}
+  </style></svg>`;
+}
+async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: string[]): Promise<Uint8Array> {
+  await ensureResvg();
+  const photos = await Promise.all(fileIds.map((id) => getSecretaryPhotoData(env, id)));
+  const svg = compositeSvg(model, photos);
+  const renderer = new Resvg(svg, { font: { fontBuffers: [robotoCyrillic, robotoLatin], defaultFontFamily: "Roboto", loadSystemFonts: false } });
+  try { return renderer.render().asPng(); } finally { renderer.free(); }
+}
+
 async function saveSecretaryPhotoSet(
   env: Env, modelId: string, photos: Array<{file_id:string;file_unique_id:string}>,
   senderId: string, chatId: number, threadId: number,
@@ -384,10 +510,59 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
   await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "Готово: альбом из 4 фотографий для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранён в правильном порядке." });
 }
+async function sendCompositePng(env: Env, chatId: number, threadId: number, png: Uint8Array, caption: string): Promise<void> {
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  form.set("message_thread_id", String(threadId));
+  form.set("caption", caption);
+  form.set("photo", new Blob([png], { type: "image/png" }), "intermodels-composite.png");
+  const response = await fetch(`https://api.telegram.org/bot${env.SECRETARY_BOT_TOKEN}/sendPhoto`, { method: "POST", body: form });
+  const result: any = await response.json();
+  if (!response.ok || !result.ok) throw new Error("Telegram sendPhoto failed");
+}
+async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawName: string): Promise<void> {
+  const query = normalizeName(rawName);
+  const models = await findSecretaryModels(env, rawName);
+  const exact = models.filter((m) => normalizeName(m.first_name + " " + m.last_name) === query);
+  const matches = exact.length ? exact : models;
+  if (!matches.length) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: `Модель «${rawName}» не найдена.` }); return;
+  }
+  if (matches.length !== 1) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Найдено несколько моделей. Укажите имя и фамилию полностью: /comp Имя Фамилия" }); return;
+  }
+  const model = matches[0];
+  const photoResult = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position").bind(model.id).all<{position:number;telegram_file_id:string}>();
+  const photos = photoResult.results ?? [];
+  if (photos.length !== 4 || photos.some((photo, i) => photo.position !== i + 1)) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Для этой модели ещё не загружены все четыре фотографии. Сначала добавьте их в тему /COMP." }); return;
+  }
+  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Готовлю композитку для " + model.first_name + " " + model.last_name + "…" });
+  const png = await renderCompositePng(env, model, photos.map((p) => p.telegram_file_id));
+  await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels");
+}
 async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): Promise<void> {
   if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup") || !message.message_thread_id) return;
   const senderId = String(message.from.id);
   const command = (message.text ?? "").trim();
+  if (/^\/composite_setup(?:@\w+)?$/i.test(command)) {
+    if (senderId !== env.OWNER_TELEGRAM_ID && senderId !== env.DIRECTOR_TELEGRAM_ID) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Настроить тему композиток может только владелец или директор." }); return;
+    }
+    await env.DB.prepare("INSERT INTO secretary_composite_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
+      .bind(String(message.chat.id), message.message_thread_id, senderId).run();
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена. Используйте /comp Имя Фамилия для генерации PNG." }); return;
+  }
+  const compositeTopic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_composite_topics WHERE id = 1").first<{chat_id:string;thread_id:number}>();
+  if (compositeTopic && compositeTopic.chat_id === String(message.chat.id) && compositeTopic.thread_id === message.message_thread_id) {
+    if (!(await secretaryAllowed(env, senderId))) return;
+    const compCommand = command.match(/^\/comp(?:@\w+)?\s+(.+)$/i);
+    if (!compCommand) {
+      if (command.startsWith("/")) await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Команда: /comp Имя Фамилия" });
+      return;
+    }
+    await generateCompositeInTopic(env, message, compCommand[1].trim()); return;
+  }
   if (/^\/comp_setup(?:@\w+)?$/i.test(command)) {
     if (senderId !== env.OWNER_TELEGRAM_ID && senderId !== env.DIRECTOR_TELEGRAM_ID) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Настроить фототеку может только владелец или директор." });
