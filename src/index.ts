@@ -855,9 +855,13 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   const topic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_photo_topics WHERE id = 1").first<{chat_id:string;thread_id:number}>();
   if (!topic || topic.chat_id !== String(message.chat.id) || topic.thread_id !== message.message_thread_id) return;
   if (!(await secretaryAllowed(env, senderId)) || (!message.photo?.length && !message.document)) return;
-  if (message.document && !["image/jpeg", "image/png", "image/webp"].includes((message.document.mime_type ?? "").toLowerCase())) {
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Файлы должны быть изображениями JPEG, PNG или WEBP." });
-    return;
+  if (message.document) {
+    const mime = (message.document.mime_type ?? "").toLowerCase();
+    const fileName = (message.document.file_name ?? "").toLowerCase();
+    if (!["image/jpeg", "image/png", "image/webp"].includes(mime) && !/\\.(jpe?g|png|webp)$/.test(fileName)) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Не удалось распознать формат файла. Отправьте JPEG, PNG или WEBP." });
+      return;
+    }
   }
   if (message.media_group_id) {
     await handleSecretaryAlbumMessage(env, message, senderId);
