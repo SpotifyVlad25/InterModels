@@ -925,21 +925,42 @@ async function hmacSha256(key: ArrayBuffer | Uint8Array, data: string): Promise<
   const cryptoKey = await crypto.subtle.importKey("raw", key, {name:"HMAC",hash:"SHA-256"}, false, ["sign"]);
   return crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(data));
 }
-async function validateMiniAppInitData(initData: string, botToken: string): Promise<MiniAppActor | null> {
-  if (!initData || initData.length > 8192 || !botToken) return null;
-  const params = new URLSearchParams(initData), suppliedHash = params.get("hash"), authDate = Number(params.get("auth_date")), userRaw = params.get("user");
-  if (!suppliedHash || !/^[a-f0-9]{64}$/i.test(suppliedHash) || !Number.isFinite(authDate) || Math.abs(Date.now()/1000-authDate)>86400 || !userRaw) return null;
+type MiniAppAuthResult = { actor: MiniAppActor | null; reason: string };
+async function validateMiniAppInitData(initData: string, botToken: string): Promise<MiniAppAuthResult> {
+  if (!initData) return { actor: null, reason: "empty_init_data" };
+  if (initData.length > 8192) return { actor: null, reason: "init_data_too_long" };
+  if (!botToken) return { actor: null, reason: "director_bot_token_missing" };
+  const params = new URLSearchParams(initData);
+  const suppliedHash = params.get("hash");
+  const authDateRaw = params.get("auth_date");
+  const userRaw = params.get("user");
+  if (!suppliedHash || !/^[a-f0-9]{64}$/i.test(suppliedHash)) return { actor: null, reason: "hash_missing_or_invalid" };
+  if (!authDateRaw || !/^\d+$/.test(authDateRaw)) return { actor: null, reason: "auth_date_missing_or_invalid" };
+  const authDate = Number(authDateRaw), ageSeconds = Math.floor(Date.now()/1000-authDate);
+  if (!Number.isFinite(authDate)) return { actor: null, reason: "auth_date_invalid" };
+  if (ageSeconds > 86400) return { actor: null, reason: "auth_data_expired" };
+  if (ageSeconds < -300) return { actor: null, reason: "auth_date_in_future" };
+  if (!userRaw) return { actor: null, reason: "user_missing" };
   params.delete("hash");
   const check = [...params.entries()].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([k,v])=>k+"="+v).join("\n");
-  const secret = await hmacSha256(new TextEncoder().encode("WebAppData"), botToken);
-  const actual = bytesToHex(await hmacSha256(secret, check));
-  let diff=0; for(let i=0;i<actual.length;i++) diff |= actual.charCodeAt(i)^suppliedHash.toLowerCase().charCodeAt(i);
-  if(diff!==0) return null;
-  try { const user=JSON.parse(userRaw) as MiniAppActor; return Number.isSafeInteger(Number(user.id))?{...user,id:String(user.id)}:null; } catch { return null; }
+  try {
+    const secret = await hmacSha256(new TextEncoder().encode("WebAppData"), botToken);
+    const actual = bytesToHex(await hmacSha256(secret, check));
+    let diff=0; for(let i=0;i<actual.length;i++) diff |= actual.charCodeAt(i)^suppliedHash.toLowerCase().charCodeAt(i);
+    if(diff!==0) return { actor: null, reason: "signature_mismatch" };
+    try {
+      const user=JSON.parse(userRaw) as MiniAppActor;
+      return Number.isSafeInteger(Number(user.id))?{ actor: {...user,id:String(user.id)}, reason: "ok" }:{ actor: null, reason: "user_id_invalid" };
+    } catch { return { actor: null, reason: "user_json_invalid" }; }
+  } catch {
+    return { actor: null, reason: "signature_check_failed" };
+  }
 }
-async function miniAppActor(request: Request, env: Env): Promise<MiniAppActor|null> {
-  const match=(request.headers.get("Authorization")??"").match(/^tma (.+)$/);
-  return match ? validateMiniAppInitData(match[1],env.DIRECTOR_BOT_TOKEN) : null;
+async function miniAppActor(request: Request, env: Env): Promise<MiniAppAuthResult> {
+  const header = request.headers.get("Authorization") ?? "";
+  const match = header.match(/^tma (.*)$/s);
+  if (!match) return { actor: null, reason: "authorization_header_missing_or_invalid" };
+  return validateMiniAppInitData(match[1], env.DIRECTOR_BOT_TOKEN);
 }
 async function actorHasPermission(env: Env, actorId: string, permission: StaffPermission): Promise<boolean> {
   if(hasDirectorAccess(env, actorId)) return true;
@@ -980,7 +1001,7 @@ function appHtml(): Response {
   <script>
   const tg=window.Telegram?.WebApp;tg?.ready();tg?.expand();const getInitData=()=>tg?.initData||'';const st=document.getElementById('status');let models=[];let selected=new Set();
   window.addEventListener('error',e=>{st.textContent='Ошибка интерфейса: '+(e.message||'неизвестная ошибка')});window.addEventListener('unhandledrejection',e=>{st.textContent='Ошибка запроса: '+(e.reason?.message||String(e.reason||'неизвестная ошибка'))});document.addEventListener('click',e=>{const b=e.target.closest('button');if(b&&!st.textContent)st.textContent='Нажатие принято: '+(b.textContent||b.id)},true);
-  async function api(m,p,b){const r=await fetch(p,{method:m,headers:{Authorization:'tma '+getInitData(),'Content-Type':'application/json'},...(b?{body:JSON.stringify(b)}:{})});const d=await r.json();if(!r.ok)throw Error(d.error||'Ошибка');return d}
+  async function api(m,p,b){const initData=getInitData();if(!initData){st.textContent='Авторизация: Telegram не передал initData. Закройте Mini App и откройте её кнопкой из @InterModels_bot.';throw Error('Telegram initData отсутствует')}const r=await fetch(p,{method:m,headers:{Authorization:'tma '+initData,'Content-Type':'application/json'},...(b?{body:JSON.stringify(b)}:{})});const d=await r.json();if(!r.ok){if(r.status===401&&d.diagnostic_code)st.textContent='Диагностика авторизации: '+d.diagnostic_code;throw Error((d.error||'Ошибка')+(d.diagnostic_code?' ['+d.diagnostic_code+']':''))}return d}
   function updateSelection(){document.getElementById('selectionCount').textContent='Выбрано: '+selected.size}
   function renderModels(){const root=document.getElementById('models');root.innerHTML='';const q=document.getElementById('search').value.trim().toLocaleLowerCase('ru');const filter=document.getElementById('filter').value;const visible=models.filter(m=>(m.first_name+' '+m.last_name).toLocaleLowerCase('ru').includes(q)&&(filter==='all'||m.lifecycle_status===filter));if(!visible.length){root.textContent='Модели не найдены.';return}
   for(const m of visible){const row=document.createElement('label');row.className='person'+(m.lifecycle_status==='frozen'?' frozen':'');const cb=document.createElement('input');cb.type='checkbox';cb.checked=selected.has(m.id);cb.disabled=m.lifecycle_status!=='active';cb.onchange=()=>{cb.checked?selected.add(m.id):selected.delete(m.id);updateSelection()};const meta=document.createElement('div');meta.className='meta';const name=document.createElement('strong');name.textContent=m.first_name+' '+m.last_name;const line=document.createElement('div');line.className=m.lifecycle_status==='frozen'?'status':'muted';line.textContent=m.lifecycle_status==='frozen'?'Заморожена/Заморожен':'Активна анкета';meta.append(name,line);row.append(cb,meta);root.append(row)}updateSelection()}
@@ -1000,8 +1021,19 @@ function appHtml(): Response {
   return new Response(html,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","content-security-policy":"default-src 'self' https://telegram.org; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors https://web.telegram.org https://*.telegram.org"}});
 }
 async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<Response> {
-  const actor = await miniAppActor(request, env);
-  if (!actor) return json({ error: "Недействительная или устаревшая авторизация Telegram." }, 401);
+  const auth = await miniAppActor(request, env);
+  if (!auth.actor) {
+    console.warn("Mini App authentication rejected", {
+      reason: auth.reason,
+      authorizationHeaderPresent: request.headers.has("Authorization"),
+      userAgent: (request.headers.get("User-Agent") ?? "").slice(0, 160),
+    });
+    return json({
+      error: "Недействительная или устаревшая авторизация Telegram.",
+      diagnostic_code: auth.reason,
+    }, 401);
+  }
+  const actor = auth.actor;
   const path = url.pathname;
   const isAdmin = hasDirectorAccess(env, actor.id);
   if (path === "/api/director/models") {
