@@ -3,6 +3,7 @@ interface Env {
   MODEL_BOT_TOKEN: string;
   DIRECTOR_BOT_TOKEN: string;
   DIRECTOR_TELEGRAM_ID: string;
+  OWNER_TELEGRAM_ID: string;
   MODEL_WEBHOOK_SECRET: string;
   DIRECTOR_WEBHOOK_SECRET: string;
 }
@@ -70,6 +71,14 @@ async function createRequest(
     [{ text: "Отклонить заявку", callback_data: `r:${requestId}` }],
   ];
   await sendDirector(env, message, { inline_keyboard: keyboard });
+  // The owner receives visibility into new requests but no approval/rejection controls.
+  if (env.OWNER_TELEGRAM_ID && env.OWNER_TELEGRAM_ID !== env.DIRECTOR_TELEGRAM_ID) {
+    await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
+      chat_id: env.OWNER_TELEGRAM_ID,
+      text: message.replace("\n\nВыберите правильную анкету или отклоните заявку.", "\n\nСтатус: ожидает решения директора."),
+      disable_web_page_preview: true,
+    });
+  }
   await sendModel(env, user.id, "Совпадение найдено. Заявка отправлена директору на проверку. Доступ откроется только после её подтверждения.");
 }
 
@@ -188,17 +197,26 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
 }
 async function handleDirectorMessage(env: Env, message: TelegramMessage): Promise<void> {
   if (!message.from || message.chat.type !== "private") return;
-  if (String(message.from.id) !== env.DIRECTOR_TELEGRAM_ID) {
-    await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: "Этот бот предназначен только для директора InterModels." });
+  const senderId = String(message.from.id);
+  const isDirector = senderId === env.DIRECTOR_TELEGRAM_ID;
+  const isOwner = Boolean(env.OWNER_TELEGRAM_ID) && senderId === env.OWNER_TELEGRAM_ID;
+  if (!isDirector && !isOwner) {
+    await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: "Доступ к этому боту ограничен." });
     return;
   }
   if (message.text?.startsWith("/start")) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
-      chat_id: message.chat.id, text: "InterModels Director подключён. Заявки моделей на привязку к анкетам будут приходить сюда.",
+      chat_id: message.chat.id,
+      text: isDirector
+        ? "InterModels Director подключён. У вас полный доступ к решениям по заявкам."
+        : "InterModels Owner подключён. Вы можете получать уведомления и контролировать заявки. Решения по заявкам принимает директор.",
     });
   } else if (message.text?.startsWith("/help")) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
-      chat_id: message.chat.id, text: "Команды:\n/start — подключить бота\n/help — помощь\n\nЗаявки на подключение приходят сюда автоматически.",
+      chat_id: message.chat.id,
+      text: isDirector
+        ? "Команды:\n/start — подключить бота\n/help — помощь\n\nВы можете принимать и отклонять заявки."
+        : "Команды:\n/start — подключить бота\n/help — помощь\n\nУ вас доступ к уведомлениям. Подтверждать и отклонять заявки может только директор.",
     });
   }
 }
