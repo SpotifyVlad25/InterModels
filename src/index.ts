@@ -1045,7 +1045,7 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.3px}h1 span{color:va
 .im-section{padding:0 14px;margin-bottom:18px}.im-section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.im-link{font-size:12px;color:var(--im-accent);text-decoration:none}
 .im-event-list{background:var(--im-surface);border:1px solid var(--im-border);border-radius:15px;padding:0 13px}.im-event{display:flex;align-items:center;gap:11px;padding:12px 0;border-bottom:1px solid var(--im-border)}.im-event:last-child{border:0}.im-event-icon{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:var(--im-surface2);font-size:15px}.im-event-info{flex:1;min-width:0}.im-event-name{font-size:13px;font-weight:550}.im-event-action{font-size:11px;color:var(--im-muted);margin-top:2px}.im-event-time{font-size:10px;color:var(--im-faint);white-space:nowrap}
 .im-bottom-nav{position:fixed;bottom:0;left:0;right:0;z-index:50;background:rgba(15,17,21,.94);backdrop-filter:blur(14px);border-top:1px solid var(--im-border);display:flex;justify-content:space-around;padding:9px 2px max(18px,env(safe-area-inset-bottom))}.im-bottom-nav a{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;color:var(--im-faint);text-decoration:none;min-width:52px}.im-bottom-nav a.active{color:var(--im-accent)}.im-bottom-nav .nav-icon{font-size:19px}
-.im-theme-panel{display:none;position:fixed;inset:0;z-index:100;background:#0009;align-items:flex-end;justify-content:center}.im-theme-panel.active{display:flex}.im-theme-content{width:100%;max-width:440px;background:var(--im-surface);border-radius:20px 20px 0 0;padding:20px 18px max(30px,env(safe-area-inset-bottom))}.im-theme-title{text-align:center;font-size:15px;font-weight:600;margin-bottom:18px}.im-theme-options{display:flex;justify-content:center;gap:13px}.im-theme-circle{width:40px;height:40px;border-radius:50%;border:3px solid transparent;cursor:pointer;padding:0}.im-theme-circle.active{border-color:white;transform:scale(1.08)}.im-theme-circle[data-theme="emerald"]{background:#34d399}.im-theme-circle[data-theme="ruby"]{background:#f43f5e}.im-theme-circle[data-theme="sapphire"]{background:#38bdf8}.im-theme-circle[data-theme="amethyst"]{background:#a78bfa}.im-theme-circle[data-theme="topaz"]{background:#fbbf24}
+ .im-page{display:none;min-height:calc(100vh - 82px);padding-bottom:12px}.im-page.active{display:block}.im-page>.panel{margin-top:0}.im-page-title{padding:18px 18px 12px;font-size:19px;font-weight:650;letter-spacing:-.3px}.im-page-title span{color:var(--im-accent)}.im-theme-panel{display:none;position:fixed;inset:0;z-index:100;background:#0009;align-items:flex-end;justify-content:center}.im-theme-panel.active{display:flex}.im-theme-content{width:100%;max-width:440px;background:var(--im-surface);border-radius:20px 20px 0 0;padding:20px 18px max(30px,env(safe-area-inset-bottom))}.im-theme-title{text-align:center;font-size:15px;font-weight:600;margin-bottom:18px}.im-theme-options{display:flex;justify-content:center;gap:13px}.im-theme-circle{width:40px;height:40px;border-radius:50%;border:3px solid transparent;cursor:pointer;padding:0}.im-theme-circle.active{border-color:white;transform:scale(1.08)}.im-theme-circle[data-theme="emerald"]{background:#34d399}.im-theme-circle[data-theme="ruby"]{background:#f43f5e}.im-theme-circle[data-theme="sapphire"]{background:#38bdf8}.im-theme-circle[data-theme="amethyst"]{background:#a78bfa}.im-theme-circle[data-theme="topaz"]{background:#fbbf24}
 .panel{background:var(--im-surface);border:1px solid var(--im-border);color:var(--im-text);padding:15px;border-radius:15px;margin:0 14px 14px;scroll-margin-top:12px}
 input,select,button{box-sizing:border-box;width:100%;padding:11px;margin:5px 0;border-radius:9px;border:1px solid var(--im-border);background:var(--im-surface2);color:var(--im-text)}input::placeholder{color:var(--im-faint)}button{background:var(--im-accent);color:#101318;border:0;font-weight:650}button.secondary{background:transparent;color:var(--im-text);border:1px solid var(--im-border)}
 .person{display:flex;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--im-border)}.person:last-child{border:0}.person.frozen{opacity:.52;filter:grayscale(1)}.person input{width:20px;height:20px;margin:0;flex:none}.person .meta{flex:1;min-width:0}.status{color:#38bdf8;font-size:12px;font-weight:700}.active{color:var(--im-accent)}
@@ -1074,9 +1074,39 @@ input,select,button{box-sizing:border-box;width:100%;padding:11px;margin:5px 0;b
   <select id="role"><option value="helper">Помощник</option><option value="viewer">Наблюдатель</option></select>
   <div id="perms"><label class="perm"><input type="checkbox" value="profile.view" checked> Просмотр анкет</label><label class="perm"><input type="checkbox" value="profile.edit"> Редактирование анкет</label><label class="perm"><input type="checkbox" value="photos.manage"> Управление фотографиями</label><label class="perm"><input type="checkbox" value="composite.generate"> Создание композиток</label><label class="perm"><input type="checkbox" value="requests.manage"> Решение заявок</label></div>
   <button id="grant">Выдать права</button><h3>Действующие доступы</h3><div id="staff">Загрузка…</div></section>
-  <nav class="im-bottom-nav"><a href="#dashboardHome" class="active"><span class="nav-icon">⌂</span>Главная</a><a href="#modelsPanel"><span class="nav-icon">👥</span>Модели</a><a href="#compositesPanel"><span class="nav-icon">▦</span>Композитки</a><a href="#tasksPanel"><span class="nav-icon">☑</span>Задания</a><a href="#accessPanel"><span class="nav-icon">•••</span>Ещё</a></nav>
+  <nav class="im-bottom-nav" aria-label="Основная навигация"><a href="#home" data-page="home" class="active"><span class="nav-icon">⌂</span>Главная</a><a href="#models" data-page="models"><span class="nav-icon">👥</span>Модели</a><a href="#composites" data-page="composites"><span class="nav-icon">▦</span>Композитки</a><a href="#tasks" data-page="tasks"><span class="nav-icon">☑</span>Задания</a><a href="#more" data-page="more"><span class="nav-icon">•••</span>Ещё</a></nav>
   <script>
   const st=document.getElementById('status');let models=[];let selected=new Set();const themes=['emerald','ruby','sapphire','amethyst','topaz'];let themeUser='anonymous';const themePanel=document.getElementById('themePanel');
+  // Build real, mutually exclusive app screens; keep existing feature DOM and handlers intact.
+  const pageHost=document.createElement('main');pageHost.id='imPageHost';
+  const nav=document.querySelector('.im-bottom-nav');
+  nav.before(pageHost);
+  const pageNodes={
+    home:['#dashboardHome','.im-greeting','#status','.im-metrics','.im-section'],
+    models:['#modelsPanel'],
+    composites:['#compositesPanel'],
+    tasks:['#tasksPanel','#schedulePanel'],
+    more:['#accessPanel']
+  };
+  const pageTitles={models:'Модели',composites:'Композитки',tasks:'Задания',more:'Управление'};
+  for(const [key,selectors] of Object.entries(pageNodes)){
+    const page=document.createElement('section');page.className='im-page'+(key==='home'?' active':'');page.dataset.screen=key;
+    if(pageTitles[key]){const title=document.createElement('div');title.className='im-page-title';title.textContent=pageTitles[key];page.append(title)}
+    for(const selector of selectors){const node=document.querySelector(selector);if(node)page.append(node)}
+    pageHost.append(page);
+  }
+  function showPage(key,updateHash=true){
+    if(!Object.prototype.hasOwnProperty.call(pageNodes,key))key='home';
+    document.querySelectorAll('.im-page').forEach(page=>page.classList.toggle('active',page.dataset.screen===key));
+    document.querySelectorAll('.im-bottom-nav a').forEach(link=>link.classList.toggle('active',link.dataset.page===key));
+    if(updateHash&&location.hash!=='#'+key)history.replaceState(null,'','#'+key);
+    window.scrollTo({top:0,behavior:'instant'});
+  }
+  nav.addEventListener('click',event=>{const link=event.target.closest('a[data-page]');if(!link)return;event.preventDefault();showPage(link.dataset.page)});
+  document.querySelector('.im-link')?.addEventListener('click',event=>{event.preventDefault();showPage('models')});
+  window.addEventListener('hashchange',()=>{const key=location.hash.slice(1);if(pageNodes[key])showPage(key,false)});
+  if(pageNodes[location.hash.slice(1)])showPage(location.hash.slice(1),false);
+
   function applyTheme(theme){if(!themes.includes(theme))theme='emerald';if(theme==='emerald')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',theme);document.querySelectorAll('.im-theme-circle').forEach(el=>el.classList.toggle('active',el.dataset.theme===theme));try{localStorage.setItem('intermodels-theme-'+themeUser,theme)}catch{}}
   document.getElementById('themeToggle').onclick=()=>themePanel.classList.add('active');themePanel.onclick=e=>{if(e.target===themePanel)themePanel.classList.remove('active')};document.querySelectorAll('.im-theme-circle').forEach(el=>el.onclick=()=>{applyTheme(el.dataset.theme);themePanel.classList.remove('active')});
   function initTheme(){const user=window.Telegram?.WebApp?.initDataUnsafe?.user;themeUser=user?.id?String(user.id):'anonymous';let saved='emerald';try{saved=localStorage.getItem('intermodels-theme-'+themeUser)||'emerald'}catch{}applyTheme(saved);if(user){const full=[user.first_name,user.last_name].filter(Boolean).join(' ');document.getElementById('directorGreeting').textContent=full?'Добро пожаловать, '+full:'Добро пожаловать'}}
