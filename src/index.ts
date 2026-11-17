@@ -469,16 +469,16 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   // Keep long names inside the right-hand text column.
   const nameSize = rawName.length > 23 ? 28 : rawName.length > 18 ? 34 : rawName.length > 14 ? 39 : 44;
   const leftValues = [
-    model.height_cm != null ? "HEIGHT  " + model.height_cm + " CM" : null,
-    model.bust_cm != null ? "BUST  " + model.bust_cm + " CM" : null,
-    model.waist_cm != null ? "WAIST  " + model.waist_cm + " CM" : null,
-    model.hips_cm != null ? "HIPS  " + model.hips_cm + " CM" : null,
+    model.height_cm != null ? "РОСТ  " + model.height_cm + " СМ" : null,
+    model.bust_cm != null ? "ГРУДЬ  " + model.bust_cm + " СМ" : null,
+    model.waist_cm != null ? "ТАЛИЯ  " + model.waist_cm + " СМ" : null,
+    model.hips_cm != null ? "БЁДРА  " + model.hips_cm + " СМ" : null,
   ];
   const rightValues = [
-    model.hair_color ? "HAIR  " + model.hair_color : null,
-    model.eye_color ? "EYES  " + model.eye_color : null,
-    model.clothing_size ? "CLOTHING  " + model.clothing_size : null,
-    model.shoe_size ? "SHOES  " + model.shoe_size : null,
+    model.hair_color ? "ВОЛОСЫ  " + model.hair_color : null,
+    model.eye_color ? "ГЛАЗА  " + model.eye_color : null,
+    model.clothing_size ? "ОДЕЖДА  " + model.clothing_size : null,
+    model.shoe_size ? "ОБУВЬ  " + model.shoe_size : null,
   ];
   // Keep each category in its own column and preserve row positions when a value is absent.
   const renderDetails = (items: Array<string | null>, x: number) => items
@@ -493,7 +493,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
     `<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet"/>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1600" height="2260" viewBox="0 0 1600 2260">
   <rect width="1600" height="2260" fill="#fff"/>
-  <text x="90" y="70" class="brand">INTERMODELS</text><text x="1510" y="70" text-anchor="end" class="small">MODEL PORTFOLIO</text>
+  <text x="90" y="70" class="brand">INTERMODELS</text><text x="1510" y="70" text-anchor="end" class="small">ПОРТФОЛИО МОДЕЛИ</text>
   <defs><clipPath id="a"><rect x="90" y="110" width="820" height="1093"/></clipPath><clipPath id="b"><rect x="950" y="110" width="560" height="700"/></clipPath><clipPath id="c"><rect x="950" y="850" width="560" height="700"/></clipPath><clipPath id="d"><rect x="90" y="1240" width="820" height="820"/></clipPath></defs>
   <g clip-path="url(#a)"><rect x="90" y="110" width="820" height="1093" fill="#f1f1f1"/> ${img(photos[0],90,110,820,1093)}</g>
   <g clip-path="url(#b)"><rect x="950" y="110" width="560" height="700" fill="#f1f1f1"/> ${img(photos[1],950,110,560,700)}</g>
@@ -596,9 +596,14 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   if (threadId === undefined) return;
   const media = message.photo?.length ? message.photo[message.photo.length - 1] : message.document;
   if (!media) return;
-  if (message.document && !["image/jpeg", "image/png", "image/webp"].includes((message.document.mime_type ?? "").toLowerCase())) {
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "Файлы должны быть изображениями JPEG, PNG или WEBP." });
-    return;
+  if (message.document) {
+    const mime = (message.document.mime_type ?? "").toLowerCase();
+    const fileName = (message.document.file_name ?? "").toLowerCase();
+    const supportedByName = /\\.(jpe?g|png|webp)$/.test(fileName);
+    if (!["image/jpeg", "image/png", "image/webp"].includes(mime) && !supportedByName) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "Не удалось распознать формат файла. Отправьте 4 изображения JPEG, PNG или WEBP как файлы." });
+      return;
+    }
   }
   const caption = (message.caption ?? "").trim();
   let modelId: string | null = null;
@@ -635,9 +640,9 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
       "UPDATE secretary_photo_album_items SET model_id = ? WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND model_id IS NULL",
     ).bind(modelId, String(message.chat.id), threadId, senderId, albumId).run();
   }
-  // Telegram delivers each media-group item as a separate webhook update.
-  // Give sibling updates time to persist before deciding that the album is incomplete.
-  await new Promise((resolve) => setTimeout(resolve, 1800));
+  // Telegram delivers media-group parts as independent webhook updates.
+  // A longer settle window lets all four D1 writes finish before finalization.
+  await new Promise((resolve) => setTimeout(resolve, 3500));
   const album = await env.DB.prepare(
     "SELECT message_id, model_id, telegram_file_id AS file_id, telegram_file_unique_id AS file_unique_id FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? ORDER BY message_id",
   ).bind(String(message.chat.id), threadId, senderId, albumId)
@@ -651,13 +656,23 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   }
   if (items.length !== 4 || items.some((item) => !item.model_id)) return;
   const resolvedModelId = items[0].model_id!;
+  const claim = await env.DB.prepare(
+    "UPDATE secretary_photo_album_items SET processed_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND processed_at IS NULL",
+  ).bind(String(message.chat.id), threadId, senderId, albumId).run();
+  if ((claim.meta?.changes ?? 0) === 0) return;
   if (items.some((item) => item.model_id !== resolvedModelId)) {
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "У фотографий альбома должно быть одно ФИО в подписи первого снимка. Отправьте комплект заново." });
     return;
   }
-  await saveSecretaryPhotoSet(env, resolvedModelId, items.map(({file_id,file_unique_id}) => ({file_id,file_unique_id})), senderId, message.chat.id, threadId);
+  try {
+    await saveSecretaryPhotoSet(env, resolvedModelId, items.map(({file_id,file_unique_id}) => ({file_id,file_unique_id})), senderId, message.chat.id, threadId);
+  } catch (error) {
+    await env.DB.prepare("UPDATE secretary_photo_album_items SET processed_at = NULL WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
+      .bind(String(message.chat.id), threadId, senderId, albumId).run();
+    throw error;
+  }
   await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
     .bind(String(message.chat.id), threadId, senderId, albumId).run();
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
