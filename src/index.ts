@@ -515,23 +515,29 @@ async function compositeFontBuffer(value: unknown): Promise<Uint8Array> {
   }
   throw new Error("Unsupported font asset type: " + Object.prototype.toString.call(value));
 }
-async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: string[]): Promise<Uint8Array> {
+async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: string[], onStage?: (stage: string) => Promise<void>): Promise<Uint8Array> {
   let stage = "init_wasm";
   try {
+    await onStage?.("Инициализация графического движка");
     await ensureResvg();
     stage = "download_photos";
+    await onStage?.("Загрузка 4 фотографий");
     const photos = await Promise.all(fileIds.map((id) => getSecretaryPhotoData(env, id)));
     stage = "build_svg";
+    await onStage?.("Сборка макета");
     const svg = compositeSvg(model, photos);
     stage = "prepare_fonts";
+    await onStage?.("Подготовка шрифтов");
     const fontBuffers = await Promise.all([compositeFontBuffer(robotoCyrillic), compositeFontBuffer(robotoLatin)]);
     if (fontBuffers.some((font) => font.byteLength < 4 || !((font[0] === 0x77 && font[1] === 0x4f && font[2] === 0x46 && font[3] === 0x32) || (font[0] === 0 && font[1] === 1 && font[2] === 0 && font[3] === 0) || (font[0] === 79 && font[1] === 84 && font[2] === 84 && font[3] === 79)))) {
       throw new Error("Roboto font asset has an unsupported or invalid signature");
     }
     stage = "create_renderer";
+    await onStage?.("Создание рендерера Resvg");
     const renderer = new Resvg(svg, { font: { fontBuffers, defaultFontFamily: "Roboto", loadSystemFonts: false } });
     try {
       stage = "rasterize_png";
+      await onStage?.("Рендеринг PNG");
       return renderer.render().asPng();
     } finally { renderer.free(); }
   } catch (error) {
@@ -1074,7 +1080,7 @@ function appHtml(): Response {
   async function loadModels(){try{const d=await api('GET','/api/director/models');models=d.models;renderModels()}catch(e){document.getElementById('models').textContent=e.message}}
   async function loadStats(){try{const d=await api('GET','/api/director/refresh-status');const c=d.campaign;if(!c){document.getElementById('refreshStats').textContent='Кампания ещё не запускалась.';return}document.getElementById('refreshStats').textContent='Моделей: '+c.total+' · Обновлено: '+c.updated+' · Ожидают: '+c.pending+' · Заморожено: '+c.frozen+' · Comp опубликовано: '+c.published+' · Ошибок: '+c.failed}catch(e){document.getElementById('refreshStats').textContent=e.message}}
   function formatJobTime(value){if(!value)return 'время неизвестно';const raw=String(value);const date=new Date(raw.includes('T')?(raw.endsWith('Z')||/[+-]\\d\\d:\\d\\d$/.test(raw)?raw:raw+'Z'):raw.replace(' ','T')+'Z');if(Number.isNaN(date.getTime()))return raw;return new Intl.DateTimeFormat('ru-RU',{timeZone:'Asia/Yekaterinburg',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(date)+' (UTC+5)'}
-  async function loadCompositeJobs(){const root=document.getElementById('compositeJobs');try{const d=await api('GET','/api/director/composites');root.innerHTML='';if(!d.jobs.length){root.textContent='Заданий пока нет.';return}for(const j of d.jobs){const item=document.createElement('div');item.className='person';const title=document.createElement('strong');title.textContent=(j.first_name||'Модель')+' '+(j.last_name||'')+' · '+({pending:'В очереди',processing:'Генерируется',published:'Опубликована',failed:'Ошибка'}[j.status]||j.status);const info=document.createElement('div');info.className='muted';info.textContent='Попыток: '+j.attempts+' · '+formatJobTime(j.updated_at)+(j.last_error?' · '+j.last_error:'');item.append(title,info);root.append(item)}}catch(e){root.textContent='Не удалось получить статус: '+e.message}}
+  async function loadCompositeJobs(){const root=document.getElementById('compositeJobs');try{const d=await api('GET','/api/director/composites');root.innerHTML='';if(!d.jobs.length){root.textContent='Заданий пока нет.';return}for(const j of d.jobs){const item=document.createElement('div');item.className='person';const title=document.createElement('strong');title.textContent=(j.first_name||'Модель')+' '+(j.last_name||'')+' · '+({pending:'В очереди',processing:'Генерируется',published:'Опубликована',failed:'Ошибка'}[j.status]||j.status);const info=document.createElement('div');info.className='muted';info.textContent='Попыток: '+j.attempts+' · '+formatJobTime(j.updated_at)+(j.last_error?(j.status==='failed'?' · Причина: ':' · Этап: ')+j.last_error:'');item.append(title,info);root.append(item)}}catch(e){root.textContent='Не удалось получить статус: '+e.message}}
   async function queue(ids,manual=false){try{const d=await api('POST','/api/director/composites',{model_ids:ids,manual});st.textContent=(manual?'Ручное обновление: ':'В ежемесячную очередь добавлено: ')+d.queued;await loadStats();await loadCompositeJobs()}catch(e){st.textContent=e.message}}
   document.getElementById('reloadCompositeJobs').onclick=loadCompositeJobs;
   document.getElementById('search').oninput=renderModels;document.getElementById('filter').onchange=renderModels;
@@ -1279,10 +1285,12 @@ async function queueCompositeRefresh(env: Env, modelIds: string[] | null, actorI
     .bind(randomId(), actorId, JSON.stringify({ campaign_id: campaignId, manual, model_ids: rows.map((row) => row.model_id) })).run();
   return { campaignId, queued: rows.length };
 }
-async function publishCompositeModel(env: Env, campaignId: string, modelId: string): Promise<void> {
+async function publishCompositeModel(env: Env, campaignId: string, modelId: string, onStage?: (stage: string) => Promise<void>): Promise<void> {
+  await onStage?.("Проверка темы публикации");
   const topic = await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id = 1")
     .first<{ chat_id: string; thread_id: number }>();
   if (!topic) throw new Error("Тема «КОМПОЗИТКИ» не подключена.");
+  await onStage?.("Загрузка анкеты модели");
   const model = await env.DB.prepare(
     `SELECT m.id,m.first_name,m.last_name,p.height_cm,p.bust_cm,p.waist_cm,p.hips_cm,
       p.clothing_size,p.shoe_size,p.hair_color,p.eye_color
@@ -1290,13 +1298,15 @@ async function publishCompositeModel(env: Env, campaignId: string, modelId: stri
      WHERE m.id=? AND m.is_active=1 AND m.lifecycle_status='active'`,
   ).bind(modelId).first<SecretaryModelRow>();
   if (!model) throw new Error("Модель не найдена в активной базе.");
+  await onStage?.("Проверка фотографий модели");
   const result = await env.DB.prepare("SELECT position,telegram_file_id FROM model_telegram_photos WHERE model_id=? ORDER BY position")
     .bind(modelId).all<{ position: number; telegram_file_id: string }>();
   const photos = result.results ?? [];
   if (photos.length !== 4 || photos.some((photo, index) => photo.position !== index + 1)) {
     throw new Error("Для модели не загружены все четыре фотографии.");
   }
-  const png = await renderCompositePng(env, model, photos.map((photo) => photo.telegram_file_id));
+  const png = await renderCompositePng(env, model, photos.map((photo) => photo.telegram_file_id), onStage);
+  await onStage?.("Отправка PNG в Telegram");
   const messageId = await sendCompositePng(env, Number(topic.chat_id), topic.thread_id, png, model.first_name + " " + model.last_name + " · InterModels");
   if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("Telegram не вернул ID новой композитки.");
   const old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
@@ -1316,18 +1326,23 @@ async function publishCompositeModel(env: Env, campaignId: string, modelId: stri
   ).bind(modelId, topic.chat_id, topic.thread_id, messageId, campaignId).run();
 }
 async function processCompositeRefreshJobs(env: Env): Promise<void> {
-  await env.DB.prepare("UPDATE composite_refresh_jobs SET status='pending',updated_at=CURRENT_TIMESTAMP WHERE status='processing' AND updated_at < datetime('now','-10 minutes')").run();
+  // A job that has made no progress for 10 minutes is failed explicitly, not silently requeued forever.
+  await env.DB.prepare("UPDATE composite_refresh_jobs SET status='failed',last_error=CASE WHEN last_error IS NULL OR last_error='' THEN 'Тайм-аут: задание не завершилось за 10 минут.' ELSE 'Тайм-аут после этапа: ' || last_error END,updated_at=CURRENT_TIMESTAMP WHERE status='processing' AND updated_at < datetime('now','-10 minutes')").run();
   const jobs = await env.DB.prepare(
     `SELECT campaign_id,model_id FROM composite_refresh_jobs
      WHERE status='pending' ORDER BY created_at LIMIT 2`,
   ).all<{ campaign_id: string; model_id: string }>();
   for (const job of jobs.results ?? []) {
     const claim = await env.DB.prepare(
-      "UPDATE composite_refresh_jobs SET status='processing',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND status='pending'",
+      "UPDATE composite_refresh_jobs SET status='processing',attempts=attempts+1,last_error='Запуск задания',updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND status='pending'",
     ).bind(job.campaign_id, job.model_id).run();
     if (!claim.meta.changes) continue;
+    const onStage = async (stage: string) => {
+      await env.DB.prepare("UPDATE composite_refresh_jobs SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND status='processing'")
+        .bind(stage, job.campaign_id, job.model_id).run();
+    };
     try {
-      await publishCompositeModel(env, job.campaign_id, job.model_id);
+      await publishCompositeModel(env, job.campaign_id, job.model_id, onStage);
       await env.DB.prepare("UPDATE composite_refresh_jobs SET status='published',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=?")
         .bind(job.campaign_id, job.model_id).run();
     } catch (error) {
