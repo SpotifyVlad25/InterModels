@@ -22,7 +22,7 @@ interface Env {
 interface TelegramUser { id: number; first_name?: string; last_name?: string; username?: string; }
 interface TelegramMessage {
   message_id: number; message_thread_id?: number; from?: TelegramUser; chat: { id: number; type: string };
-  text?: string; caption?: string; media_group_id?: string; photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>; contact?: { phone_number: string; user_id?: number };
+  text?: string; caption?: string; media_group_id?: string; photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>; document?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string; file_size?: number }; contact?: { phone_number: string; user_id?: number };
 }
 interface TelegramCallbackQuery { id: string; from: TelegramUser; data?: string; message?: TelegramMessage; }
 interface TelegramUpdate { update_id?: number; message?: TelegramMessage; callback_query?: TelegramCallbackQuery; }
@@ -447,22 +447,21 @@ async function getSecretaryPhotoData(env: Env, fileId: string): Promise<string> 
   const path = file.result?.file_path;
   if (typeof path !== "string" || !path) throw new Error("Telegram photo path missing");
   const imageUrl = "https://api.telegram.org/file/bot" + env.SECRETARY_BOT_TOKEN + "/" + path;
-  // Keep high-resolution source images for a sharp 2x comp-card render.
-  const response = await fetch(imageUrl, {
-    cf: {
-      image: {
-        fit: "scale-down",
-        width: 1600,
-        height: 1600,
-        quality: 90,
-        format: "jpeg",
-      },
-    },
-  });
-  if (!response.ok) throw new Error("Unable to download/resize Telegram photo (HTTP " + response.status + ")");
+  // Download the original Telegram file without Cloudflare image resizing or JPEG recompression.
+  const response = await fetch(imageUrl);
+  if (!response.ok) throw new Error("Unable to download Telegram image (HTTP " + response.status + ")");
   const bytes = new Uint8Array(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > 8 * 1024 * 1024) throw new Error("Resized photo size is invalid");
-  return "data:image/jpeg;base64," + bytesToBase64(bytes);
+  if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error("Original image size is invalid (maximum 20 MB)");
+  const headerType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  const extension = path.split(".").pop()?.toLowerCase();
+  const mime = headerType.startsWith("image/") ? headerType :
+    extension === "png" ? "image/png" :
+    extension === "webp" ? "image/webp" :
+    extension === "jpg" || extension === "jpeg" ? "image/jpeg" : "";
+  if (!["image/jpeg", "image/png", "image/webp"].includes(mime)) {
+    throw new Error("Unsupported image format. Send JPEG, PNG or WEBP files.");
+  }
+  return "data:" + mime + ";base64," + bytesToBase64(bytes);
 }
 function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   const rawName = (model.first_name + " " + model.last_name).toUpperCase();
@@ -595,8 +594,12 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   const albumId = message.media_group_id!;
   const threadId = message.message_thread_id;
   if (threadId === undefined) return;
-  const photo = message.photo?.[message.photo.length - 1];
-  if (!photo) return;
+  const media = message.photo?.length ? message.photo[message.photo.length - 1] : message.document;
+  if (!media) return;
+  if (message.document && !["image/jpeg", "image/png", "image/webp"].includes((message.document.mime_type ?? "").toLowerCase())) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "Файлы должны быть изображениями JPEG, PNG или WEBP." });
+    return;
+  }
   const caption = (message.caption ?? "").trim();
   let modelId: string | null = null;
   if (caption) {
@@ -626,7 +629,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
        model_id = COALESCE(excluded.model_id, secretary_photo_album_items.model_id),
        telegram_file_id = excluded.telegram_file_id,
        telegram_file_unique_id = excluded.telegram_file_unique_id`,
-  ).bind(String(message.chat.id), threadId, senderId, albumId, message.message_id, modelId, photo.file_id, photo.file_unique_id).run();
+  ).bind(String(message.chat.id), threadId, senderId, albumId, message.message_id, modelId, media.file_id, media.file_unique_id).run();
   if (modelId) {
     await env.DB.prepare(
       "UPDATE secretary_photo_album_items SET model_id = ? WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND model_id IS NULL",
@@ -833,12 +836,16 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   }
   const topic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_photo_topics WHERE id = 1").first<{chat_id:string;thread_id:number}>();
   if (!topic || topic.chat_id !== String(message.chat.id) || topic.thread_id !== message.message_thread_id) return;
-  if (!(await secretaryAllowed(env, senderId)) || !message.photo?.length) return;
+  if (!(await secretaryAllowed(env, senderId)) || (!message.photo?.length && !message.document)) return;
+  if (message.document && !["image/jpeg", "image/png", "image/webp"].includes((message.document.mime_type ?? "").toLowerCase())) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Файлы должны быть изображениями JPEG, PNG или WEBP." });
+    return;
+  }
   if (message.media_group_id) {
     await handleSecretaryAlbumMessage(env, message, senderId);
     return;
   }
-  const bestPhoto = message.photo[message.photo.length - 1];
+  const bestPhoto = message.photo?.length ? message.photo[message.photo.length - 1] : message.document!;
   const caption = (message.caption ?? "").trim();
   if (caption) {
     if (caption.length > 100 || /[\r\n]/.test(caption)) {
