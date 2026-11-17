@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS secretary_photo_batches (
   uploader_id TEXT NOT NULL,
   model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
   next_position INTEGER NOT NULL CHECK (next_position BETWEEN 2 AND 5),
+  photos_json TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (chat_id, thread_id, uploader_id)
 );
