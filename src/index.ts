@@ -1841,7 +1841,7 @@ export default {
       chatType: update.message?.chat?.type ?? update.callback_query?.message?.chat?.type ?? null,
       chatId: update.message?.chat?.id ?? update.callback_query?.message?.chat?.id ?? null,
       senderId: update.message?.from?.id ?? update.callback_query?.from?.id ?? null,
-      text: (update.message?.text ?? "").slice(0, 100),
+      textCommand: update.message?.text?.trim().match(/^\/[A-Za-z0-9_]+/)?.[0] ?? (update.message?.text ? "plain_text" : null),
       callbackData: (update.callback_query?.data ?? "").slice(0, 80),
     });
     try {
