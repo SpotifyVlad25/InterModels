@@ -27,13 +27,13 @@ function normalizePhone(value: string): string { return value.replace(/\D/g, "")
 function randomId(): string { return crypto.randomUUID().replace(/-/g, "").slice(0, 12); }
 
 async function telegram(token: string, method: string, payload: Record<string, unknown>): Promise<any> {
-  const response = await fetch(\`https://api.telegram.org/bot\${token}/\${method}\`, {
+  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
   });
   const result: any = await response.json();
   if (!response.ok || !result.ok) {
     console.error("Telegram API error", method, result);
-    throw new Error(\`Telegram API request failed: \${method}\`);
+    throw new Error(`Telegram API request failed: ${method}`);
   }
   return result;
 }
@@ -56,18 +56,18 @@ async function createRequest(
 ): Promise<void> {
   const requestId = randomId();
   await env.DB.prepare(
-    \`INSERT INTO registration_requests
+    `INSERT INTO registration_requests
       (id, telegram_user_id, username, telegram_first_name, telegram_last_name, search_method, submitted_value, candidate_model_ids)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)\`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(requestId, String(user.id), user.username ?? null, user.first_name ?? null,
     user.last_name ?? null, method, submittedValue, JSON.stringify(candidates.map((m) => m.id))).run();
 
-  const candidateLines = candidates.map((m) => \`• \${m.first_name} \${m.last_name} (анкета \${m.id})\`).join("\\n");
-  const userLabel = user.username ? \`@\${user.username}\` : "без username";
-  const message = \`Новая заявка на подключение InterModels\\n\\nПользователь: \${user.first_name ?? ""} \${user.last_name ?? ""} (\${userLabel})\\nTelegram ID: \${user.id}\\nСпособ поиска: \${method === "name" ? "ФИО" : "телефон"}\\nВведённые данные: \${submittedValue}\\n\\nНайденные анкеты:\\n\${candidateLines}\\n\\nВыберите правильную анкету или отклоните заявку.\`;
+  const candidateLines = candidates.map((m) => `• ${m.first_name} ${m.last_name} (анкета ${m.id})`).join("\n");
+  const userLabel = user.username ? `@${user.username}` : "без username";
+  const message = `Новая заявка на подключение InterModels\n\nПользователь: ${user.first_name ?? ""} ${user.last_name ?? ""} (${userLabel})\nTelegram ID: ${user.id}\nСпособ поиска: ${method === "name" ? "ФИО" : "телефон"}\nВведённые данные: ${submittedValue}\n\nНайденные анкеты:\n${candidateLines}\n\nВыберите правильную анкету или отклоните заявку.`;
   const keyboard = [
-    ...candidates.map((m) => [{ text: \`Принять: \${m.first_name} \${m.last_name}\`.slice(0, 60), callback_data: \`a:\${requestId}:\${m.id}\` }]),
-    [{ text: "Отклонить заявку", callback_data: \`r:\${requestId}\` }],
+    ...candidates.map((m) => [{ text: `Принять: ${m.first_name} ${m.last_name}`.slice(0, 60), callback_data: `a:${requestId}:${m.id}` }]),
+    [{ text: "Отклонить заявку", callback_data: `r:${requestId}` }],
   ];
   await sendDirector(env, message, { inline_keyboard: keyboard });
   await sendModel(env, user.id, "Совпадение найдено. Заявка отправлена директору на проверку. Доступ откроется только после её подтверждения.");
@@ -78,13 +78,13 @@ async function handleModelMessage(env: Env, message: TelegramMessage): Promise<v
   if (!user || message.chat.type !== "private") return;
   if (message.text?.startsWith("/start")) {
     await env.DB.prepare(
-      \`INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
+      `INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
        VALUES (?, 'awaiting_name', '{}', CURRENT_TIMESTAMP)
-       ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', data_json = '{}', updated_at = CURRENT_TIMESTAMP\`,
+       ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', data_json = '{}', updated_at = CURRENT_TIMESTAMP`,
     ).bind(String(user.id)).run();
     await telegram(env.MODEL_BOT_TOKEN, "sendMessage", {
       chat_id: user.id,
-      text: "Добро пожаловать в InterModels!\\n\\nВведите имя и фамилию точно так, как они указаны в агентстве. Либо отправьте свой номер телефона кнопкой ниже.",
+      text: "Добро пожаловать в InterModels!\n\nВведите имя и фамилию точно так, как они указаны в агентстве. Либо отправьте свой номер телефона кнопкой ниже.",
       reply_markup: { keyboard: [[{ text: "Поделиться контактом", request_contact: true }]], resize_keyboard: true, one_time_keyboard: true },
     });
     return;
@@ -118,7 +118,7 @@ async function handleModelMessage(env: Env, message: TelegramMessage): Promise<v
   const target = normalizeName(message.text);
   if (target.length < 3) { await sendModel(env, user.id, "Введите полные имя и фамилию."); return; }
   const models = await getActiveModels(env);
-  const matches = models.filter((m) => normalizeName(\`\${m.first_name} \${m.last_name}\`) === target);
+  const matches = models.filter((m) => normalizeName(`${m.first_name} ${m.last_name}`) === target);
   const candidates = matches.filter((m) => !m.telegram_user_id || m.telegram_user_id === String(user.id));
   if (!candidates.length) {
     await sendModel(env, user.id, matches.length
@@ -164,7 +164,7 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
     await env.DB.prepare("UPDATE registration_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP, decided_by = ? WHERE id = ? AND status = 'pending'")
       .bind(String(callback.from.id), requestId).run();
     await env.DB.prepare("INSERT INTO model_profiles (model_id) VALUES (?) ON CONFLICT(model_id) DO NOTHING").bind(modelId).run();
-    await sendModel(env, req.telegram_user_id, \`Добро пожаловать в InterModels, \${model.first_name}! Ваша регистрация подтверждена. Следующим этапом добавим заполнение параметров профиля.\`);
+    await sendModel(env, req.telegram_user_id, `Добро пожаловать в InterModels, ${model.first_name}! Ваша регистрация подтверждена. Следующим этапом добавим заполнение параметров профиля.`);
     await answerCallback(env, callback, "Модель успешно подключена.");
     if (callback.message) await telegram(env.DIRECTOR_BOT_TOKEN, "editMessageReplyMarkup", {
       chat_id: callback.message.chat.id, message_id: callback.message.message_id, reply_markup: { inline_keyboard: [] },
@@ -198,7 +198,7 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
     });
   } else if (message.text?.startsWith("/help")) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
-      chat_id: message.chat.id, text: "Команды:\\n/start — подключить бота\\n/help — помощь\\n\\nЗаявки на подключение приходят сюда автоматически.",
+      chat_id: message.chat.id, text: "Команды:\n/start — подключить бота\n/help — помощь\n\nЗаявки на подключение приходят сюда автоматически.",
     });
   }
 }
