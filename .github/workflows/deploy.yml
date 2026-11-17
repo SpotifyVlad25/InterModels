@@ -77,6 +77,34 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      - name: Configure model Telegram webhook
+        shell: bash
+        env:
+          MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
+          MODEL_WEBHOOK_SECRET: ${{ secrets.MODEL_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          expected_url="https://intermodels.spotify-vlad25.workers.dev/webhook/model"
+          result="$(curl -fsS -X POST "https://api.telegram.org/bot${MODEL_BOT_TOKEN}/setWebhook" \
+            --data-urlencode "url=$expected_url" \
+            --data-urlencode "secret_token=${MODEL_WEBHOOK_SECRET}" \
+            --data-urlencode 'allowed_updates=["message"]')"
+          printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok){console.error("Model setWebhook failed:",j.description||"unknown error");process.exit(1)}console.log("Model webhook configured.")})'
+
+      - name: Configure director Telegram webhook
+        shell: bash
+        env:
+          DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
+          DIRECTOR_WEBHOOK_SECRET: ${{ secrets.DIRECTOR_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          expected_url="https://intermodels.spotify-vlad25.workers.dev/webhook/director"
+          result="$(curl -fsS -X POST "https://api.telegram.org/bot${DIRECTOR_BOT_TOKEN}/setWebhook" \
+            --data-urlencode "url=$expected_url" \
+            --data-urlencode "secret_token=${DIRECTOR_WEBHOOK_SECRET}" \
+            --data-urlencode 'allowed_updates=["message","callback_query"]')"
+          printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok){console.error("Director setWebhook failed:",j.description||"unknown error");process.exit(1)}console.log("Director webhook configured.")})'
+
       - name: Configure secretary Telegram webhook
         shell: bash
         env:
