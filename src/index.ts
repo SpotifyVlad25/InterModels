@@ -45,13 +45,22 @@ function normalizePhone(value: string): string { return value.replace(/\D/g, "")
 function randomId(): string { return crypto.randomUUID().replace(/-/g, "").slice(0, 12); }
 type SecretaryOperationKind = "photo_upload" | "composite" | "composite_batch";
 async function startSecretaryOperation(
-  env: Env, kind: SecretaryOperationKind, actorId: string, chatId: number, threadId: number,
+  env: Env, kind: SecretaryOperationKind, actorId: string, chatId: number, threadId: number, sourceKey?: string,
 ): Promise<string> {
   const id = randomId();
   await env.DB.prepare(
-    "INSERT INTO secretary_operations (id,kind,actor_id,chat_id,thread_id,status) VALUES (?,?,?,?,?,'running')",
-  ).bind(id, kind, actorId, String(chatId), threadId).run();
+    "INSERT INTO secretary_operations (id,kind,actor_id,chat_id,thread_id,source_key,status) VALUES (?,?,?,?,?,?, 'running')",
+  ).bind(id, kind, actorId, String(chatId), threadId, sourceKey ?? null).run();
   return id;
+}
+async function getOrStartSecretaryOperation(
+  env: Env, kind: SecretaryOperationKind, actorId: string, chatId: number, threadId: number, sourceKey: string,
+): Promise<{ id: string; status: string }> {
+  const existing = await env.DB.prepare("SELECT id,status FROM secretary_operations WHERE source_key=?")
+    .bind(sourceKey).first<{id:string;status:string}>();
+  if (existing) return existing;
+  const id = await startSecretaryOperation(env, kind, actorId, chatId, threadId, sourceKey);
+  return { id, status: "running" };
 }
 async function assertSecretaryOperationActive(env: Env, operationId?: string): Promise<void> {
   if (!operationId) return;
@@ -711,6 +720,17 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "В альбоме должно быть ровно 4 фотографии. Отправьте комплект заново." });
     return;
   }
+  const albumSourceKey = [String(message.chat.id), String(threadId), senderId, albumId].join("|");
+  const albumOperation = await getOrStartSecretaryOperation(
+    env, "photo_upload", senderId, message.chat.id, threadId, albumSourceKey,
+  );
+  if (albumOperation.status === "cancelled") {
+    await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?")
+      .bind(String(message.chat.id), threadId, senderId, albumId).run();
+    await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?")
+      .bind(String(message.chat.id), threadId, senderId, albumId).run();
+    return;
+  }
   if (items.length !== 4) {
     if (items.length > 0 && message.message_id === Math.max(...items.map((item) => item.message_id))) {
       await env.DB.prepare(
@@ -727,12 +747,14 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
       if (status?.status_message_id) {
         await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
           chat_id: message.chat.id, message_id: status.status_message_id, text,
+          reply_markup: secretaryCancelKeyboard(albumOperation.id),
         });
       } else {
         const sent = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
           chat_id: message.chat.id, message_thread_id: threadId, text,
+          reply_markup: secretaryCancelKeyboard(albumOperation.id),
         });
-        const sentMessageId = (sent as {message_id?:number})?.message_id;
+        const sentMessageId = sent.result?.message_id;
         if (sentMessageId) {
           await env.DB.prepare(
             "INSERT INTO secretary_photo_album_status (chat_id, thread_id, uploader_id, media_group_id, status_message_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, thread_id, uploader_id, media_group_id) DO UPDATE SET status_message_id = excluded.status_message_id",
@@ -810,7 +832,8 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
     return;
   }
-  const operationId = await startSecretaryOperation(env, "photo_upload", senderId, message.chat.id, threadId);
+  const operationId = albumOperation.id;
+  await assertSecretaryOperationActive(env, operationId);
   const uploadStatus = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
     chat_id: message.chat.id, message_thread_id: threadId,
     text: "Сохраняю 4 фотографии в MODEL BANK…",
@@ -1297,10 +1320,21 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
   const cancelMatch = data.match(/^op_cancel:([a-f0-9]{12})$/);
   if (cancelMatch) {
     const operationId = cancelMatch[1];
+    const operation = await env.DB.prepare("SELECT kind,source_key FROM secretary_operations WHERE id=? AND actor_id=?")
+      .bind(operationId, String(callback.from.id)).first<{kind:string;source_key:string|null}>();
     const result = await env.DB.prepare(
       "UPDATE secretary_operations SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=? AND actor_id=? AND status='running'",
     ).bind(operationId, String(callback.from.id)).run();
     const cancelled = (result.meta?.changes ?? 0) > 0;
+    if (cancelled && operation?.kind === "photo_upload" && operation.source_key) {
+      const [chatId, threadId, uploaderId, albumId] = operation.source_key.split("|");
+      if (chatId && threadId && uploaderId && albumId) {
+        await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?")
+          .bind(chatId, Number(threadId), uploaderId, albumId).run();
+        await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?")
+          .bind(chatId, Number(threadId), uploaderId, albumId).run();
+      }
+    }
     await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
       callback_query_id: callback.id,
       text: cancelled ? "Отмена запрошена." : "Операция уже завершена или недоступна.",
@@ -1310,7 +1344,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       try {
         await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
           chat_id: callback.message.chat.id, message_id: callback.message.message_id,
-          text: "⏹ Отмена запрошена. Останавливаю процесс…",
+          text: operation?.kind === "photo_upload" ? "⏹ Загрузка отменена. Незавершённый альбом очищен." : "⏹ Отмена запрошена. Останавливаю процесс…",
           reply_markup: { inline_keyboard: [] },
         });
       } catch (error) { console.warn("Unable to update cancellation status message", compositeErrorText(error)); }
