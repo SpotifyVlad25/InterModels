@@ -963,36 +963,112 @@ function appHtml(): Response {
   return new Response(html,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","content-security-policy":"default-src 'self' https://telegram.org; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors https://web.telegram.org https://*.telegram.org"}});
 }
 async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<Response> {
-  const actor=await miniAppActor(request,env);
-  if(!actor) return json({error:"Недействительная или устаревшая авторизация Telegram."},401);
-  if(!(await actorHasPermission(env,actor.id,"staff.manage"))) return json({error:"Недостаточно прав."},403);
-  if(url.pathname!=="/api/director/staff") return json({error:"Not found"},404);
-  if(request.method==="GET"){
-    const result=await env.DB.prepare("SELECT telegram_user_id,display_name,role,permissions_json,is_active FROM agency_staff_access ORDER BY created_at DESC").all<{telegram_user_id:string;display_name:string|null;role:string;permissions_json:string;is_active:number}>();
-    const staff=(result.results??[]).map(row=>{let permissions:string[]=[];try{permissions=Object.keys(JSON.parse(row.permissions_json)).filter(k=>STAFF_PERMISSIONS.includes(k as StaffPermission))}catch{}return{telegram_user_id:row.telegram_user_id,display_name:row.display_name,role:row.role,permissions,is_active:row.is_active===1}});
-    return json({ok:true,staff});
+  const actor = await miniAppActor(request, env);
+  if (!actor) return json({ error: "Недействительная или устаревшая авторизация Telegram." }, 401);
+  const path = url.pathname;
+  const isAdmin = actor.id === env.OWNER_TELEGRAM_ID || actor.id === env.DIRECTOR_TELEGRAM_ID;
+  if (path === "/api/director/models") {
+    if (!(await actorHasPermission(env, actor.id, "profile.view"))) return json({ error: "Недостаточно прав." }, 403);
+    if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
+    const result = await env.DB.prepare(
+      `SELECT m.id,m.first_name,m.last_name,m.lifecycle_status,
+        p.height_cm,p.weight_kg,p.bust_cm,p.waist_cm,p.hips_cm,p.clothing_size,p.shoe_size,p.hair_color,p.eye_color
+       FROM models m LEFT JOIN model_profiles p ON p.model_id=m.id
+       WHERE m.is_active=1 ORDER BY m.last_name,m.first_name`,
+    ).all<Record<string, unknown>>();
+    return json({ ok: true, models: result.results ?? [] });
   }
-  if(request.method==="POST"){
-    let body:any;try{body=await request.json()}catch{return json({error:"Некорректный JSON."},400)}
-    const id=String(body?.telegram_user_id??"").trim(),role=body?.role,displayName=typeof body?.display_name==="string"?body.display_name.trim().slice(0,100):null;
-    const permissions: string[]=Array.isArray(body?.permissions)?Array.from(new Set<string>(body.permissions.filter((p:unknown)=>typeof p==="string").map((p:unknown)=>String(p)))):[];
-    if(!/^[0-9]{5,20}$/.test(id)||!["helper","viewer"].includes(role)||permissions.some((p)=>!STAFF_PERMISSIONS.includes(p as StaffPermission)||p==="staff.manage")) return json({error:"Проверьте Telegram ID, роль и разрешения."},400);
-    if(id===env.OWNER_TELEGRAM_ID||id===env.DIRECTOR_TELEGRAM_ID)return json({error:"Нельзя менять доступ владельца или директора."},400);
-    if(role==="viewer"&&permissions.some((p:string)=>p!=="profile.view"))return json({error:"Наблюдателю доступен только просмотр."},400);
-    await env.DB.prepare("INSERT INTO agency_staff_access(telegram_user_id,display_name,role,permissions_json,granted_by) VALUES(?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET display_name=excluded.display_name,role=excluded.role,permissions_json=excluded.permissions_json,is_active=1,granted_by=excluded.granted_by,updated_at=CURRENT_TIMESTAMP").bind(id,displayName,role,JSON.stringify(Object.fromEntries(permissions.map((p:string)=>[p,true]))),actor.id).run();
-    await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'staff.grant', ?)").bind(randomId(),actor.id,JSON.stringify({telegram_user_id:id,role,permissions})).run();
-    return json({ok:true});
+  if (path === "/api/director/refresh-status") {
+    if (!(await actorHasPermission(env, actor.id, "profile.view"))) return json({ error: "Недостаточно прав." }, 403);
+    if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
+    const campaign = await env.DB.prepare(
+      "SELECT id,cycle_key,starts_at,deadline_at,status FROM profile_refresh_campaigns ORDER BY starts_at DESC LIMIT 1",
+    ).first<{ id: string; cycle_key: string; starts_at: string; deadline_at: string; status: string }>();
+    if (!campaign) return json({ ok: true, campaign: null });
+    const members = await env.DB.prepare(
+      "SELECT COUNT(*) AS total,SUM(CASE WHEN status='updated' THEN 1 ELSE 0 END) AS updated,SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,SUM(CASE WHEN status='frozen' THEN 1 ELSE 0 END) AS frozen FROM profile_refresh_members WHERE campaign_id=?",
+    ).bind(campaign.id).first<{ total: number; updated: number | null; pending: number | null; frozen: number | null }>();
+    const jobs = await env.DB.prepare(
+      "SELECT SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) AS published,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status IN ('pending','processing') THEN 1 ELSE 0 END) AS queued FROM composite_refresh_jobs WHERE campaign_id=?",
+    ).bind(campaign.id).first<{ published: number | null; failed: number | null; queued: number | null }>();
+    return json({ ok: true, campaign: {
+      ...campaign, total: members?.total ?? 0, updated: members?.updated ?? 0,
+      pending: members?.pending ?? 0, frozen: members?.frozen ?? 0,
+      published: jobs?.published ?? 0, failed: jobs?.failed ?? 0, queued: jobs?.queued ?? 0,
+    } });
   }
-  if(request.method==="DELETE"){
-    const id=(url.searchParams.get("telegram_user_id")??"").trim();
-    if(!/^[0-9]{5,20}$/.test(id)||id===env.OWNER_TELEGRAM_ID||id===env.DIRECTOR_TELEGRAM_ID)return json({error:"Некорректный или защищённый Telegram ID."},400);
+  if (path === "/api/director/refresh-settings") {
+    if (!isAdmin) return json({ error: "Настраивать расписание может только директор." }, 403);
+    if (request.method === "GET") {
+      const settings = await env.DB.prepare("SELECT cycle_day,timezone,campaign_start_time,reminder_times_json FROM director_refresh_settings WHERE id=1")
+        .first<{ cycle_day: number; timezone: string; campaign_start_time: string; reminder_times_json: string }>();
+      let reminder_times: string[] = ["09:00","20:00","09:00","20:00"];
+      try { if (settings) reminder_times = JSON.parse(settings.reminder_times_json); } catch {}
+      return json({ ok: true, settings: { cycle_day: settings?.cycle_day ?? 1, timezone: settings?.timezone ?? "UTC", campaign_start_time: settings?.campaign_start_time ?? "09:00", reminder_times } });
+    }
+    if (request.method === "PUT") {
+      let body: any; try { body = await request.json(); } catch { return json({ error: "Некорректный JSON." }, 400); }
+      const cycleDay = Number(body?.cycle_day), timezone = String(body?.timezone ?? "").trim();
+      const times = body?.reminder_times;
+      if (!Number.isInteger(cycleDay) || cycleDay < 1 || cycleDay > 28 ||
+          !Array.isArray(times) || times.length !== 4 ||
+          times.some((time: unknown) => typeof time !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) ||
+          !timezone || timezone.length > 80) return json({ error: "Проверьте день месяца, часовой пояс и четыре времени уведомлений." }, 400);
+      try { new Intl.DateTimeFormat("en", { timeZone: timezone }).format(new Date()); }
+      catch { return json({ error: "Неизвестный часовой пояс. Используйте формат Europe/Amsterdam." }, 400); }
+      await env.DB.prepare(
+        `UPDATE director_refresh_settings SET cycle_day=?,timezone=?,campaign_start_time=?,reminder_times_json=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`,
+      ).bind(cycleDay, timezone, times[0], JSON.stringify(times), actor.id).run();
+      await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'refresh.settings.update', ?)")
+        .bind(randomId(), actor.id, JSON.stringify({ cycle_day: cycleDay, timezone, reminder_times: times })).run();
+      return json({ ok: true });
+    }
+    return json({ error: "Method not allowed" }, 405);
+  }
+  if (path === "/api/director/composites") {
+    if (!(await actorHasPermission(env, actor.id, "composite.generate"))) return json({ error: "Недостаточно прав." }, 403);
+    if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+    let body: any; try { body = await request.json(); } catch { return json({ error: "Некорректный JSON." }, 400); }
+    if (body?.model_ids !== undefined && (!Array.isArray(body.model_ids) || body.model_ids.length > 100 || body.model_ids.some((id: unknown) => typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,50}$/.test(id)))) {
+      return json({ error: "Некорректный список моделей." }, 400);
+    }
+    try {
+      const result = await queueCompositeRefresh(env, Array.isArray(body?.model_ids) ? body.model_ids : null, actor.id);
+      return json({ ok: true, ...result });
+    } catch (error) { return json({ error: error instanceof Error ? error.message : "Не удалось поставить композитки в очередь." }, 409); }
+  }
+  if (path !== "/api/director/staff") return json({ error: "Not found" }, 404);
+  if (!(await actorHasPermission(env, actor.id, "staff.manage"))) return json({ error: "Недостаточно прав." }, 403);
+  if (request.method === "GET") {
+    const result = await env.DB.prepare("SELECT telegram_user_id,display_name,role,permissions_json,is_active FROM agency_staff_access ORDER BY created_at DESC").all<{ telegram_user_id: string; display_name: string | null; role: string; permissions_json: string; is_active: number }>();
+    const staff = (result.results ?? []).map((row) => {
+      let permissions: string[] = [];
+      try { permissions = Object.keys(JSON.parse(row.permissions_json)).filter((key) => STAFF_PERMISSIONS.includes(key as StaffPermission)); } catch {}
+      return { telegram_user_id: row.telegram_user_id, display_name: row.display_name, role: row.role, permissions, is_active: row.is_active === 1 };
+    });
+    return json({ ok: true, staff });
+  }
+  if (request.method === "POST") {
+    let body: any; try { body = await request.json(); } catch { return json({ error: "Некорректный JSON." }, 400); }
+    const id = String(body?.telegram_user_id ?? "").trim(), role = body?.role;
+    const displayName = typeof body?.display_name === "string" ? body.display_name.trim().slice(0, 100) : null;
+    const permissions: string[] = Array.isArray(body?.permissions) ? Array.from(new Set<string>(body.permissions.filter((p: unknown) => typeof p === "string").map((p: unknown) => String(p)))) : [];
+    if (!/^[0-9]{5,20}$/.test(id) || !["helper", "viewer"].includes(role) || permissions.some((p) => !STAFF_PERMISSIONS.includes(p as StaffPermission) || p === "staff.manage")) return json({ error: "Проверьте Telegram ID, роль и разрешения." }, 400);
+    if (id === env.OWNER_TELEGRAM_ID || id === env.DIRECTOR_TELEGRAM_ID) return json({ error: "Нельзя менять доступ владельца или директора." }, 400);
+    if (role === "viewer" && permissions.some((p) => p !== "profile.view")) return json({ error: "Наблюдателю доступен только просмотр." }, 400);
+    await env.DB.prepare("INSERT INTO agency_staff_access(telegram_user_id,display_name,role,permissions_json,granted_by) VALUES(?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET display_name=excluded.display_name,role=excluded.role,permissions_json=excluded.permissions_json,is_active=1,granted_by=excluded.granted_by,updated_at=CURRENT_TIMESTAMP").bind(id, displayName, role, JSON.stringify(Object.fromEntries(permissions.map((p) => [p, true]))), actor.id).run();
+    await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'staff.grant', ?)").bind(randomId(), actor.id, JSON.stringify({ telegram_user_id: id, role, permissions })).run();
+    return json({ ok: true });
+  }
+  if (request.method === "DELETE") {
+    const id = (url.searchParams.get("telegram_user_id") ?? "").trim();
+    if (!/^[0-9]{5,20}$/.test(id) || id === env.OWNER_TELEGRAM_ID || id === env.DIRECTOR_TELEGRAM_ID) return json({ error: "Некорректный или защищённый Telegram ID." }, 400);
     await env.DB.prepare("UPDATE agency_staff_access SET is_active=0,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(id).run();
-    await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'staff.revoke', ?)").bind(randomId(),actor.id,JSON.stringify({telegram_user_id:id})).run();
-    return json({ok:true});
+    await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'staff.revoke', ?)").bind(randomId(), actor.id, JSON.stringify({ telegram_user_id: id })).run();
+    return json({ ok: true });
   }
-  return json({error:"Method not allowed"},405);
+  return json({ error: "Method not allowed" }, 405);
 }
-
 
 function localDateParts(date: Date, timezone: string): { year: number; month: number; day: number; hour: number; minute: number } {
   const parts = new Intl.DateTimeFormat("en-GB", {
