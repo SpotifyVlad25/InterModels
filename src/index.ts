@@ -464,10 +464,12 @@ async function getSecretaryPhotoData(env: Env, fileId: string): Promise<string> 
   return "data:" + mime + ";base64," + bytesToBase64(bytes);
 }
 function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
-  const rawName = (model.first_name + " " + model.last_name).toUpperCase();
+  const firstName = (model.first_name || "").trim();
+  const surnameInitial = (model.last_name || "").trim().charAt(0);
+  const rawName = (firstName + (surnameInitial ? " " + surnameInitial + "." : "")).toUpperCase();
   const name = escapeXml(rawName);
-  // Keep long names inside the right-hand text column.
-  const nameSize = rawName.length > 23 ? 28 : rawName.length > 18 ? 34 : rawName.length > 14 ? 39 : 44;
+  // The short display name spans the full width beneath photo #3.
+  const nameSize = rawName.length > 18 ? 44 : rawName.length > 16 ? 48 : rawName.length > 13 ? 52 : 58;
   const leftValues = [
     model.height_cm != null ? "РОСТ  " + model.height_cm + " СМ" : null,
     model.bust_cm != null ? "ГРУДЬ  " + model.bust_cm + " СМ" : null,
@@ -484,8 +486,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   const renderDetails = (items: Array<string | null>, x: number) => items
     .map((v, i) => {
       if (!v) return "";
-      const fontSize = v.length > 25 ? 13 : v.length > 20 ? 15 : 18;
-      return `<text x="${x}" y="${1770 + i * 68}" class="detail" font-size="${fontSize}">${escapeXml(v)}</text>`;
+      const fontSize = v.length > 25 ? 18 : v.length > 20 ? 20 : 23;
+      return `<text x="${x}" y="${1735 + i * 70}" class="detail" font-size="${fontSize}">${escapeXml(v)}</text>`;
     }).join("");
   const details = renderDetails(leftValues, 950) + renderDetails(rightValues, 1240);
   // "meet" preserves the complete source photo: no cropping and no stretching.
@@ -499,15 +501,14 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   <g clip-path="url(#b)"><rect x="950" y="110" width="560" height="700" fill="#f1f1f1"/> ${img(photos[1],950,110,560,700)}</g>
   <g clip-path="url(#c)"><rect x="950" y="850" width="560" height="700" fill="#f1f1f1"/> ${img(photos[2],950,850,560,700)}</g>
   <g clip-path="url(#d)"><rect x="90" y="1240" width="820" height="820" fill="#f1f1f1"/> ${img(photos[3],90,1240,820,820)}</g>
-  <text x="950" y="1645" class="eyebrow">INTERMODELS / COMPOSITE CARD</text>
-  <text x="950" y="1705" class="name" font-size="${nameSize}">${name}</text>${details}
+  <text x="950" y="1645" class="name" font-size="${nameSize}">${name}</text>${details}
   <line x1="90" y1="2110" x2="1510" y2="2110" stroke="#222" stroke-width="2"/>
   <text x="445" y="101" text-anchor="middle" class="contact">https://inter-models.ru</text>
   <text x="1155" y="101" text-anchor="middle" class="contact">+7 902 632-32-72</text>
   <text x="1510" y="2210" text-anchor="end" class="logo">INTERMODELS</text>
   <text x="1510" y="2242" text-anchor="end" class="logo-sub">MODEL AGENCY</text>
   <style>
-    text{font-family:Roboto,sans-serif;fill:#171717}.brand{font-size:30px;font-weight:700;letter-spacing:8px}.small{font-size:17px;letter-spacing:3px;fill:#777}.eyebrow{font-size:17px;letter-spacing:4px;fill:#777}.name{font-size:44px;font-weight:700;letter-spacing:1px}.detail{font-size:20px;letter-spacing:1px}.contact{font-size:21px;font-weight:500;letter-spacing:1px}.logo{font-size:38px;font-weight:800;letter-spacing:8px}.logo-sub{font-size:17px;font-weight:500;letter-spacing:6px;fill:#777}
+    text{font-family:Roboto,sans-serif;fill:#171717}.brand{font-size:30px;font-weight:700;letter-spacing:8px}.small{font-size:17px;letter-spacing:3px;fill:#777}.eyebrow{font-size:17px;letter-spacing:4px;fill:#777}.name{font-size:58px;font-weight:800;letter-spacing:.5px}.detail{font-size:23px;font-weight:600;letter-spacing:.5px}.contact{font-size:21px;font-weight:500;letter-spacing:1px}.logo{font-size:38px;font-weight:800;letter-spacing:8px}.logo-sub{font-size:17px;font-weight:500;letter-spacing:6px;fill:#777}
   </style></svg>`;
 }
 function compositeErrorText(error: unknown): string {
