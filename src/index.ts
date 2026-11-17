@@ -9,7 +9,7 @@ interface Env {
 }
 interface TelegramUser { id: number; first_name?: string; last_name?: string; username?: string; }
 interface TelegramMessage {
-  message_id: number; from?: TelegramUser; chat: { id: number; type: string };
+  message_id: number; message_thread_id?: number; from?: TelegramUser; chat: { id: number; type: string };
   text?: string; contact?: { phone_number: string; user_id?: number };
 }
 interface TelegramCallbackQuery { id: string; from: TelegramUser; data?: string; message?: TelegramMessage; }
@@ -38,11 +38,15 @@ async function telegram(token: string, method: string, payload: Record<string, u
   }
   return result;
 }
-async function sendModel(env: Env, chatId: string | number, text: string): Promise<void> {
-  await telegram(env.MODEL_BOT_TOKEN, "sendMessage", { chat_id: chatId, text, disable_web_page_preview: true });
+async function sendModel(env: Env, chatId: string | number, text: string, threadId?: number): Promise<void> {
+  const payload: Record<string, unknown> = { chat_id: chatId, text, disable_web_page_preview: true };
+  if (threadId) payload.message_thread_id = threadId;
+  await telegram(env.MODEL_BOT_TOKEN, "sendMessage", payload);
 }
 async function sendDirector(env: Env, text: string, replyMarkup?: Record<string, unknown>): Promise<void> {
-  const payload: Record<string, unknown> = { chat_id: env.DIRECTOR_TELEGRAM_ID, text, disable_web_page_preview: true };
+  const topic = await env.DB.prepare("SELECT chat_id, thread_id FROM bot_topics WHERE bot_key = ?").bind("director").first<{ chat_id: string; thread_id: number }>();
+  const payload: Record<string, unknown> = { chat_id: topic?.chat_id ?? env.DIRECTOR_TELEGRAM_ID, text, disable_web_page_preview: true };
+  if (topic?.thread_id) payload.message_thread_id = topic.thread_id;
   if (replyMarkup) payload.reply_markup = replyMarkup;
   await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", payload);
 }
@@ -53,7 +57,7 @@ async function getActiveModels(env: Env): Promise<ModelRow[]> {
   return result.results ?? [];
 }
 async function createRequest(
-  env: Env, user: TelegramUser, method: "name" | "phone", submittedValue: string, candidates: ModelRow[],
+  env: Env, user: TelegramUser, method: "name" | "phone", submittedValue: string, candidates: ModelRow[], replyChatId: number, replyThreadId?: number,
 ): Promise<void> {
   const requestId = randomId();
   await env.DB.prepare(
@@ -79,12 +83,14 @@ async function createRequest(
       disable_web_page_preview: true,
     });
   }
-  await sendModel(env, user.id, "Совпадение найдено. Заявка отправлена директору на проверку. Доступ откроется только после её подтверждения.");
+  await sendModel(env, replyChatId, "Совпадение найдено. Заявка отправлена директору на проверку. Доступ откроется только после её подтверждения.", replyThreadId);
 }
 
 async function handleModelMessage(env: Env, message: TelegramMessage): Promise<void> {
   const user = message.from;
-  if (!user || message.chat.type !== "private") return;
+  if (!user || !["private", "group", "supergroup"].includes(message.chat.type)) return;
+  const replyChatId = message.chat.id;
+  const replyThreadId = message.message_thread_id;
   if (message.text?.startsWith("/start")) {
     await env.DB.prepare(
       `INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
@@ -92,7 +98,8 @@ async function handleModelMessage(env: Env, message: TelegramMessage): Promise<v
        ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', data_json = '{}', updated_at = CURRENT_TIMESTAMP`,
     ).bind(String(user.id)).run();
     await telegram(env.MODEL_BOT_TOKEN, "sendMessage", {
-      chat_id: user.id,
+      chat_id: replyChatId,
+      ...(replyThreadId ? { message_thread_id: replyThreadId } : {}),
       text: "Добро пожаловать в InterModels!\n\nВведите имя и фамилию точно так, как они указаны в агентстве. Либо отправьте свой номер телефона кнопкой ниже.",
       reply_markup: { keyboard: [[{ text: "Поделиться контактом", request_contact: true }]], resize_keyboard: true, one_time_keyboard: true },
     });
@@ -100,37 +107,37 @@ async function handleModelMessage(env: Env, message: TelegramMessage): Promise<v
   }
   if (message.contact) {
     if (message.contact.user_id !== user.id) {
-      await sendModel(env, user.id, "Отправьте именно свой контакт через кнопку Telegram, а не контакт другого человека.");
+      await sendModel(env, replyChatId, "Отправьте именно свой контакт через кнопку Telegram, а не контакт другого человека.");
       return;
     }
     const phone = normalizePhone(message.contact.phone_number);
-    if (!phone) { await sendModel(env, user.id, "Не удалось прочитать номер. Попробуйте ещё раз или введите ФИО."); return; }
+    if (!phone) { await sendModel(env, replyChatId, "Не удалось прочитать номер. Попробуйте ещё раз или введите ФИО."); return; }
     const models = await getActiveModels(env);
     const matches = models.filter((m) => m.phone && normalizePhone(m.phone) === phone);
     const candidates = matches.filter((m) => !m.telegram_user_id || m.telegram_user_id === String(user.id));
     if (!candidates.length) {
-      await sendModel(env, user.id, matches.length
+      await sendModel(env, replyChatId, matches.length
         ? "Эта анкета уже привязана к другому Telegram-аккаунту. Обратитесь к директору агентства."
         : "Анкета с таким номером не найдена. Проверьте номер или обратитесь к директору агентства.");
       return;
     }
-    await createRequest(env, user, "phone", message.contact.phone_number, candidates);
+    await createRequest(env, user, "phone", message.contact.phone_number, candidates, replyChatId, replyThreadId);
     return;
   }
   if (!message.text) return;
-  if (message.text.startsWith("/")) { await sendModel(env, user.id, "Для начала регистрации отправьте /start."); return; }
+  if (message.text.startsWith("/")) { await sendModel(env, replyChatId, "Для начала регистрации отправьте /start."); return; }
   const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?")
     .bind(String(user.id)).first<{ state: string }>();
   if (!session || session.state !== "awaiting_name") {
-    await sendModel(env, user.id, "Отправьте /start, чтобы начать подключение."); return;
+    await sendModel(env, replyChatId, "Отправьте /start, чтобы начать подключение."); return;
   }
   const target = normalizeName(message.text);
-  if (target.length < 3) { await sendModel(env, user.id, "Введите полные имя и фамилию."); return; }
+  if (target.length < 3) { await sendModel(env, replyChatId, "Введите полные имя и фамилию."); return; }
   const models = await getActiveModels(env);
   const matches = models.filter((m) => normalizeName(`${m.first_name} ${m.last_name}`) === target);
   const candidates = matches.filter((m) => !m.telegram_user_id || m.telegram_user_id === String(user.id));
   if (!candidates.length) {
-    await sendModel(env, user.id, matches.length
+    await sendModel(env, replyChatId, matches.length
       ? "Эта анкета уже привязана к другому Telegram-аккаунту. Обратитесь к директору агентства."
       : "Анкета с таким ФИО не найдена. Проверьте написание или обратитесь к директору агентства.");
     return;
