@@ -468,7 +468,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   const details = values.map((v, i) => `<text x="990" y="${1770 + i * 58}" class="detail">${escapeXml(v)}</text>`).join("");
   const img = (data: string, x: number, y: number, w: number, h: number) =>
     `<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice"/>`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1600" height="2260" viewBox="0 0 1600 2260">
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1200" height="1695" viewBox="0 0 1600 2260">
   <rect width="1600" height="2260" fill="#fff"/>
   <text x="90" y="70" class="brand">INTERMODELS</text><text x="1510" y="70" text-anchor="end" class="small">MODEL PORTFOLIO</text>
   <defs><clipPath id="a"><rect x="90" y="110" width="820" height="1093"/></clipPath><clipPath id="b"><rect x="950" y="110" width="560" height="700"/></clipPath><clipPath id="c"><rect x="950" y="850" width="560" height="700"/></clipPath><clipPath id="d"><rect x="90" y="1240" width="820" height="820"/></clipPath></defs>
@@ -522,10 +522,14 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
     await ensureResvg();
     stage = "download_photos";
     await onStage?.("Загрузка 4 фотографий");
+    const photoStartedAt = Date.now();
     const photos = await Promise.all(fileIds.map((id) => getSecretaryPhotoData(env, id)));
+    const photoBytes = photos.map((photo) => Math.floor((photo.length * 3) / 4));
+    console.info("Composite source photos downloaded", { modelId: model.id, photoBytes, totalPhotoBytes: photoBytes.reduce((sum, size) => sum + size, 0), elapsedMs: Date.now() - photoStartedAt });
     stage = "build_svg";
     await onStage?.("Сборка макета");
     const svg = compositeSvg(model, photos);
+    console.info("Composite SVG assembled", { modelId: model.id, svgCharacters: svg.length });
     stage = "prepare_fonts";
     await onStage?.("Подготовка шрифтов");
     const fontBuffers = await Promise.all([compositeFontBuffer(robotoCyrillic), compositeFontBuffer(robotoLatin)]);
@@ -538,7 +542,12 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
     try {
       stage = "rasterize_png";
       await onStage?.("Рендеринг PNG");
-      return renderer.render().asPng();
+      const renderStartedAt = Date.now();
+      const rendered = renderer.render();
+      console.info("Composite rasterization completed", { modelId: model.id, elapsedMs: Date.now() - renderStartedAt });
+      const png = rendered.asPng();
+      console.info("Composite PNG encoded", { modelId: model.id, pngBytes: png.byteLength });
+      return png;
     } finally { renderer.free(); }
   } catch (error) {
     const details = compositeErrorText(error);
