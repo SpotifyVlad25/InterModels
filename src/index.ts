@@ -867,11 +867,14 @@ export default {
     try { update = await request.json() as TelegramUpdate; }
     catch { return json({ error: "Invalid JSON" }, 400); }
     try {
-      if (typeof update.update_id === "number") {
-        const botKey = isModel ? "model" : isDirector ? "director" : "secretary";
+      const isCompositeUpdate = isSecretary && (
+        /^\\/comp(?:@\\w+)?\\s+/i.test(update.message?.text ?? "") ||
+        (update.callback_query?.data ?? "").startsWith("csel:")
+      );
+      if (isCompositeUpdate && typeof update.update_id === "number") {
         const claim = await env.DB.prepare(
-          "INSERT OR IGNORE INTO telegram_processed_updates (bot_key, update_id) VALUES (?, ?)",
-        ).bind(botKey, update.update_id).run();
+          "INSERT OR IGNORE INTO telegram_processed_updates (bot_key, update_id) VALUES ('secretary', ?)",
+        ).bind(update.update_id).run();
         if (!claim.meta.changes) return json({ ok: true, duplicate: true });
       }
       if (isModel && update.message) await handleModelMessage(env, update.message);
