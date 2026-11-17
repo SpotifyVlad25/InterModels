@@ -686,10 +686,32 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   }
   if (items.length !== 4) {
     if (items.length > 0 && message.message_id === Math.max(...items.map((item) => item.message_id))) {
-      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
-        chat_id: message.chat.id, message_thread_id: threadId,
-        text: `Получено фотографий: ${items.length} из 4. Если вы отправляете альбом, дождитесь загрузки всех четырёх снимков. Если отправляете по одному — продолжайте отправку.`,
-      });
+      await env.DB.prepare(
+        `CREATE TABLE IF NOT EXISTS secretary_photo_album_status (
+          chat_id TEXT NOT NULL, thread_id INTEGER NOT NULL, uploader_id TEXT NOT NULL,
+          media_group_id TEXT NOT NULL, status_message_id INTEGER,
+          PRIMARY KEY (chat_id, thread_id, uploader_id, media_group_id)
+        )`,
+      ).run();
+      const status = await env.DB.prepare(
+        "SELECT status_message_id FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?",
+      ).bind(String(message.chat.id), threadId, senderId, albumId).first<{status_message_id:number|null}>();
+      const text = `Фото: ${items.length}/4`;
+      if (status?.status_message_id) {
+        await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
+          chat_id: message.chat.id, message_id: status.status_message_id, text,
+        });
+      } else {
+        const sent = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+          chat_id: message.chat.id, message_thread_id: threadId, text,
+        });
+        const sentMessageId = (sent as {message_id?:number})?.message_id;
+        if (sentMessageId) {
+          await env.DB.prepare(
+            "INSERT INTO secretary_photo_album_status (chat_id, thread_id, uploader_id, media_group_id, status_message_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, thread_id, uploader_id, media_group_id) DO UPDATE SET status_message_id = excluded.status_message_id",
+          ).bind(String(message.chat.id), threadId, senderId, albumId, sentMessageId).run();
+        }
+      }
     }
     return;
   }
