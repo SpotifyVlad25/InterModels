@@ -82,16 +82,12 @@ jobs:
       - name: Upload Worker secrets
         shell: bash
         run: |
-          for name in MODEL_BOT_TOKEN DIRECTOR_BOT_TOKEN SECRETARY_BOT_TOKEN MODEL_WEBHOOK_SECRET DIRECTOR_WEBHOOK_SECRET OWNER_TELEGRAM_ID DIRECTOR_TELEGRAM_ID; do
+          for name in MODEL_BOT_TOKEN DIRECTOR_BOT_TOKEN SECRETARY_BOT_TOKEN MODEL_WEBHOOK_SECRET DIRECTOR_WEBHOOK_SECRET SECRETARY_WEBHOOK_SECRET OWNER_TELEGRAM_ID DIRECTOR_TELEGRAM_ID; do
             if [ -z "${!name}" ]; then
               echo "::error::Missing GitHub Actions secret: $name"
               exit 1
             fi
           done
-          SECRETARY_WEBHOOK_SECRET="$(openssl rand -hex 32)"
-          echo "::add-mask::$SECRETARY_WEBHOOK_SECRET"
-          echo "SECRETARY_WEBHOOK_SECRET=$SECRETARY_WEBHOOK_SECRET" >> "$GITHUB_ENV"
-          export SECRETARY_WEBHOOK_SECRET
           node -e 'process.stdout.write(JSON.stringify({
             MODEL_BOT_TOKEN: process.env.MODEL_BOT_TOKEN,
             DIRECTOR_BOT_TOKEN: process.env.DIRECTOR_BOT_TOKEN,
@@ -110,6 +106,7 @@ jobs:
           SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
           MODEL_WEBHOOK_SECRET: ${{ secrets.MODEL_WEBHOOK_SECRET }}
           DIRECTOR_WEBHOOK_SECRET: ${{ secrets.DIRECTOR_WEBHOOK_SECRET }}
+          SECRETARY_WEBHOOK_SECRET: ${{ secrets.SECRETARY_WEBHOOK_SECRET }}
           OWNER_TELEGRAM_ID: ${{ secrets.OWNER_TELEGRAM_ID }}
           DIRECTOR_TELEGRAM_ID: ${{ secrets.DIRECTOR_TELEGRAM_ID }}
 
@@ -225,6 +222,13 @@ jobs:
             const data = await response.json();
             const actual = data.ok ? data.result?.url || "" : "";
             const expected = `https://intermodels.spotify-vlad25.workers.dev${path}`;
+            const details = data.ok ? data.result : {};
+            console.log(`${label}: webhook status ${JSON.stringify({
+              route: actual || null,
+              pendingUpdateCount: details.pending_update_count ?? null,
+              lastErrorDate: details.last_error_date ?? null,
+              lastErrorMessage: details.last_error_message ?? null
+            })}`);
             if (actual !== expected) {
               console.error(`${label}: webhook route mismatch (expected ${path}, got ${actual || "none"})`);
               process.exitCode = 1;
