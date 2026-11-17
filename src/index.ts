@@ -446,12 +446,25 @@ async function getSecretaryPhotoData(env: Env, fileId: string): Promise<string> 
   const file = await telegram(env.SECRETARY_BOT_TOKEN, "getFile", { file_id: fileId });
   const path = file.result?.file_path;
   if (typeof path !== "string" || !path) throw new Error("Telegram photo path missing");
-  const response = await fetch("https://api.telegram.org/file/bot" + env.SECRETARY_BOT_TOKEN + "/" + path);
-  if (!response.ok) throw new Error("Unable to download Telegram photo");
+  const imageUrl = "https://api.telegram.org/file/bot" + env.SECRETARY_BOT_TOKEN + "/" + path;
+  // Resize at Cloudflare's edge before the source image is embedded into the SVG.
+  // The card layout uses each photo in a bounded frame, so 1200px is sufficient
+  // while avoiding large source bitmaps during Resvg rasterization.
+  const response = await fetch(imageUrl, {
+    cf: {
+      image: {
+        fit: "scale-down",
+        width: 1200,
+        height: 1200,
+        quality: 82,
+        format: "jpeg",
+      },
+    },
+  });
+  if (!response.ok) throw new Error("Unable to download/resize Telegram photo (HTTP " + response.status + ")");
   const bytes = new Uint8Array(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > 12 * 1024 * 1024) throw new Error("Photo size is invalid");
-  const mime = path.toLowerCase().endsWith(".png") ? "image/png" : path.toLowerCase().endsWith(".webp") ? "image/webp" : "image/jpeg";
-  return "data:" + mime + ";base64," + bytesToBase64(bytes);
+  if (!bytes.length || bytes.length > 8 * 1024 * 1024) throw new Error("Resized photo size is invalid");
+  return "data:image/jpeg;base64," + bytesToBase64(bytes);
 }
 function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   const name = escapeXml((model.first_name + " " + model.last_name).toUpperCase());
