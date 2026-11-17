@@ -277,7 +277,6 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
     await env.DB.prepare("UPDATE registration_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP, decided_by = ? WHERE id = ? AND status = 'pending'")
       .bind(String(callback.from.id), requestId).run();
     await env.DB.prepare("INSERT INTO model_profiles (model_id) VALUES (?) ON CONFLICT(model_id) DO NOTHING").bind(modelId).run();
-    await sendModel(env, req.telegram_user_id, `Добро пожаловать в InterModels, ${model.first_name}! Ваша регистрация подтверждена.`);
     await beginModelProfile(env, req.telegram_user_id, Number(req.telegram_user_id));
     await answerCallback(env, callback, "Модель успешно подключена.");
     if (callback.message) await telegram(env.DIRECTOR_BOT_TOKEN, "editMessageReplyMarkup", {
@@ -522,7 +521,7 @@ async function sendCompositePng(env: Env, chatId: number, threadId: number, png:
 }
 async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawName: string): Promise<void> {
   const query = normalizeName(rawName);
-  const surname = rawName.trim().split(/\\s+/).filter(Boolean).at(-1) ?? rawName;
+  const surname = query.split(" ").at(-1) ?? rawName;
   const models = await findSecretaryModels(env, surname);
   const exact = models.filter((m) => normalizeName(m.first_name + " " + m.last_name) === query);
   const matches = exact.length ? exact : models;
