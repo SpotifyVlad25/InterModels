@@ -204,6 +204,54 @@ jobs:
           }
           NODE
 
+      - name: Configure Telegram bot descriptions
+        shell: bash
+        env:
+          MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
+          DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
+          SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
+        run: |
+          node <<'NODE'
+          const bots = [
+            {
+              label: "MODEL_BOT_TOKEN",
+              token: process.env.MODEL_BOT_TOKEN,
+              description: "Личный бот модели InterModels. Просматривайте свой профиль, заполняйте и обновляйте параметры анкеты, получайте уведомления агентства и поддерживайте свои данные актуальными.",
+              short_description: "Личный кабинет модели InterModels: профиль и параметры анкеты."
+            },
+            {
+              label: "DIRECTOR_BOT_TOKEN",
+              token: process.env.DIRECTOR_BOT_TOKEN,
+              description: "Инструмент директора InterModels для управления агентством: обработка заявок на подключение моделей, контроль базы и статусов анкет, запуск рабочих процессов и просмотр статистики.",
+              short_description: "Директор InterModels: заявки, база моделей и управление агентством."
+            },
+            {
+              label: "SECRETARY_BOT_TOKEN",
+              token: process.env.SECRETARY_BOT_TOKEN,
+              description: "Секретарь InterModels — помощник команды агентства. Обрабатывает фотоанкеты и оригиналы фотографий в теме MODEL BANK, помогает создавать и обновлять композитки в теме КОМПОЗИТКИ. Личный чат предназначен для отдельных задач команды.",
+              short_description: "Секретарь InterModels: фотоанкеты, композитки и задачи команды."
+            }
+          ];
+          for (const bot of bots) {
+            if (!bot.token) throw new Error(`Missing token: ${bot.label}`);
+            if (bot.description.length > 512) throw new Error(`${bot.label}: description exceeds 512 characters`);
+            if (bot.short_description.length > 120) throw new Error(`${bot.label}: short description exceeds 120 characters`);
+            for (const [method, payload] of [
+              ["setMyDescription", { description: bot.description }],
+              ["setMyShortDescription", { short_description: bot.short_description }]
+            ]) {
+              const response = await fetch(`https://api.telegram.org/bot${bot.token}/${method}`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload)
+              });
+              const data = await response.json();
+              if (!data.ok) throw new Error(`${bot.label} ${method} failed: ${data.description || "unknown Telegram error"}`);
+            }
+            console.log(`${bot.label}: full and short descriptions updated.`);
+          }
+          NODE
+
       - name: Verify Telegram webhook routing
         shell: bash
         env:
