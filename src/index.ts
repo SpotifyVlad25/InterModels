@@ -82,7 +82,7 @@ async function saveTopic(env: Env, botKey: "model" | "director", message: Telegr
 }
 async function getActiveModels(env: Env): Promise<ModelRow[]> {
   const result = await env.DB.prepare(
-    "SELECT id, first_name, last_name, phone, telegram_user_id FROM models WHERE is_active = 1",
+    "SELECT id, first_name, last_name, phone, telegram_user_id FROM models WHERE is_active = 1 AND lifecycle_status = 'active'",
   ).all<ModelRow>();
   return result.results ?? [];
 }
@@ -156,7 +156,14 @@ async function handleModelProfileStep(env: Env, telegramId: string, chatId: numb
     await sendModel(env, chatId, next.prompt, threadId);
   } else {
     await env.DB.prepare("UPDATE bot_sessions SET state = 'profile_complete', updated_at = CURRENT_TIMESTAMP WHERE telegram_user_id = ?").bind(telegramId).run();
-    await sendModel(env, chatId, "Спасибо! Основные параметры анкеты сохранены. Если нужно изменить данные, отправьте /profile.", threadId);
+    await env.DB.prepare("UPDATE models SET lifecycle_status = 'active' WHERE telegram_user_id = ? AND is_active = 1").bind(telegramId).run();
+    await env.DB.prepare(
+      `UPDATE profile_refresh_members SET status = 'updated', updated_at = CURRENT_TIMESTAMP
+       WHERE model_id = (SELECT id FROM models WHERE telegram_user_id = ?)
+         AND status = 'pending'
+         AND campaign_id IN (SELECT id FROM profile_refresh_campaigns WHERE status = 'open')`,
+    ).bind(telegramId).run();
+    await sendModel(env, chatId, "Спасибо! Параметры обновлены. Ваша анкета снова активна в базе InterModels.", threadId);
   }
   return true;
 }
@@ -367,7 +374,7 @@ async function findSecretaryModels(env: Env, surname: string): Promise<Secretary
       p.height_cm, p.bust_cm, p.waist_cm, p.hips_cm,
       p.clothing_size, p.shoe_size, p.hair_color, p.eye_color
      FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
-     WHERE m.is_active = 1
+     WHERE m.is_active = 1 AND m.lifecycle_status = 'active'
      ORDER BY m.last_name, m.first_name LIMIT 500`,
   ).all<SecretaryModelRow>();
   const target = normalizeName(surname);
@@ -834,7 +841,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
         p.height_cm, p.bust_cm, p.waist_cm, p.hips_cm,
         p.clothing_size, p.shoe_size, p.hair_color, p.eye_color
        FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
-       WHERE m.id = ? AND m.is_active = 1`,
+       WHERE m.id = ? AND m.is_active = 1 AND m.lifecycle_status = 'active'`,
     ).bind(match[2]).first<SecretaryModelRow>();
     await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
       callback_query_id: callback.id, text: model ? "Модель выбрана." : "Анкета не найдена.",
@@ -858,7 +865,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       p.height_cm, p.bust_cm, p.waist_cm, p.hips_cm,
       p.clothing_size, p.shoe_size, p.hair_color, p.eye_color
      FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
-     WHERE m.id = ? AND m.is_active = 1`,
+     WHERE m.id = ? AND m.is_active = 1 AND m.lifecycle_status = 'active'`,
   ).bind(match[2]).first<SecretaryModelRow>();
   if (!model || normalizeName(model.last_name) !== normalizeName(pending.surname)) {
     await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Эта модель больше недоступна.", show_alert: true });
@@ -938,6 +945,135 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
   return json({error:"Method not allowed"},405);
 }
 
+
+function localDateParts(date: Date, timezone: string): { year: number; month: number; day: number; hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date);
+  const get = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return { year: get("year"), month: get("month"), day: get("day"), hour: get("hour"), minute: get("minute") };
+}
+function localDateTimeToIso(date: string, time: string, timezone: string): string {
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  const target = Date.UTC(year, month - 1, day, hour, minute);
+  let guess = target;
+  for (let i = 0; i < 3; i++) {
+    const p = localDateParts(new Date(guess), timezone);
+    const represented = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+    guess += target - represented;
+  }
+  return new Date(guess).toISOString();
+}
+function dateKey(year: number, month: number, day: number): string {
+  return String(year).padStart(4, "0") + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+}
+async function createDueRefreshCampaign(env: Env, now: Date): Promise<void> {
+  const settings = await env.DB.prepare(
+    "SELECT cycle_day, timezone, campaign_start_time, reminder_times_json FROM director_refresh_settings WHERE id = 1",
+  ).first<{ cycle_day: number; timezone: string; campaign_start_time: string; reminder_times_json: string }>();
+  if (!settings) return;
+  let local: ReturnType<typeof localDateParts>;
+  try { local = localDateParts(now, settings.timezone); } catch (error) {
+    console.error("Invalid profile refresh timezone", settings.timezone, error); return;
+  }
+  if (local.day < settings.cycle_day) return;
+  const cycleKey = String(local.year) + "-" + String(local.month).padStart(2, "0");
+  const startDate = dateKey(local.year, local.month, settings.cycle_day);
+  const startsAt = localDateTimeToIso(startDate, settings.campaign_start_time, settings.timezone);
+  if (now.getTime() < Date.parse(startsAt)) return;
+  const existing = await env.DB.prepare("SELECT id FROM profile_refresh_campaigns WHERE cycle_key = ?").bind(cycleKey).first<{ id: string }>();
+  if (existing) return;
+  let times: string[];
+  try { times = JSON.parse(settings.reminder_times_json) as string[]; } catch { times = ["09:00", "20:00", "09:00", "20:00"]; }
+  if (!Array.isArray(times) || times.length !== 4 || times.some((time) => typeof time !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time))) {
+    times = ["09:00", "20:00", "09:00", "20:00"];
+  }
+  const campaignId = randomId();
+  const deadlineAt = new Date(Date.parse(startsAt) + 48 * 60 * 60 * 1000).toISOString();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO profile_refresh_campaigns(id,cycle_key,starts_at,deadline_at) VALUES(?,?,?,?)",
+  ).bind(campaignId, cycleKey, startsAt, deadlineAt).run();
+  const campaign = await env.DB.prepare("SELECT id FROM profile_refresh_campaigns WHERE cycle_key = ?").bind(cycleKey).first<{ id: string }>();
+  if (!campaign) return;
+  const active = await env.DB.prepare("SELECT id FROM models WHERE is_active = 1 AND lifecycle_status = 'active'").all<{ id: string }>();
+  for (const model of active.results ?? []) {
+    await env.DB.prepare("INSERT OR IGNORE INTO profile_refresh_members(campaign_id,model_id) VALUES(?,?)").bind(campaign.id, model.id).run();
+  }
+  for (let index = 0; index < 4; index++) {
+    const dayOffset = index < 2 ? 0 : 1;
+    const reminderDate = new Date(Date.UTC(local.year, local.month - 1, settings.cycle_day + dayOffset));
+    const date = dateKey(reminderDate.getUTCFullYear(), reminderDate.getUTCMonth() + 1, reminderDate.getUTCDate());
+    const scheduledAt = localDateTimeToIso(date, times[index], settings.timezone);
+    await env.DB.prepare("INSERT OR IGNORE INTO profile_refresh_reminders(campaign_id,reminder_index,scheduled_at) VALUES(?,?,?)")
+      .bind(campaign.id, index + 1, scheduledAt).run();
+  }
+  console.info("Monthly profile refresh campaign created", { campaignId: campaign.id, cycleKey, models: active.results?.length ?? 0, deadlineAt });
+}
+async function processRefreshCampaigns(env: Env): Promise<void> {
+  const now = new Date();
+  await createDueRefreshCampaign(env, now);
+  const campaigns = await env.DB.prepare(
+    "SELECT id, deadline_at FROM profile_refresh_campaigns WHERE status = 'open' ORDER BY starts_at",
+  ).all<{ id: string; deadline_at: string }>();
+  for (const campaign of campaigns.results ?? []) {
+    const pendingNotifications = await env.DB.prepare(
+      `SELECT m.id, m.telegram_user_id, r.model_id
+       FROM profile_refresh_members r JOIN models m ON m.id = r.model_id
+       WHERE r.campaign_id = ? AND r.notified_at IS NULL AND r.status = 'pending'
+         AND m.is_active = 1 AND m.telegram_user_id IS NOT NULL`,
+    ).bind(campaign.id).all<{ id: string; telegram_user_id: string; model_id: string }>();
+    for (const model of pendingNotifications.results ?? []) {
+      try {
+        await sendModel(env, model.telegram_user_id,
+          "Настало время ежемесячного обновления параметров InterModels.\n\nУ вас есть 48 часов, чтобы проверить и обновить анкету. Отправьте /profile, чтобы начать.");
+        await env.DB.prepare("UPDATE profile_refresh_members SET notified_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND model_id = ? AND notified_at IS NULL")
+          .bind(campaign.id, model.model_id).run();
+      } catch (error) { console.error("Unable to notify model about monthly profile refresh", { modelId: model.model_id, error: compositeErrorText(error) }); }
+    }
+    const dueReminders = await env.DB.prepare(
+      "SELECT reminder_index FROM profile_refresh_reminders WHERE campaign_id = ? AND sent_at IS NULL AND scheduled_at <= ? ORDER BY reminder_index",
+    ).bind(campaign.id, now.toISOString()).all<{ reminder_index: number }>();
+    for (const reminder of dueReminders.results ?? []) {
+      const stats = await env.DB.prepare(
+        "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'updated' THEN 1 ELSE 0 END) AS updated FROM profile_refresh_members WHERE campaign_id = ?",
+      ).bind(campaign.id).first<{ total: number; updated: number | null }>();
+      const total = stats?.total ?? 0, updated = stats?.updated ?? 0;
+      const remainingMs = Math.max(0, Date.parse(campaign.deadline_at) - now.getTime());
+      const hours = Math.ceil(remainingMs / 3600000);
+      try {
+        await sendDirector(env,
+          "Процесс обновления параметров:\n" +
+          "Моделей: " + total + " | Обновлено: " + updated +
+          "\nОжидают: " + Math.max(0, total - updated) +
+          "\nДо дедлайна: " + hours + " ч.");
+        await env.DB.prepare("UPDATE profile_refresh_reminders SET sent_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND reminder_index = ? AND sent_at IS NULL")
+          .bind(campaign.id, reminder.reminder_index).run();
+      } catch (error) { console.error("Unable to send director refresh progress", { campaignId: campaign.id, reminder: reminder.reminder_index, error: compositeErrorText(error) }); }
+    }
+    if (Date.parse(campaign.deadline_at) <= now.getTime()) {
+      const late = await env.DB.prepare(
+        `SELECT m.id, m.telegram_user_id FROM profile_refresh_members r
+         JOIN models m ON m.id = r.model_id
+         WHERE r.campaign_id = ? AND r.status = 'pending' AND m.is_active = 1`,
+      ).bind(campaign.id).all<{ id: string; telegram_user_id: string | null }>();
+      for (const model of late.results ?? []) {
+        await env.DB.prepare("UPDATE models SET lifecycle_status = 'frozen' WHERE id = ? AND is_active = 1").bind(model.id).run();
+        await env.DB.prepare("UPDATE profile_refresh_members SET status = 'frozen', frozen_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND model_id = ? AND status = 'pending'")
+          .bind(campaign.id, model.id).run();
+        if (model.telegram_user_id) {
+          try { await sendModel(env, model.telegram_user_id, "🥶\n\nУпс, кто-то замёрз\n\nВаша анкета заморожена и не отображается в базе.\nОбновите параметры, чтобы возобновить работу."); }
+          catch (error) { console.error("Unable to send model freeze notice", { modelId: model.id, error: compositeErrorText(error) }); }
+        }
+      }
+      await env.DB.prepare("UPDATE profile_refresh_campaigns SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'open'")
+        .bind(campaign.id).run();
+      await sendDirector(env, "Ежемесячное обновление параметров завершено.\nЗаморожено моделей: " + (late.results?.length ?? 0) + ".");
+    }
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -978,5 +1114,8 @@ export default {
       console.error("Webhook handler failed", error);
       return json({ ok: false }, 500);
     }
+  },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(processRefreshCampaigns(env));
   },
 };
