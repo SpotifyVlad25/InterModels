@@ -343,15 +343,20 @@ async function secretaryAllowed(env: Env, telegramId: string): Promise<boolean> 
   return hasStaffPermission(env, telegramId, "composite.generate");
 }
 async function findSecretaryModels(env: Env, surname: string): Promise<SecretaryModelRow[]> {
+  // SQLite's built-in lower() only folds ASCII by default, so Cyrillic surnames
+  // such as «Демаков» can fail to match when the query is lowercased.
+  // Fetch active model names and compare with the same Unicode normalization
+  // used by the composite command.
   const result = await env.DB.prepare(
     `SELECT m.id, m.first_name, m.last_name,
       p.height_cm, p.bust_cm, p.waist_cm, p.hips_cm,
       p.clothing_size, p.shoe_size, p.hair_color, p.eye_color
      FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
-     WHERE m.is_active = 1 AND lower(m.last_name) LIKE lower(?)
-     ORDER BY m.last_name, m.first_name LIMIT 20`,
-  ).bind(`%${surname}%`).all<SecretaryModelRow>();
-  return result.results ?? [];
+     WHERE m.is_active = 1
+     ORDER BY m.last_name, m.first_name LIMIT 500`,
+  ).all<SecretaryModelRow>();
+  const target = normalizeName(surname);
+  return (result.results ?? []).filter((model) => normalizeName(model.last_name).includes(target));
 }
 function secretaryProfileText(model: SecretaryModelRow): string {
   const lines = [
