@@ -25,7 +25,7 @@ interface TelegramMessage {
   text?: string; caption?: string; media_group_id?: string; photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>; contact?: { phone_number: string; user_id?: number };
 }
 interface TelegramCallbackQuery { id: string; from: TelegramUser; data?: string; message?: TelegramMessage; }
-interface TelegramUpdate { message?: TelegramMessage; callback_query?: TelegramCallbackQuery; }
+interface TelegramUpdate { update_id?: number; message?: TelegramMessage; callback_query?: TelegramCallbackQuery; }
 interface ModelRow { id: string; first_name: string; last_name: string; phone: string | null; telegram_user_id: string | null; }
 interface RegistrationRow { id: string; telegram_user_id: string; candidate_model_ids: string; status: string; }
 interface SecretaryModelRow {
@@ -559,9 +559,32 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
   if (photos.length !== 4 || photos.some((photo, i) => photo.position !== i + 1)) {
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Для этой модели ещё не загружены все четыре фотографии. Сначала добавьте их в тему /COMP." }); return;
   }
-  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Готовлю композитку для " + model.first_name + " " + model.last_name + "…" });
-  const png = await renderCompositePng(env, model, photos.map((p) => p.telegram_file_id));
-  await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels");
+  const status = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+    chat_id: message.chat.id, message_thread_id: message.message_thread_id,
+    text: "Готовлю композитку для " + model.first_name + " " + model.last_name + "…",
+  });
+  const statusMessageId = status.result?.message_id;
+  try {
+    const png = await renderCompositePng(env, model, photos.map((p) => p.telegram_file_id));
+    await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels");
+    if (statusMessageId) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", {
+        chat_id: message.chat.id, message_id: statusMessageId,
+      });
+    }
+  } catch (error) {
+    console.error("Composite generation failed", { modelId: model.id, error });
+    if (statusMessageId) {
+      try {
+        await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
+          chat_id: message.chat.id, message_id: statusMessageId,
+          text: "Не удалось создать композитку. Ошибка записана, можно попробовать ещё раз позже.",
+        });
+      } catch (notifyError) {
+        console.error("Unable to report composite generation failure", notifyError);
+      }
+    }
+  }
 }
 async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): Promise<void> {
   if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup") || !message.message_thread_id) return;
@@ -844,6 +867,16 @@ export default {
     try { update = await request.json() as TelegramUpdate; }
     catch { return json({ error: "Invalid JSON" }, 400); }
     try {
+      const isCompositeUpdate = isSecretary && (
+        /^\/comp(?:@\w+)?\s+/i.test(update.message?.text ?? "") ||
+        (update.callback_query?.data ?? "").startsWith("csel:")
+      );
+      if (isCompositeUpdate && typeof update.update_id === "number") {
+        const claim = await env.DB.prepare(
+          "INSERT OR IGNORE INTO telegram_processed_updates (bot_key, update_id) VALUES ('secretary', ?)",
+        ).bind(update.update_id).run();
+        if (!claim.meta.changes) return json({ ok: true, duplicate: true });
+      }
       if (isModel && update.message) await handleModelMessage(env, update.message);
       if (isDirector && update.message) await handleDirectorMessage(env, update.message);
       if (isDirector && update.callback_query) await handleDirectorCallback(env, update.callback_query);
