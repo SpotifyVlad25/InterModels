@@ -519,14 +519,28 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "Готово: альбом из 4 фотографий для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранён в правильном порядке." });
 }
 async function sendCompositePng(env: Env, chatId: number, threadId: number, png: Uint8Array, caption: string): Promise<void> {
-  const form = new FormData();
-  form.set("chat_id", String(chatId));
-  form.set("message_thread_id", String(threadId));
-  form.set("caption", caption);
-  form.set("photo", new Blob([png], { type: "image/png" }), "intermodels-composite.png");
-  const response = await fetch(`https://api.telegram.org/bot${env.SECRETARY_BOT_TOKEN}/sendPhoto`, { method: "POST", body: form });
-  const result: any = await response.json();
-  if (!response.ok || !result.ok) throw new Error("Telegram sendPhoto failed");
+  const endpoint = `https://api.telegram.org/bot${env.SECRETARY_BOT_TOKEN}/`;
+  const makeForm = (field: "photo" | "document") => {
+    const form = new FormData();
+    form.set("chat_id", String(chatId));
+    form.set("message_thread_id", String(threadId));
+    form.set("caption", caption);
+    form.set(field, new Blob([png], { type: "image/png" }), "intermodels-composite.png");
+    return form;
+  };
+  const photoResponse = await fetch(endpoint + "sendPhoto", { method: "POST", body: makeForm("photo") });
+  const photoResult: any = await photoResponse.json().catch(() => null);
+  if (photoResponse.ok && photoResult?.ok) return;
+
+  // Telegram's sendPhoto limit is stricter than sendDocument. Preserve the PNG
+  // as a downloadable document when the image endpoint rejects a large render.
+  const photoError = photoResult?.description ?? `HTTP ${photoResponse.status}`;
+  const documentResponse = await fetch(endpoint + "sendDocument", { method: "POST", body: makeForm("document") });
+  const documentResult: any = await documentResponse.json().catch(() => null);
+  if (!documentResponse.ok || !documentResult?.ok) {
+    const documentError = documentResult?.description ?? `HTTP ${documentResponse.status}`;
+    throw new Error(`Telegram delivery failed (sendPhoto: ${photoError}; sendDocument: ${documentError})`);
+  }
 }
 async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawName: string): Promise<void> {
   const query = normalizeName(rawName);
@@ -567,16 +581,22 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     text: "Готовлю композитку для " + model.first_name + " " + model.last_name + "…",
   });
   const statusMessageId = status.result?.message_id;
+  let compositeStage = "render_png";
   try {
     const png = await renderCompositePng(env, model, photos.map((p) => p.telegram_file_id));
+    compositeStage = "deliver_png";
     await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels");
+    compositeStage = "delete_status";
     if (statusMessageId) {
       await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", {
         chat_id: message.chat.id, message_id: statusMessageId,
       });
     }
   } catch (error) {
-    console.error("Composite generation failed", { modelId: model.id, error });
+    const details = error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack }
+      : { message: String(error) };
+    console.error("Composite generation failed", { modelId: model.id, stage: compositeStage, ...details });
     if (statusMessageId) {
       try {
         await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
