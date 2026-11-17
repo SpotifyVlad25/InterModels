@@ -471,18 +471,26 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   const name = escapeXml(rawName);
   // Keep long names inside the right-hand text column.
   const nameSize = rawName.length > 23 ? 28 : rawName.length > 18 ? 34 : rawName.length > 14 ? 39 : 44;
-  const values = [
+  const leftValues = [
     model.height_cm != null ? "HEIGHT  " + model.height_cm + " CM" : null,
     model.bust_cm != null ? "BUST  " + model.bust_cm + " CM" : null,
     model.waist_cm != null ? "WAIST  " + model.waist_cm + " CM" : null,
     model.hips_cm != null ? "HIPS  " + model.hips_cm + " CM" : null,
-    model.clothing_size ? "CLOTHING  " + model.clothing_size : null,
-    model.shoe_size ? "SHOES  " + model.shoe_size : null,
+  ];
+  const rightValues = [
     model.hair_color ? "HAIR  " + model.hair_color : null,
     model.eye_color ? "EYES  " + model.eye_color : null,
-  ].filter((v): v is string => Boolean(v));
-  // Eight measurements fit above the footer without touching the logo.
-  const details = values.map((v, i) => `<text x="990" y="${1760 + i * 42}" class="detail">${escapeXml(v)}</text>`).join("");
+    model.clothing_size ? "CLOTHING  " + model.clothing_size : null,
+    model.shoe_size ? "SHOES  " + model.shoe_size : null,
+  ];
+  // Keep each category in its own column and preserve row positions when a value is absent.
+  const renderDetails = (items: Array<string | null>, x: number) => items
+    .map((v, i) => {
+      if (!v) return "";
+      const fontSize = v.length > 25 ? 13 : v.length > 20 ? 15 : 18;
+      return `<text x="${x}" y="${1770 + i * 68}" class="detail" font-size="${fontSize}">${escapeXml(v)}</text>`;
+    }).join("");
+  const details = renderDetails(leftValues, 950) + renderDetails(rightValues, 1240);
   // "meet" preserves the complete source photo: no cropping and no stretching.
   const img = (data: string, x: number, y: number, w: number, h: number) =>
     `<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet"/>`;
