@@ -45,6 +45,22 @@ jobs:
           echo "probe_url=$PROBE_URL" >> "$GITHUB_OUTPUT"
           echo "Temporary diagnostic Worker deployed."
 
+      - name: Verify GitHub secrets are present
+        env:
+          MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
+          DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL_LEN=${#MODEL_BOT_TOKEN}
+          DIRECTOR_LEN=${#DIRECTOR_BOT_TOKEN}
+          echo "MODEL_BOT_TOKEN length: $MODEL_LEN"
+          echo "DIRECTOR_BOT_TOKEN length: $DIRECTOR_LEN"
+          if [ "$MODEL_LEN" -lt 30 ] || [ "$DIRECTOR_LEN" -lt 30 ]; then
+            echo "::error::A required Telegram token secret is missing or unexpectedly short."
+            exit 1
+          fi
+
       - name: Set temporary probe secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -58,6 +74,8 @@ jobs:
             MODEL_BOT_TOKEN: process.env.MODEL_BOT_TOKEN,
             DIRECTOR_BOT_TOKEN: process.env.DIRECTOR_BOT_TOKEN
           }))' | npx wrangler secret bulk --name intermodels-telegram-probe --config wrangler.probe.toml
+          echo "Cloudflare secret names after upload:"
+          npx wrangler secret list --name intermodels-telegram-probe --config wrangler.probe.toml
 
       - name: Call probe Worker
         env:
