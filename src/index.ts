@@ -541,10 +541,14 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
        VALUES (?, ?, ?, ?)
        ON CONFLICT(chat_id, thread_id, user_id) DO UPDATE SET surname = excluded.surname, created_at = CURRENT_TIMESTAMP`,
     ).bind(String(message.chat.id), message.message_thread_id!, String(message.from!.id), matches[0].last_name).run();
-    const names = matches.map((m) => m.first_name).filter((name, i, all) => all.indexOf(name) === i);
+    const keyboard = matches.map((model) => [{
+      text: model.first_name.slice(0, 60),
+      callback_data: `csel:${model.id}`,
+    }]);
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id, message_thread_id: message.message_thread_id,
-      text: `Нашёл несколько моделей с фамилией «${matches[0].last_name}». Уточните имя одним сообщением.${names.length ? "\nВарианты: " + names.join(", ") : ""}`,
+      text: "Уточните имя:",
+      reply_markup: { inline_keyboard: keyboard },
     }); return;
   }
   await env.DB.prepare("DELETE FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
@@ -583,16 +587,6 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
         .bind(String(message.chat.id), message.message_thread_id, senderId).run();
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Команда: /comp Фамилия или /comp Имя Фамилия" });
       return;
-    }
-    if (command) {
-      const pending = await env.DB.prepare(
-        "SELECT surname FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ? AND created_at >= datetime('now', '-15 minutes')",
-      ).bind(String(message.chat.id), message.message_thread_id, senderId).first<{surname:string}>();
-      if (pending) {
-        await env.DB.prepare("DELETE FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
-          .bind(String(message.chat.id), message.message_thread_id, senderId).run();
-        await generateCompositeInTopic(env, message, command + " " + pending.surname);
-      }
     }
     return;
   }
@@ -714,9 +708,16 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     });
     return;
   }
-  const match = (callback.data ?? "").match(/^comp:([a-zA-Z0-9_-]{1,50})$/);
-  if (!match || !callback.message || callback.message.chat.type !== "private") {
-    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Не удалось выбрать анкету." });
+  const match = (callback.data ?? "").match(/^csel:([a-zA-Z0-9_-]{1,50})$/);
+  if (!match || !callback.message || callback.message.chat.type !== "supergroup" || !callback.message.message_thread_id) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Не удалось выбрать модель." });
+    return;
+  }
+  const pending = await env.DB.prepare(
+    "SELECT surname FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ? AND created_at >= datetime('now', '-15 minutes')",
+  ).bind(String(callback.message.chat.id), callback.message.message_thread_id, String(callback.from.id)).first<{surname:string}>();
+  if (!pending) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Время выбора истекло. Повторите /comp Фамилия.", show_alert: true });
     return;
   }
   const model = await env.DB.prepare(
@@ -726,10 +727,19 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
      FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
      WHERE m.id = ? AND m.is_active = 1`,
   ).bind(match[1]).first<SecretaryModelRow>();
+  if (!model || normalizeName(model.last_name) !== normalizeName(pending.surname)) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Эта модель больше недоступна.", show_alert: true });
+    return;
+  }
+  await env.DB.prepare("DELETE FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
+    .bind(String(callback.message.chat.id), callback.message.message_thread_id, String(callback.from.id)).run();
   await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
-    callback_query_id: callback.id, text: model ? "Модель выбрана." : "Анкета не найдена.",
+    callback_query_id: callback.id, text: "Выбрана: " + model.first_name,
   });
-  if (model) await sendSecretaryCompositeSources(env, callback.message.chat.id, model);
+  await telegram(env.SECRETARY_BOT_TOKEN, "editMessageReplyMarkup", {
+    chat_id: callback.message.chat.id, message_id: callback.message.message_id, reply_markup: { inline_keyboard: [] },
+  });
+  await generateCompositeInTopic(env, callback.message, model.first_name + " " + model.last_name);
 }
 
 const STAFF_PERMISSIONS = ["profile.view","profile.edit","photos.manage","composite.generate","requests.manage","staff.manage"] as const;
