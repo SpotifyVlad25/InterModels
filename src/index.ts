@@ -868,7 +868,7 @@ export default {
     catch { return json({ error: "Invalid JSON" }, 400); }
     try {
       const isCompositeUpdate = isSecretary && (
-        /^\\/comp(?:@\\w+)?\\s+/i.test(update.message?.text ?? "") ||
+        /^\/comp(?:@\w+)?\s+/i.test(update.message?.text ?? "") ||
         (update.callback_query?.data ?? "").startsWith("csel:")
       );
       if (isCompositeUpdate && typeof update.update_id === "number") {
