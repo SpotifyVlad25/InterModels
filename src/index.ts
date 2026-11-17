@@ -12,7 +12,7 @@ interface Env {
 interface TelegramUser { id: number; first_name?: string; last_name?: string; username?: string; }
 interface TelegramMessage {
   message_id: number; message_thread_id?: number; from?: TelegramUser; chat: { id: number; type: string };
-  text?: string; contact?: { phone_number: string; user_id?: number };
+  text?: string; caption?: string; media_group_id?: string; photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>; contact?: { phone_number: string; user_id?: number };
 }
 interface TelegramCallbackQuery { id: string; from: TelegramUser; data?: string; message?: TelegramMessage; }
 interface TelegramUpdate { message?: TelegramMessage; callback_query?: TelegramCallbackQuery; }
