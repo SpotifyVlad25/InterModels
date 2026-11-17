@@ -1080,7 +1080,7 @@ function appHtml(): Response {
   async function loadModels(){try{const d=await api('GET','/api/director/models');models=d.models;renderModels()}catch(e){document.getElementById('models').textContent=e.message}}
   async function loadStats(){try{const d=await api('GET','/api/director/refresh-status');const c=d.campaign;if(!c){document.getElementById('refreshStats').textContent='Кампания ещё не запускалась.';return}document.getElementById('refreshStats').textContent='Моделей: '+c.total+' · Обновлено: '+c.updated+' · Ожидают: '+c.pending+' · Заморожено: '+c.frozen+' · Comp опубликовано: '+c.published+' · Ошибок: '+c.failed}catch(e){document.getElementById('refreshStats').textContent=e.message}}
   function formatJobTime(value){if(!value)return 'время неизвестно';const raw=String(value);const date=new Date(raw.includes('T')?(raw.endsWith('Z')||/[+-]\\d\\d:\\d\\d$/.test(raw)?raw:raw+'Z'):raw.replace(' ','T')+'Z');if(Number.isNaN(date.getTime()))return raw;return new Intl.DateTimeFormat('ru-RU',{timeZone:'Asia/Yekaterinburg',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(date)+' (UTC+5)'}
-  async function loadCompositeJobs(){const root=document.getElementById('compositeJobs');st.textContent='Обновляю статус композиток…';try{const d=await api('GET','/api/director/composites');root.innerHTML='';if(!d.jobs.length){root.textContent='Заданий пока нет.';st.textContent='Статус обновлён.';return}for(const j of d.jobs){const item=document.createElement('div');item.className='person';const title=document.createElement('strong');title.textContent=(j.first_name||'Модель')+' '+(j.last_name||'')+' · '+({pending:'В очереди',processing:'Генерируется',published:'Опубликована',failed:'Ошибка'}[j.status]||j.status);const info=document.createElement('div');info.className='muted';info.textContent='Попыток: '+j.attempts+' · '+formatJobTime(j.updated_at)+(j.last_error?(j.status==='failed'?' · Причина: ':' · Этап: ')+j.last_error:'');item.append(title,info);root.append(item)}st.textContent='Статус композиток обновлён.'}catch(e){root.textContent='Не удалось получить статус: '+e.message;st.textContent='Ошибка обновления статуса: '+e.message}}
+  async function loadCompositeJobs(){const root=document.getElementById('compositeJobs');st.textContent='Обновляю статус композиток…';try{const d=await api('GET','/api/director/composites');root.innerHTML='';if(!d.jobs.length){root.textContent='Заданий пока нет.';st.textContent='Статус обновлён.';return}for(const j of d.jobs){const item=document.createElement('div');item.className='person';const title=document.createElement('strong');title.textContent=(j.first_name||'Модель')+' '+(j.last_name||'')+' · '+({pending:'В очереди',processing:'Генерируется',published:'Опубликована',failed:'Ошибка'}[j.status]||j.status);const info=document.createElement('div');info.className='muted';info.textContent='Попыток: '+j.attempts+' · '+formatJobTime(j.updated_at)+(j.last_error?(j.status==='failed'?' · Причина: ':' · Этап: ')+j.last_error:'');item.append(title,info);if(j.status==='failed'){const retry=document.createElement('button');retry.className='secondary';retry.textContent='Повторить только эту композитку';retry.onclick=async()=>{retry.disabled=true;try{await api('POST','/api/director/composites',{retry_model_id:j.model_id});st.textContent='Задание Владислава Демакова возвращено в очередь.';await loadCompositeJobs()}catch(e){retry.disabled=false;st.textContent=e.message}};item.append(retry)}root.append(item)}st.textContent='Статус композиток обновлён.'}catch(e){root.textContent='Не удалось получить статус: '+e.message;st.textContent='Ошибка обновления статуса: '+e.message}}
   async function queue(ids,manual=false){try{const d=await api('POST','/api/director/composites',{model_ids:ids,manual});st.textContent=(manual?'Ручное обновление: ':'В ежемесячную очередь добавлено: ')+d.queued;await loadStats();await loadCompositeJobs()}catch(e){st.textContent=e.message}}
   document.getElementById('reloadCompositeJobs').onclick=loadCompositeJobs;
   document.getElementById('search').oninput=renderModels;document.getElementById('filter').onchange=renderModels;
@@ -1183,6 +1183,22 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
     }
     if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
     let body: any; try { body = await request.json(); } catch { return json({ error: "Некорректный JSON." }, 400); }
+    // Retry only an existing failed job for one model; never enqueue a published or active job.
+    if (body?.retry_model_id !== undefined) {
+      const modelId = String(body.retry_model_id);
+      if (!/^[a-zA-Z0-9_-]{1,50}$/.test(modelId)) return json({ error: "Некорректный ID модели." }, 400);
+      const failed = await env.DB.prepare(
+        "SELECT campaign_id FROM composite_refresh_jobs WHERE model_id=? AND status='failed' ORDER BY updated_at DESC LIMIT 1",
+      ).bind(modelId).first<{campaign_id:string}>();
+      if (!failed) return json({ error: "Не найдено неудачное задание для этой модели. Повтор не поставлен." }, 409);
+      const updated = await env.DB.prepare(
+        "UPDATE composite_refresh_jobs SET status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND status='failed'",
+      ).bind(failed.campaign_id, modelId).run();
+      if (!updated.meta.changes) return json({ error: "Статус задания изменился. Обновите список." }, 409);
+      await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'composite.refresh.retry', ?)")
+        .bind(randomId(), actor.id, JSON.stringify({ campaign_id: failed.campaign_id, model_id: modelId })).run();
+      return json({ ok: true, queued: 1, retry: true });
+    }
     if (body?.model_ids !== undefined && (!Array.isArray(body.model_ids) || body.model_ids.length > 100 || body.model_ids.some((id: unknown) => typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,50}$/.test(id)))) {
       return json({ error: "Некорректный список моделей." }, 400);
     }
