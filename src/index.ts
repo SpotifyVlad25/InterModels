@@ -309,7 +309,7 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
   if(request.method==="POST"){
     let body:any;try{body=await request.json()}catch{return json({error:"Некорректный JSON."},400)}
     const id=String(body?.telegram_user_id??"").trim(),role=body?.role,displayName=typeof body?.display_name==="string"?body.display_name.trim().slice(0,100):null;
-    const permissions: string[]=Array.isArray(body?.permissions)?[...new Set(body.permissions.filter((p:unknown):p is string=>typeof p==="string"))]:[];
+    const permissions: string[]=Array.isArray(body?.permissions)?Array.from(new Set<string>(body.permissions.filter((p:unknown)=>typeof p==="string").map((p:unknown)=>String(p)))):[];
     if(!/^[0-9]{5,20}$/.test(id)||!["helper","viewer"].includes(role)||permissions.some((p)=>!STAFF_PERMISSIONS.includes(p as StaffPermission)||p==="staff.manage")) return json({error:"Проверьте Telegram ID, роль и разрешения."},400);
     if(id===env.OWNER_TELEGRAM_ID||id===env.DIRECTOR_TELEGRAM_ID)return json({error:"Нельзя менять доступ владельца или директора."},400);
     if(role==="viewer"&&permissions.some((p:string)=>p!=="profile.view"))return json({error:"Наблюдателю доступен только просмотр."},400);
