@@ -333,6 +333,24 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
     if (!isGroup) await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: `Доступ пока не подключён. Ваш Telegram ID: ${senderId}. Передайте его администратору InterModels для активации.` });
     return;
   }
+  if (message.chat.type === "private" && (message.text?.trim() === "Обновить Comp" || /^\/refresh_comp(?:@\w+)?$/i.test(message.text?.trim() ?? ""))) {
+    if (!(await actorHasPermission(env, senderId, "composite.generate"))) {
+      await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: "У вас нет права запускать обновление композиток." });
+      return;
+    }
+    try {
+      const result = await queueCompositeRefresh(env, null, senderId);
+      await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id,
+        text: result.queued
+          ? "Обновление Comp запущено. В очереди: " + result.queued + " моделей. Результаты появятся в теме «КОМПОЗИТКИ»."
+          : "Нет моделей с обновлёнными параметрами для публикации Comp.",
+      });
+    } catch (error) {
+      await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: error instanceof Error ? error.message : "Не удалось запустить обновление Comp." });
+    }
+    return;
+  }
   if (message.text?.startsWith("/start")) {
     if (isDirector) await saveTopic(env, "director", message);
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
@@ -344,7 +362,7 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
           ? "InterModels Owner подключён. На период настройки у вас временный полный доступ, включая решения по заявкам."
           : "InterModels Assistant подключён. Ваши возможности определяются выданными директором правами.",
       ...((isDirector || isOwner) && message.chat.type === "private" ? {
-        reply_markup: { keyboard: [[{ text: "Открыть Mini App", web_app: { url: "https://intermodels.spotify-vlad25.workers.dev/app" } }]], resize_keyboard: true },
+        reply_markup: { keyboard: [[{ text: "Открыть Mini App", web_app: { url: "https://intermodels.spotify-vlad25.workers.dev/app" } }], [{ text: "Обновить Comp" }]], resize_keyboard: true },
       } : {}),
     });
   } else if (message.text?.startsWith("/help")) {
