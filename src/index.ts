@@ -1211,6 +1211,11 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       }
       await saveSecretaryPhotoSet(env, pendingPhotoSet.model_id, newPhotos, String(callback.from.id), msg.chat.id, msg.message_thread_id);
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Фотографии заменены." });
+      try {
+        await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id });
+      } catch (error) {
+        console.error("Failed to delete photo replacement prompt", error);
+      }
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
         chat_id: msg.chat.id, message_thread_id: msg.message_thread_id,
         text: "✅ Новые фотографии успешно сохранены.",
