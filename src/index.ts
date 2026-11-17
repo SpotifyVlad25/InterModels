@@ -1007,15 +1007,18 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
       });
       statusMessageId = status.result?.message_id;
       const updateStage = async (stage: string) => {
+        await assertSecretaryOperationActive(env, operationId);
         if (!statusMessageId) return;
         await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
           chat_id: chatId, message_id: statusMessageId,
           text: `Создание ${label}\n${stage} · готово ${completed}/${names.length}`,
+          reply_markup: secretaryCancelKeyboard(operationId),
         });
       };
-      const png = await renderCompositePng(env, model, photos.map((p) => p.telegram_file_id), updateStage);
-      await updateStage("Отправка готового PNG");
       await assertSecretaryOperationActive(env, operationId);
+      const png = await renderCompositePng(env, model, photos.map((p) => p.telegram_file_id), updateStage);
+      await assertSecretaryOperationActive(env, operationId);
+      await updateStage("Отправка готового PNG");
       const newMessageId = await sendCompositePng(env, chatId, threadId, png, model.first_name + " " + model.last_name + " · InterModels");
       if (!Number.isSafeInteger(newMessageId) || newMessageId <= 0) throw new Error("Telegram не вернул ID композитки.");
       const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
