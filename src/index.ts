@@ -159,8 +159,9 @@ async function handleModelProfileStep(env: Env, telegramId: string, chatId: numb
 async function showModelProfilePrompt(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
   const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?").bind(telegramId).first<{state:string}>();
   const step = PROFILE_STEPS.find((item) => item.state === session?.state);
-  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\n\n" + step.prompt, threadId);
-  else await sendModel(env, chatId, "Ваша анкета подключена. Отправьте /profile, чтобы заполнить или обновить параметры.", threadId);
+  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\\n\\n" + step.prompt, threadId);
+  else if (session?.state === "profile_complete") await sendModel(env, chatId, "Ваша анкета подключена и заполнена. Чтобы изменить параметры, отправьте /profile.", threadId);
+  else await beginModelProfile(env, telegramId, chatId, threadId);
 }
 
 async function handleModelMessage(env: Env, message: TelegramMessage): Promise<void> {
