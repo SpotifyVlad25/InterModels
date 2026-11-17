@@ -1233,7 +1233,7 @@ async function queueCompositeRefresh(env: Env, modelIds: string[] | null, actorI
       `INSERT INTO composite_refresh_jobs(campaign_id,model_id,status,attempts,last_error,updated_at)
        VALUES(?,?,'pending',0,NULL,CURRENT_TIMESTAMP)
        ON CONFLICT(campaign_id,model_id) DO UPDATE SET status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP`,
-    ).bind(campaign.id, row.model_id).run();
+    ).bind(campaignId, row.model_id).run();
   }
   await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'composite.refresh.queued', ?)")
     .bind(randomId(), actorId, JSON.stringify({ campaign_id: campaignId, manual, model_ids: rows.map((row) => row.model_id) })).run();
