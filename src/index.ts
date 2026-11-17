@@ -320,27 +320,29 @@ async function saveSecretaryPhotoSet(
 }
 async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, senderId: string): Promise<void> {
   const albumId = message.media_group_id!;
+  const threadId = message.message_thread_id;
+  if (threadId === undefined) return;
   const photo = message.photo?.[message.photo.length - 1];
   if (!photo) return;
   const caption = (message.caption ?? "").trim();
   let modelId: string | null = null;
   if (caption) {
     if (caption.length > 100 || /[\r\n]/.test(caption)) {
-      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "В подписи укажите только имя и фамилию модели." });
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "В подписи укажите только имя и фамилию модели." });
       return;
     }
     const target = normalizeName(caption);
     const models = await getActiveModels(env);
     const matches = models.filter((m) => normalizeName(m.first_name + " " + m.last_name) === target);
     if (matches.length !== 1) {
-      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: matches.length ? "Найдено несколько анкет с таким ФИО. Уточните данные в базе." : "Анкета «" + caption + "» не найдена. Проверьте ФИО." });
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: matches.length ? "Найдено несколько анкет с таким ФИО. Уточните данные в базе." : "Анкета «" + caption + "» не найдена. Проверьте ФИО." });
       return;
     }
     modelId = matches[0].id;
   } else {
     const existing = await env.DB.prepare(
       "SELECT model_id FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND model_id IS NOT NULL LIMIT 1",
-    ).bind(String(message.chat.id), message.message_thread_id, senderId, albumId).first<{model_id:string}>();
+    ).bind(String(message.chat.id), threadId, senderId, albumId).first<{model_id:string}>();
     modelId = existing?.model_id ?? null;
   }
   await env.DB.prepare(
@@ -351,36 +353,36 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
        model_id = COALESCE(excluded.model_id, secretary_photo_album_items.model_id),
        telegram_file_id = excluded.telegram_file_id,
        telegram_file_unique_id = excluded.telegram_file_unique_id`,
-  ).bind(String(message.chat.id), message.message_thread_id, senderId, albumId, message.message_id, modelId, photo.file_id, photo.file_unique_id).run();
+  ).bind(String(message.chat.id), threadId, senderId, albumId, message.message_id, modelId, photo.file_id, photo.file_unique_id).run();
   if (modelId) {
     await env.DB.prepare(
       "UPDATE secretary_photo_album_items SET model_id = ? WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND model_id IS NULL",
-    ).bind(modelId, String(message.chat.id), message.message_thread_id, senderId, albumId).run();
+    ).bind(modelId, String(message.chat.id), threadId, senderId, albumId).run();
   }
   const album = await env.DB.prepare(
     "SELECT message_id, model_id, telegram_file_id AS file_id, telegram_file_unique_id AS file_unique_id FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? ORDER BY message_id",
-  ).bind(String(message.chat.id), message.message_thread_id, senderId, albumId)
+  ).bind(String(message.chat.id), threadId, senderId, albumId)
     .all<{message_id:number;model_id:string|null;file_id:string;file_unique_id:string}>();
   const items = album.results ?? [];
   if (items.length > 4) {
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
-      .bind(String(message.chat.id), message.message_thread_id, senderId, albumId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "В альбоме должно быть ровно 4 фотографии. Отправьте комплект заново." });
+      .bind(String(message.chat.id), threadId, senderId, albumId).run();
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "В альбоме должно быть ровно 4 фотографии. Отправьте комплект заново." });
     return;
   }
   if (items.length !== 4 || items.some((item) => !item.model_id)) return;
   const resolvedModelId = items[0].model_id!;
   if (items.some((item) => item.model_id !== resolvedModelId)) {
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
-      .bind(String(message.chat.id), message.message_thread_id, senderId, albumId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "У фотографий альбома должно быть одно ФИО в подписи первого снимка. Отправьте комплект заново." });
+      .bind(String(message.chat.id), threadId, senderId, albumId).run();
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "У фотографий альбома должно быть одно ФИО в подписи первого снимка. Отправьте комплект заново." });
     return;
   }
-  await saveSecretaryPhotoSet(env, resolvedModelId, items.map(({file_id,file_unique_id}) => ({file_id,file_unique_id})), senderId, message.chat.id, message.message_thread_id);
+  await saveSecretaryPhotoSet(env, resolvedModelId, items.map(({file_id,file_unique_id}) => ({file_id,file_unique_id})), senderId, message.chat.id, threadId);
   await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
-    .bind(String(message.chat.id), message.message_thread_id, senderId, albumId).run();
+    .bind(String(message.chat.id), threadId, senderId, albumId).run();
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
-  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Готово: альбом из 4 фотографий для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранён в правильном порядке." });
+  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "Готово: альбом из 4 фотографий для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранён в правильном порядке." });
 }
 async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): Promise<void> {
   if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup") || !message.message_thread_id) return;
