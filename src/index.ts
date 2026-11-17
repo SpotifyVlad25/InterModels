@@ -846,6 +846,22 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     return;
   }
+  if (/^\/new(?:@\w+)?$/i.test(command)) {
+    if (!hasDirectorAccess(env, senderId)) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id, message_thread_id: message.message_thread_id,
+        text: "Создать фототеку может только владелец или директор.",
+      });
+      return;
+    }
+    await env.DB.prepare("INSERT INTO secretary_photo_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
+      .bind(String(message.chat.id), message.message_thread_id, senderId).run();
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+      chat_id: message.chat.id, message_thread_id: message.message_thread_id,
+      text: "Режим добавления фотографий включён. Отправьте одним альбомом ровно 4 оригинальных фото. В подписи к первому фото укажите точное имя и фамилию модели, например: Анастасия Деревянкина. Модель должна уже существовать в основной базе. Фото сохранятся в её фототеку /COMP.",
+    });
+    return;
+  }
   if (/^\/comp_setup(?:@\w+)?$/i.test(command)) {
     if (!hasDirectorAccess(env, senderId)) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Настроить фототеку может только владелец или директор." });
