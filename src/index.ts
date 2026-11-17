@@ -729,6 +729,28 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     "UPDATE secretary_photo_album_items SET processed_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND NOT EXISTS (SELECT 1 FROM secretary_photo_album_items active WHERE active.chat_id = ? AND active.thread_id = ? AND active.uploader_id = ? AND active.media_group_id = ? AND active.processed_at >= datetime('now', '-5 minutes'))",
   ).bind(String(message.chat.id), threadId, senderId, albumId, String(message.chat.id), threadId, senderId, albumId).run();
   if ((claim.meta?.changes ?? 0) === 0) return;
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS secretary_photo_album_status (
+      chat_id TEXT NOT NULL, thread_id INTEGER NOT NULL, uploader_id TEXT NOT NULL,
+      media_group_id TEXT NOT NULL, status_message_id INTEGER,
+      PRIMARY KEY (chat_id, thread_id, uploader_id, media_group_id)
+    )`,
+  ).run();
+  const progressStatus = await env.DB.prepare(
+    "SELECT status_message_id FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?",
+  ).bind(String(message.chat.id), threadId, senderId, albumId).first<{status_message_id:number|null}>();
+  if (progressStatus?.status_message_id) {
+    try {
+      await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", {
+        chat_id: message.chat.id, message_id: progressStatus.status_message_id,
+      });
+    } catch (error) {
+      console.error("Failed to delete photo upload progress message", error);
+    }
+  }
+  await env.DB.prepare(
+    "DELETE FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?",
+  ).bind(String(message.chat.id), threadId, senderId, albumId).run();
   if (items.some((item) => item.model_id !== resolvedModelId)) {
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
