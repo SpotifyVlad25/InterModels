@@ -38,7 +38,7 @@ jobs:
       - name: Upload Worker secrets
         shell: bash
         run: |
-          for name in MODEL_BOT_TOKEN DIRECTOR_BOT_TOKEN MODEL_WEBHOOK_SECRET DIRECTOR_WEBHOOK_SECRET OWNER_TELEGRAM_ID DIRECTOR_TELEGRAM_ID; do
+          for name in MODEL_BOT_TOKEN DIRECTOR_BOT_TOKEN SECRETARY_BOT_TOKEN MODEL_WEBHOOK_SECRET DIRECTOR_WEBHOOK_SECRET SECRETARY_WEBHOOK_SECRET OWNER_TELEGRAM_ID DIRECTOR_TELEGRAM_ID; do
             if [ -z "${!name}" ]; then
               echo "::error::Missing GitHub Actions secret: $name"
               exit 1
@@ -47,8 +47,10 @@ jobs:
           node -e 'process.stdout.write(JSON.stringify({
             MODEL_BOT_TOKEN: process.env.MODEL_BOT_TOKEN,
             DIRECTOR_BOT_TOKEN: process.env.DIRECTOR_BOT_TOKEN,
+            SECRETARY_BOT_TOKEN: process.env.SECRETARY_BOT_TOKEN,
             MODEL_WEBHOOK_SECRET: process.env.MODEL_WEBHOOK_SECRET,
             DIRECTOR_WEBHOOK_SECRET: process.env.DIRECTOR_WEBHOOK_SECRET,
+            SECRETARY_WEBHOOK_SECRET: process.env.SECRETARY_WEBHOOK_SECRET,
             OWNER_TELEGRAM_ID: process.env.OWNER_TELEGRAM_ID,
             DIRECTOR_TELEGRAM_ID: process.env.DIRECTOR_TELEGRAM_ID
           }))' | npx wrangler secret bulk --name intermodels
@@ -57,8 +59,10 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
           DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
+          SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
           MODEL_WEBHOOK_SECRET: ${{ secrets.MODEL_WEBHOOK_SECRET }}
           DIRECTOR_WEBHOOK_SECRET: ${{ secrets.DIRECTOR_WEBHOOK_SECRET }}
+          SECRETARY_WEBHOOK_SECRET: ${{ secrets.SECRETARY_WEBHOOK_SECRET }}
           OWNER_TELEGRAM_ID: ${{ secrets.OWNER_TELEGRAM_ID }}
           DIRECTOR_TELEGRAM_ID: ${{ secrets.DIRECTOR_TELEGRAM_ID }}
 
@@ -67,3 +71,23 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Configure secretary Telegram webhook
+        shell: bash
+        env:
+          SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
+          SECRETARY_WEBHOOK_SECRET: ${{ secrets.SECRETARY_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          expected_url="https://intermodels.spotify-vlad25.workers.dev/webhook/secretary"
+          info="$(curl -fsS "https://api.telegram.org/bot${SECRETARY_BOT_TOKEN}/getWebhookInfo")"
+          existing_url="$(printf '%s' "$info" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok)process.exit(2);process.stdout.write(j.result.url||"")})')"
+          if [ -n "$existing_url" ] && [ "$existing_url" != "$expected_url" ]; then
+            echo "::error::Secretary bot already has a different Telegram webhook configured. Remove or migrate the old webhook before deployment."
+            exit 1
+          fi
+          result="$(curl -fsS -X POST "https://api.telegram.org/bot${SECRETARY_BOT_TOKEN}/setWebhook" \
+            --data-urlencode "url=$expected_url" \
+            --data-urlencode "secret_token=${SECRETARY_WEBHOOK_SECRET}" \
+            --data-urlencode 'allowed_updates=["message","callback_query"]')"
+          printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok){console.error("Telegram setWebhook failed:",j.description||"unknown error");process.exit(1)}console.log("Secretary webhook configured.")})'
