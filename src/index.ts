@@ -377,7 +377,9 @@ async function sendSecretaryCompositeSources(env: Env, chatId: number, model: Se
 }
 
 async function handleSecretaryMessage(env: Env, message: TelegramMessage): Promise<void> {
-  if (!message.from || message.chat.type !== "private") return;
+  if (!message.from) return;
+  if (message.chat.type === "group" || message.chat.type === "supergroup") { await handleSecretaryGroupMessage(env, message); return; }
+  if (message.chat.type !== "private") return;
   const userId = String(message.from.id);
   if (!(await secretaryAllowed(env, userId))) {
     await sendSecretary(env, message.chat.id, "Доступ к секретарю InterModels не подключён.");
@@ -409,7 +411,7 @@ async function handleSecretaryMessage(env: Env, message: TelegramMessage): Promi
     return;
   }
   if (models.length === 1) {
-    await sendSecretary(env, message.chat.id, secretaryProfileText(models[0]));
+    await sendSecretaryCompositeSources(env, message.chat.id, models[0]);
     return;
   }
   const keyboard = models.map((model) => [{
@@ -440,7 +442,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
   await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
     callback_query_id: callback.id, text: model ? "Модель выбрана." : "Анкета не найдена.",
   });
-  if (model) await sendSecretary(env, callback.message.chat.id, secretaryProfileText(model));
+  if (model) await sendSecretaryCompositeSources(env, callback.message.chat.id, model);
 }
 
 const STAFF_PERMISSIONS = ["profile.view","profile.edit","photos.manage","composite.generate","requests.manage","staff.manage"] as const;
