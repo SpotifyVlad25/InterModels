@@ -309,8 +309,8 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
   if(request.method==="POST"){
     let body:any;try{body=await request.json()}catch{return json({error:"Некорректный JSON."},400)}
     const id=String(body?.telegram_user_id??"").trim(),role=body?.role,displayName=typeof body?.display_name==="string"?body.display_name.trim().slice(0,100):null;
-    const permissions=Array.isArray(body?.permissions)?[...new Set(body.permissions)]:[];
-    if(!/^[0-9]{5,20}$/.test(id)||!["helper","viewer"].includes(role)||permissions.some((p:unknown)=>typeof p!=="string"||!STAFF_PERMISSIONS.includes(p as StaffPermission)||p==="staff.manage")) return json({error:"Проверьте Telegram ID, роль и разрешения."},400);
+    const permissions: string[]=Array.isArray(body?.permissions)?[...new Set(body.permissions.filter((p:unknown):p is string=>typeof p==="string"))]:[];
+    if(!/^[0-9]{5,20}$/.test(id)||!["helper","viewer"].includes(role)||permissions.some((p)=>!STAFF_PERMISSIONS.includes(p as StaffPermission)||p==="staff.manage")) return json({error:"Проверьте Telegram ID, роль и разрешения."},400);
     if(id===env.OWNER_TELEGRAM_ID||id===env.DIRECTOR_TELEGRAM_ID)return json({error:"Нельзя менять доступ владельца или директора."},400);
     if(role==="viewer"&&permissions.some((p:string)=>p!=="profile.view"))return json({error:"Наблюдателю доступен только просмотр."},400);
     await env.DB.prepare("INSERT INTO agency_staff_access(telegram_user_id,display_name,role,permissions_json,granted_by) VALUES(?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET display_name=excluded.display_name,role=excluded.role,permissions_json=excluded.permissions_json,is_active=1,granted_by=excluded.granted_by,updated_at=CURRENT_TIMESTAMP").bind(id,displayName,role,JSON.stringify(Object.fromEntries(permissions.map((p:string)=>[p,true]))),actor.id).run();
