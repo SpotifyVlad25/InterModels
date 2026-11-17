@@ -610,9 +610,24 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
   }
 }
 async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): Promise<void> {
-  if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup") || !message.message_thread_id) return;
+  if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup")) return;
   const senderId = String(message.from.id);
   const command = (message.text ?? "").trim();
+  console.info("Secretary group update", {
+    chatId: message.chat.id,
+    threadId: message.message_thread_id ?? null,
+    senderId,
+    command: command.slice(0, 120),
+  });
+  if (!message.message_thread_id) {
+    if (command.toLowerCase() === "/comp" || command.toLowerCase().startsWith("/comp ") || command.toLowerCase().startsWith("/comp@")) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id,
+        text: "Композитку можно запросить только внутри темы «КОМПОЗИТКИ».",
+      });
+    }
+    return;
+  }
   if (/^\/composite_setup(?:@\w+)?$/i.test(command)) {
     if (senderId !== env.OWNER_TELEGRAM_ID && senderId !== env.DIRECTOR_TELEGRAM_ID) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Настроить тему композиток может только владелец или директор." }); return;
@@ -622,8 +637,27 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена. Используйте /comp Имя Фамилия для генерации PNG." }); return;
   }
   const compositeTopic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_composite_topics WHERE id = 1").first<{chat_id:string;thread_id:number}>();
-  if (compositeTopic && compositeTopic.chat_id === String(message.chat.id) && compositeTopic.thread_id === message.message_thread_id) {
-    if (!(await secretaryAllowed(env, senderId))) return;
+  const isCompositeTopic = Boolean(compositeTopic && compositeTopic.chat_id === String(message.chat.id) && compositeTopic.thread_id === message.message_thread_id);
+  const isCompCommand = command.toLowerCase() === "/comp" || command.toLowerCase().startsWith("/comp ") || command.toLowerCase().startsWith("/comp@");
+  if (isCompCommand && !isCompositeTopic) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+      chat_id: message.chat.id,
+      message_thread_id: message.message_thread_id,
+      text: compositeTopic
+        ? "Команда /comp работает только в зарегистрированной теме «КОМПОЗИТКИ». Перейдите в неё и повторите команду."
+        : "Тема «КОМПОЗИТКИ» ещё не подключена. В нужной теме выполните /composite_setup.",
+    });
+    return;
+  }
+  if (isCompositeTopic) {
+    if (!(await secretaryAllowed(env, senderId))) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id,
+        message_thread_id: message.message_thread_id,
+        text: "У вас нет права создавать композитки. Попросите директора выдать доступ.",
+      });
+      return;
+    }
     const compCommand = command.match(/^\/comp(?:@\w+)?\s+(.+)$/i);
     if (compCommand) {
       await generateCompositeInTopic(env, message, compCommand[1].trim()); return;
