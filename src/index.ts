@@ -50,6 +50,13 @@ async function sendDirector(env: Env, text: string, replyMarkup?: Record<string,
   if (replyMarkup) payload.reply_markup = replyMarkup;
   await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", payload);
 }
+async function saveTopic(env: Env, botKey: "model" | "director", message: TelegramMessage): Promise<void> {
+  if ((message.chat.type !== "group" && message.chat.type !== "supergroup") || !message.message_thread_id) return;
+  await env.DB.prepare(
+    `INSERT INTO bot_topics (bot_key, chat_id, thread_id) VALUES (?, ?, ?)
+     ON CONFLICT(bot_key) DO UPDATE SET chat_id = excluded.chat_id, thread_id = excluded.thread_id`,
+  ).bind(botKey, String(message.chat.id), message.message_thread_id).run();
+}
 async function getActiveModels(env: Env): Promise<ModelRow[]> {
   const result = await env.DB.prepare(
     "SELECT id, first_name, last_name, phone, telegram_user_id FROM models WHERE is_active = 1",
@@ -91,7 +98,7 @@ async function handleModelMessage(env: Env, message: TelegramMessage): Promise<v
   if (!user || !["private", "group", "supergroup"].includes(message.chat.type)) return;
   const replyChatId = message.chat.id;
   const replyThreadId = message.message_thread_id;
-  if (message.text?.startsWith("/start")) {
+  if (message.text?.startsWith("/start")) {\n    await saveTopic(env, "model", message);
     await env.DB.prepare(
       `INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
        VALUES (?, 'awaiting_name', '{}', CURRENT_TIMESTAMP)
@@ -203,17 +210,20 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
   }
 }
 async function handleDirectorMessage(env: Env, message: TelegramMessage): Promise<void> {
-  if (!message.from || message.chat.type !== "private") return;
+  if (!message.from || !["private", "group", "supergroup"].includes(message.chat.type)) return;
   const senderId = String(message.from.id);
   const isDirector = senderId === env.DIRECTOR_TELEGRAM_ID;
   const isOwner = Boolean(env.OWNER_TELEGRAM_ID) && senderId === env.OWNER_TELEGRAM_ID;
+  const isGroup = message.chat.type === "group" || message.chat.type === "supergroup";
   if (!isDirector && !isOwner) {
-    await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: "Доступ к этому боту ограничен." });
+    if (!isGroup) await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: "Доступ к этому боту ограничен." });
     return;
   }
   if (message.text?.startsWith("/start")) {
+    if (isDirector) await saveTopic(env, "director", message);
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
+      ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
       text: isDirector
         ? "InterModels Director подключён. У вас полный доступ к решениям по заявкам."
         : "InterModels Owner подключён. Вы можете получать уведомления и контролировать заявки. Решения по заявкам принимает директор.",
@@ -221,6 +231,7 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
   } else if (message.text?.startsWith("/help")) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
+      ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
       text: isDirector
         ? "Команды:\n/start — подключить бота\n/help — помощь\n\nВы можете принимать и отклонять заявки."
         : "Команды:\n/start — подключить бота\n/help — помощь\n\nУ вас доступ к уведомлениям. Подтверждать и отклонять заявки может только директор.",
