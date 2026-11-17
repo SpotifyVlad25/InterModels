@@ -1086,7 +1086,7 @@ async function handleSecretaryMessage(env: Env, message: TelegramMessage): Promi
   const text = (message.text ?? "").trim();
   if (text.startsWith("/start") || text.startsWith("/help")) {
     await sendSecretary(env, message.chat.id,
-      "Секретарь InterModels\n\n/comp Фамилия — найти анкету модели.\n\nЕсли совпадений несколько, выберите нужную модель из списка.");
+      "Секретарь InterModels\n\nДля создания композиток перейдите в тему «КОМПОЗИТКИ» и используйте кнопку «➕ Создать композитку».");
     return;
   }
   const command = text.match(/^\/comp(?:@\w+)?(?:\s+(.+))?$/i);
