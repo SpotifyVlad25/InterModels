@@ -1854,6 +1854,50 @@ async function processRefreshCampaigns(env: Env): Promise<void> {
   }
 }
 
+async function processPendingSecretaryAlbums(env: Env): Promise<void> {
+  // Webhook requests can race or time out after all four Telegram updates were stored.
+  // Re-enter the same idempotent handler from Cron as a recovery path.
+  const pending = await env.DB.prepare(
+    `SELECT
+       a.chat_id, a.thread_id, a.uploader_id, a.media_group_id,
+       (SELECT x.message_id FROM secretary_photo_album_items x
+        WHERE x.chat_id = a.chat_id AND x.thread_id = a.thread_id
+          AND x.uploader_id = a.uploader_id AND x.media_group_id = a.media_group_id
+        ORDER BY x.message_id LIMIT 1) AS message_id,
+       (SELECT x.telegram_file_id FROM secretary_photo_album_items x
+        WHERE x.chat_id = a.chat_id AND x.thread_id = a.thread_id
+          AND x.uploader_id = a.uploader_id AND x.media_group_id = a.media_group_id
+        ORDER BY x.message_id LIMIT 1) AS file_id,
+       (SELECT x.telegram_file_unique_id FROM secretary_photo_album_items x
+        WHERE x.chat_id = a.chat_id AND x.thread_id = a.thread_id
+          AND x.uploader_id = a.uploader_id AND x.media_group_id = a.media_group_id
+        ORDER BY x.message_id LIMIT 1) AS file_unique_id
+     FROM secretary_photo_album_items a
+     WHERE a.processed_at IS NULL
+     GROUP BY a.chat_id, a.thread_id, a.uploader_id, a.media_group_id
+     HAVING COUNT(*) = 4 AND MIN(a.created_at) <= datetime('now', '-10 seconds')
+     LIMIT 10`,
+  ).all<{
+    chat_id: string; thread_id: number; uploader_id: string; media_group_id: string;
+    message_id: number; file_id: string; file_unique_id: string;
+  }>();
+  for (const album of pending.results ?? []) {
+    try {
+      await handleSecretaryAlbumMessage(env, {
+        message_id: album.message_id,
+        message_thread_id: album.thread_id,
+        media_group_id: album.media_group_id,
+        chat: { id: Number(album.chat_id), type: "supergroup" },
+        photo: [{ file_id: album.file_id, file_unique_id: album.file_unique_id, width: 0, height: 0 }],
+      }, album.uploader_id);
+    } catch (error) {
+      console.error("Secretary album Cron recovery failed", {
+        chatId: album.chat_id, threadId: album.thread_id,
+        mediaGroupId: album.media_group_id, error: compositeErrorText(error),
+      });
+    }
+  }
+}
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -1918,6 +1962,6 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(Promise.all([processRefreshCampaigns(env), processCompositeRefreshJobs(env)]).then(() => undefined));
+    ctx.waitUntil(Promise.all([processRefreshCampaigns(env), processCompositeRefreshJobs(env), processPendingSecretaryAlbums(env)]).then(() => undefined));
   },
 };
