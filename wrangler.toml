@@ -19,4 +19,4 @@ globs = ["**/*.woff2"]
 fallthrough = true
 
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["* * * * *"]
