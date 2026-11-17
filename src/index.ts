@@ -738,7 +738,7 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
   const photoResult = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position").bind(model.id).all<{position:number;telegram_file_id:string}>();
   const photos = photoResult.results ?? [];
   if (photos.length !== 4 || photos.some((photo, i) => photo.position !== i + 1)) {
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Для этой модели ещё не загружены все четыре фотографии. Сначала добавьте их в тему /COMP." }); return;
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Для этой модели ещё не загружены все четыре фотографии. Сначала добавьте их в тему «MODEL BANK»." }); return;
   }
   const status = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
     chat_id: message.chat.id, message_thread_id: message.message_thread_id,
@@ -858,7 +858,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       .bind(String(message.chat.id), message.message_thread_id, senderId).run();
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id, message_thread_id: message.message_thread_id,
-      text: "Режим добавления фотографий включён. Отправьте одним альбомом ровно 4 оригинальных фото. В подписи к первому фото укажите точное имя и фамилию модели, например: Анастасия Деревянкина. Модель должна уже существовать в основной базе. Фото сохранятся в её фототеку /COMP.",
+      text: "Режим добавления фотографий включён. Отправьте одним альбомом ровно 4 оригинальных фото. В подписи к первому фото укажите точное имя и фамилию модели, например: Анастасия Деревянкина. Модель должна уже существовать в основной базе. Фото сохранятся в её фототеку «MODEL BANK».",
     });
     return;
   }
@@ -869,7 +869,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_photo_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
       .bind(String(message.chat.id), message.message_thread_id, senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема /COMP подключена. Отправляйте альбом из 4 фотографий: подпись «Имя Фамилия» у первого снимка." });
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «MODEL BANK» подключена. Отправляйте альбом из 4 фотографий: подпись «Имя Фамилия» у первого снимка." });
     return;
   }
   const topic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_photo_topics WHERE id = 1").first<{chat_id:string;thread_id:number}>();
@@ -927,7 +927,7 @@ async function sendSecretaryCompositeSources(env: Env, chatId: number, model: Se
   const result = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position").bind(model.id).all<{position:number;telegram_file_id:string}>();
   const photos = result.results ?? [];
   if (photos.length !== 4 || photos.some((photo, index) => photo.position !== index + 1)) {
-    await sendSecretary(env, chatId, secretaryProfileText(model).replace("Генерация графической композитки ещё подключается. Сейчас доступен поиск анкеты и её параметров.", "Фотографии ещё не загружены полностью. В теме /COMP нужны четыре снимка."));
+    await sendSecretary(env, chatId, secretaryProfileText(model).replace("Генерация графической композитки ещё подключается. Сейчас доступен поиск анкеты и её параметров.", "Фотографии ещё не загружены полностью. В теме «MODEL BANK» нужны четыре снимка."));
     return;
   }
   await sendSecretary(env, chatId, secretaryProfileText(model));
