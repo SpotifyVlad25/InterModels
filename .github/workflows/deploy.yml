@@ -46,22 +46,45 @@ jobs:
             ["SECRETARY_BOT_TOKEN", process.env.SECRETARY_BOT_TOKEN],
           ];
           const identities = [];
+          const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+          async function getMeWithRetry(label, token) {
+            const maxAttempts = 5;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              const controller = new AbortController();
+              const timeout = setTimeout(() => controller.abort(), 20000);
+              try {
+                const response = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
+                  signal: controller.signal
+                });
+                const data = await response.json();
+                if (data.ok && data.result?.username) return data;
+                const status = `HTTP ${response.status}`;
+                const code = data.error_code ? `Telegram error ${data.error_code}` : "no Telegram error code";
+                const description = data.description || "no Telegram error description";
+                const transient = response.status >= 500 || [429].includes(response.status);
+                if (!transient || attempt === maxAttempts) {
+                  throw new Error(`Telegram getMe failed for ${label}: ${status}; ${code}; ${description}`);
+                }
+                console.warn(`${label}: temporary Telegram response (${status}; ${description}), retry ${attempt}/${maxAttempts - 1}.`);
+              } catch (error) {
+                const isAbort = error?.name === "AbortError";
+                const message = isAbort ? "request timed out after 20 seconds" :
+                  (error instanceof Error ? error.message : "network or invalid JSON response");
+                const transient = isAbort || /fetch failed|network|timeout|502|503|504|429/i.test(message);
+                if (!transient || attempt === maxAttempts) {
+                  throw new Error(`Telegram getMe request failed for ${label} after ${attempt} attempt(s): ${message}`);
+                }
+                console.warn(`${label}: temporary connection error (${message}), retry ${attempt}/${maxAttempts - 1}.`);
+              } finally {
+                clearTimeout(timeout);
+              }
+              await sleep(Math.min(3000 * attempt, 12000));
+            }
+            throw new Error(`Telegram getMe failed for ${label}: retry limit reached`);
+          }
           for (const [label, token] of bots) {
             if (!token) throw new Error(`Missing ${label}`);
-            let response;
-            let data;
-            try {
-              response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-              data = await response.json();
-            } catch (error) {
-              throw new Error(`Telegram getMe request failed for ${label}: ${error instanceof Error ? error.message : "network or invalid JSON response"}`);
-            }
-            if (!data.ok || !data.result?.username) {
-              const status = response ? `HTTP ${response.status}` : "no HTTP response";
-              const code = data.error_code ? `Telegram error ${data.error_code}` : "no Telegram error code";
-              const description = data.description || "no Telegram error description";
-              throw new Error(`Telegram getMe failed for ${label}: ${status}; ${code}; ${description}`);
-            }
+            const data = await getMeWithRetry(label, token);
             const username = data.result.username;
             console.log(`${label} = @${username}`);
             identities.push([label, username.toLowerCase()]);
