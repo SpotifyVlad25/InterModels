@@ -704,8 +704,8 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   }
   const resolvedModelId = items[0].model_id!;
   const claim = await env.DB.prepare(
-    "UPDATE secretary_photo_album_items SET processed_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND processed_at IS NULL",
-  ).bind(String(message.chat.id), threadId, senderId, albumId).run();
+    "UPDATE secretary_photo_album_items SET processed_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND NOT EXISTS (SELECT 1 FROM secretary_photo_album_items active WHERE active.chat_id = ? AND active.thread_id = ? AND active.uploader_id = ? AND active.media_group_id = ? AND active.processed_at >= datetime('now', '-5 minutes'))",
+  ).bind(String(message.chat.id), threadId, senderId, albumId, String(message.chat.id), threadId, senderId, albumId).run();
   if ((claim.meta?.changes ?? 0) === 0) return;
   if (items.some((item) => item.model_id !== resolvedModelId)) {
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
@@ -1873,9 +1873,10 @@ async function processPendingSecretaryAlbums(env: Env): Promise<void> {
           AND x.uploader_id = a.uploader_id AND x.media_group_id = a.media_group_id
         ORDER BY x.message_id LIMIT 1) AS file_unique_id
      FROM secretary_photo_album_items a
-     WHERE a.processed_at IS NULL
      GROUP BY a.chat_id, a.thread_id, a.uploader_id, a.media_group_id
-     HAVING COUNT(*) = 4 AND MIN(a.created_at) <= datetime('now', '-10 seconds')
+     HAVING COUNT(*) = 4
+       AND MIN(a.created_at) <= datetime('now', '-10 seconds')
+       AND (MAX(a.processed_at) IS NULL OR MAX(a.processed_at) < datetime('now', '-5 minutes'))
      LIMIT 10`,
   ).all<{
     chat_id: string; thread_id: number; uploader_id: string; media_group_id: string;
