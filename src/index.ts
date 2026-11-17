@@ -743,7 +743,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     return;
   }
   if (/^\/comp_setup(?:@\w+)?$/i.test(command)) {
-    if (senderId !== env.OWNER_TELEGRAM_ID && senderId !== env.DIRECTOR_TELEGRAM_ID) {
+    if (!hasDirectorAccess(env, senderId)) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Настроить фототеку может только владелец или директор." });
       return;
     }
