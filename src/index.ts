@@ -139,7 +139,7 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
     await answerCallback(env, callback, "Недостаточно прав.", true); return;
   }
   const data = callback.data ?? "";
-  const approve = data.match(/^a:([a-f0-9]{12}):([a-f0-9]{12})$/);
+  const approve = data.match(/^a:([a-f0-9]{12}):([a-zA-Z0-9_-]{1,40})$/);
   const reject = data.match(/^r:([a-f0-9]{12})$/);
 
   if (approve) {
