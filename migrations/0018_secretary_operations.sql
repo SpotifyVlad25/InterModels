@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS secretary_operations (
   actor_id TEXT NOT NULL,
   chat_id TEXT NOT NULL,
   thread_id INTEGER NOT NULL,
+  source_key TEXT UNIQUE,
   status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','cancelled','completed','failed')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
