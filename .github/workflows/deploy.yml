@@ -57,9 +57,16 @@ jobs:
             console.log(`${label} = @${username}`);
             identities.push([label, username.toLowerCase()]);
           }
-          const director = identities.find(([label]) => label === "DIRECTOR_BOT_TOKEN");
-          if (director?.[1] !== "intermodels_bot") {
-            throw new Error("DIRECTOR_BOT_TOKEN must belong to @InterModels_bot. Deployment stopped before changing production.");
+          const expected = [
+            ["MODEL_BOT_TOKEN", "intermodels_model_bot"],
+            ["DIRECTOR_BOT_TOKEN", "intermodels_director_bot"],
+            ["SECRETARY_BOT_TOKEN", "intermodels_bot"],
+          ];
+          for (const [label, username] of expected) {
+            const actual = identities.find(([key]) => key === label)?.[1];
+            if (actual !== username) {
+              throw new Error(`${label} must belong to @${username}. Deployment stopped before changing production.`);
+            }
           }
           if (new Set(identities.map(([, username]) => username)).size !== 3) {
             throw new Error("The three bot token secrets must belong to three different Telegram bots. Deployment stopped.");
@@ -143,13 +150,14 @@ jobs:
         shell: bash
         env:
           SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
+          SECRETARY_WEBHOOK_SECRET: ${{ secrets.SECRETARY_WEBHOOK_SECRET }}
         run: |
           set -euo pipefail
           expected_url="https://intermodels.spotify-vlad25.workers.dev/webhook/secretary"
           info="$(curl -fsS "https://api.telegram.org/bot${SECRETARY_BOT_TOKEN}/getWebhookInfo")"
           existing_url="$(printf '%s' "$info" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok)process.exit(2);process.stdout.write(j.result.url||"")})')"
           if [ -n "$existing_url" ] && [ "$existing_url" != "$expected_url" ]; then
-            echo "::error::Secretary bot already has a different Telegram webhook configured. Remove or migrate the old webhook before deployment."
+            echo "::error::Secretary bot already has a different Telegram webhook configured. Deployment stopped to avoid overwriting it."
             exit 1
           fi
           result="$(curl -fsS -X POST "https://api.telegram.org/bot${SECRETARY_BOT_TOKEN}/setWebhook" \
