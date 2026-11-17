@@ -1230,7 +1230,9 @@ async function createDueRefreshCampaign(env: Env, now: Date): Promise<void> {
   const cycleKey = String(local.year) + "-" + String(local.month).padStart(2, "0");
   const startDate = dateKey(local.year, local.month, settings.cycle_day);
   const startsAt = localDateTimeToIso(startDate, settings.campaign_start_time, settings.timezone);
-  if (now.getTime() < Date.parse(startsAt)) return;
+  const deadlineMs = Date.parse(startsAt) + 48 * 60 * 60 * 1000;
+  // Never create a campaign retroactively after its 48-hour window has already elapsed.
+  if (now.getTime() < Date.parse(startsAt) || now.getTime() >= deadlineMs) return;
   const existing = await env.DB.prepare("SELECT id FROM profile_refresh_campaigns WHERE cycle_key = ?").bind(cycleKey).first<{ id: string }>();
   if (existing) return;
   let times: string[];
@@ -1261,6 +1263,20 @@ async function createDueRefreshCampaign(env: Env, now: Date): Promise<void> {
 }
 async function processRefreshCampaigns(env: Env): Promise<void> {
   const now = new Date();
+  // Recover campaigns accidentally created after their deadline (for example, on first deployment mid-month).
+  const stale = await env.DB.prepare(
+    "SELECT id FROM profile_refresh_campaigns WHERE julianday(created_at) > julianday(deadline_at)",
+  ).all<{ id: string }>();
+  for (const item of stale.results ?? []) {
+    await env.DB.prepare(
+      "UPDATE models SET lifecycle_status='active' WHERE id IN (SELECT model_id FROM profile_refresh_members WHERE campaign_id=? AND status='frozen') AND lifecycle_status='frozen'",
+    ).bind(item.id).run();
+    await env.DB.prepare("DELETE FROM composite_refresh_jobs WHERE campaign_id=?").bind(item.id).run();
+    await env.DB.prepare("DELETE FROM profile_refresh_reminders WHERE campaign_id=?").bind(item.id).run();
+    await env.DB.prepare("DELETE FROM profile_refresh_members WHERE campaign_id=?").bind(item.id).run();
+    await env.DB.prepare("DELETE FROM profile_refresh_campaigns WHERE id=?").bind(item.id).run();
+    console.warn("Removed retroactively-created expired profile refresh campaign", { campaignId: item.id });
+  }
   await createDueRefreshCampaign(env, now);
   const campaigns = await env.DB.prepare(
     "SELECT id, deadline_at FROM profile_refresh_campaigns WHERE status = 'open' ORDER BY starts_at",
