@@ -89,6 +89,7 @@ jobs:
             fi
           done
           SECRETARY_WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          echo "::add-mask::$SECRETARY_WEBHOOK_SECRET"
           echo "SECRETARY_WEBHOOK_SECRET=$SECRETARY_WEBHOOK_SECRET" >> "$GITHUB_ENV"
           export SECRETARY_WEBHOOK_SECRET
           node -e 'process.stdout.write(JSON.stringify({
@@ -155,6 +156,7 @@ jobs:
           set -euo pipefail
           expected_url="https://intermodels.spotify-vlad25.workers.dev/webhook/secretary"
           info="$(curl -fsS "https://api.telegram.org/bot${SECRETARY_BOT_TOKEN}/getWebhookInfo")"
+          printf '%s' "$info" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok)throw new Error("Secretary getWebhookInfo failed");const r=j.result||{};console.log("Secretary webhook diagnostic:",JSON.stringify({url:r.url||null,pending_update_count:r.pending_update_count??null,last_error_date:r.last_error_date??null,last_error_message:r.last_error_message??null,allowed_updates:r.allowed_updates??null,max_connections:r.max_connections??null}))})'
           existing_url="$(printf '%s' "$info" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok)process.exit(2);process.stdout.write(j.result.url||"")})')"
           if [ -n "$existing_url" ] && [ "$existing_url" != "$expected_url" ]; then
             echo "::error::Secretary bot already has a different Telegram webhook configured. Deployment stopped to avoid overwriting it."
