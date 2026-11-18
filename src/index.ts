@@ -690,8 +690,9 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   // distorted: SVG "meet" contains each full source image inside its cell.
   const canvasW = 1938, canvasH = 1364;
   const mainW = 909, rightW = 1029;
-  const galleryH = 1047, infoH = 317;
-  const cellW = 343, firstRowH = 523, secondRowH = 524;
+  // The right column is split exactly 75% for the six-photo gallery and 25% for model information.
+  const galleryH = canvasH * 0.75, infoH = canvasH * 0.25;
+  const cellW = 343, firstRowH = galleryH / 2, secondRowH = galleryH / 2;
   const nameBandH = infoH / 4, detailsBandH = infoH / 2, footerH = infoH / 4;
   const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
   const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
