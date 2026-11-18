@@ -771,6 +771,30 @@ async function saveSecretaryPhotoSet(env:Env,modelId:string,photos:Array<{file_i
   await env.DB.batch(statements);
   if(operationId){const state=await env.DB.prepare("SELECT status FROM secretary_operations WHERE id=?").bind(operationId).first<{status:string}>();if(state?.status!=="completed")throw new Error("SECRETARY_OPERATION_CANCELLED");}
 }
+async function removePreviousSecretaryPhotoDatabasePublication(env:Env,modelId:string,style:"basic"|"fashion"):Promise<void>{
+  const previous=await env.DB.prepare("SELECT chat_id,message_ids_json FROM secretary_photo_database_publications WHERE model_id=? AND style=?").bind(modelId,style).first<{chat_id:string;message_ids_json:string}>();
+  if(!previous)return;
+  let ids:number[]=[];
+  try{ids=JSON.parse(previous.message_ids_json) as number[];}catch{}
+  for(const id of ids)if(Number.isSafeInteger(id)&&id>0)await deleteTelegramMessage(env,previous.chat_id,id,"replace old photo database album");
+}
+async function recordSecretaryPhotoDatabasePublication(env:Env,modelId:string,style:"basic"|"fashion",chatId:number|string,threadId:number,messageIds:number[]):Promise<void>{
+  await removePreviousSecretaryPhotoDatabasePublication(env,modelId,style);
+  await env.DB.prepare("INSERT INTO secretary_photo_database_publications(model_id,style,chat_id,thread_id,message_ids_json,updated_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(model_id,style) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,message_ids_json=excluded.message_ids_json,updated_at=CURRENT_TIMESTAMP")
+    .bind(modelId,style,String(chatId),threadId,JSON.stringify(messageIds)).run();
+}
+async function publishSecretaryPhotoSetToDatabase(env:Env,modelId:string,style:"basic"|"fashion",sourceChatId:number,sourceThreadId:number):Promise<boolean>{
+  const topic=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_database_topics WHERE style=?").bind(style).first<{chat_id:string;thread_id:number}>();
+  if(!topic||topic.chat_id===String(sourceChatId)&&topic.thread_id===sourceThreadId)return false;
+  const photos=await env.DB.prepare("SELECT position,telegram_file_id FROM model_telegram_photo_sets WHERE model_id=? AND style=? ORDER BY position").bind(modelId,style).all<{position:number;telegram_file_id:string}>();
+  if((photos.results?.length??0)!==7||photos.results!.some((photo,index)=>photo.position!==index+1))throw new Error("Для публикации в PHOTO DATABASE нужны ровно 7 фотографий.");
+  const model=await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(modelId).first<{first_name:string;last_name:string}>();
+  const sent=await telegram(env.SECRETARY_BOT_TOKEN,"sendMediaGroup",{chat_id:topic.chat_id,message_thread_id:topic.thread_id,media:photos.results!.map((photo,index)=>({type:"photo",media:photo.telegram_file_id,...(index===0?{caption:(model?.first_name??"")+" "+(model?.last_name??"")+" | "+style.toUpperCase()}: {})}))});
+  const ids=(sent.result??[]).map((item:any)=>item.message_id).filter((id:any)=>Number.isSafeInteger(id)&&id>0);
+  if(ids.length!==7)throw new Error("Telegram не вернул ID всех 7 опубликованных фотографий.");
+  await recordSecretaryPhotoDatabasePublication(env,modelId,style,topic.chat_id,topic.thread_id,ids);
+  return true;
+}
 async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, senderId: string): Promise<void> {
   const albumId = message.media_group_id!;
   const threadId = message.message_thread_id;
@@ -983,9 +1007,12 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?").bind(String(message.chat.id),threadId,senderId,albumId).run();
     await env.DB.prepare("DELETE FROM secretary_photo_upload_intents WHERE chat_id=? AND thread_id=? AND uploader_id=?").bind(String(message.chat.id),threadId,senderId).run();
     if(databaseStyle){
+      await recordSecretaryPhotoDatabasePublication(env,resolvedModelId,selectedStyle,message.chat.id,threadId,items.map(item=>item.message_id));
       if(progressMessageId) await deleteTelegramMessage(env,message.chat.id,progressMessageId,"external photo database album complete");
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Комплект "+(model?.first_name??"")+" "+(model?.last_name??"")+" · "+(selectedStyle==="basic"?"BASIC":"FASHION")+" сохранён. Предыдущие 7 фотографий этого стиля заменены."});
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Комплект "+(model?.first_name??"")+" "+(model?.last_name??"")+" · "+(selectedStyle==="basic"?"BASIC":"FASHION")+" сохранён. Предыдущий пакет заменён."});
     }else{
+      try{await publishSecretaryPhotoSetToDatabase(env,resolvedModelId,selectedStyle,message.chat.id,threadId);}
+      catch(error){console.error("Photo database mirror failed",{modelId:resolvedModelId,style:selectedStyle,error:compositeErrorText(error)});await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Фотографии сохранены в MODEL BANK, но не удалось обновить внешний PHOTO DATABASE. Проверьте права бота в целевой теме."});}
       await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,progressMessageId?[progressMessageId]:[]);
       await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+" · "+(selectedStyle==="basic"?"BASIC":"FASHION")+" обновлена. Новый комплект из 7 фотографий сохранён.",reply_markup:{inline_keyboard:[]}});
     }
@@ -1900,6 +1927,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:style==="basic"?"Выбран Basic.":"Выбран Fashion."});
     const photos=JSON.parse(pending.photos_json) as Array<{file_id:string;file_unique_id:string}>;
     await saveSecretaryPhotoSet(env,pending.model_id,photos,String(callback.from.id),msg.chat.id,msg.message_thread_id,style);
+    try{await publishSecretaryPhotoSetToDatabase(env,pending.model_id,style,msg.chat.id,msg.message_thread_id);}catch(error){console.error("Photo database mirror failed",{modelId:pending.model_id,style,error:compositeErrorText(error)});}
     await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
     const model=await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(pending.model_id).first<{first_name:string;last_name:string}>();
     await telegram(env.SECRETARY_BOT_TOKEN,"deleteMessage",{chat_id:msg.chat.id,message_id:msg.message_id});
@@ -1959,6 +1987,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
         return;
       }
       await saveSecretaryPhotoSet(env,pendingPhotoSet.model_id,newPhotos,String(callback.from.id),msg.chat.id,msg.message_thread_id,pendingPhotoSet.style);
+      try{await publishSecretaryPhotoSetToDatabase(env,pendingPhotoSet.model_id,pendingPhotoSet.style,msg.chat.id,msg.message_thread_id);}catch(error){console.error("Photo database mirror failed",{modelId:pendingPhotoSet.model_id,style:pendingPhotoSet.style,error:compositeErrorText(error)});}
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Фотографии заменены." });
       const replacedModel = await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(pendingPhotoSet.model_id).first<{first_name:string;last_name:string}>();
       await cleanupSecretaryPhotoUploadMessages(env,msg.chat.id,msg.message_thread_id,String(callback.from.id),[msg.message_id]);
