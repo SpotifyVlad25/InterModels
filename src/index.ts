@@ -533,9 +533,9 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   <text x="90" y="70" class="brand">INTERMODELS</text><text x="1510" y="70" text-anchor="end" class="small">ПОРТФОЛИО МОДЕЛИ</text>
   <defs><clipPath id="a"><rect x="90" y="110" width="820" height="1093"/></clipPath><clipPath id="b"><rect x="950" y="110" width="560" height="700"/></clipPath><clipPath id="c"><rect x="950" y="850" width="560" height="700"/></clipPath><clipPath id="d"><rect x="90" y="1240" width="820" height="820"/></clipPath></defs>
   <g clip-path="url(#a)"><rect x="90" y="110" width="820" height="1093" fill="#f1f1f1"/> ${img(photos[0],90,110,820,1093)}</g>
-  <g clip-path="url(#b)"><rect x="950" y="110" width="560" height="700" fill="#f1f1f1"/> ${img(photos[1],950,110,560,700)}</g>
-  <g clip-path="url(#c)"><rect x="950" y="850" width="560" height="700" fill="#f1f1f1"/> ${img(photos[2],950,850,560,700)}</g>
-  <g clip-path="url(#d)"><rect x="90" y="1240" width="820" height="820" fill="#f1f1f1"/> ${img(photos[3],90,1240,820,820)}</g>
+  <g clip-path="url(#b)"><rect x="950" y="110" width="560" height="700" fill="#f1f1f1"/> ${img(photos[2],950,110,560,700)}</g>
+  <g clip-path="url(#c)"><rect x="950" y="850" width="560" height="700" fill="#f1f1f1"/> ${img(photos[3],950,850,560,700)}</g>
+  <g clip-path="url(#d)"><rect x="90" y="1240" width="820" height="820" fill="#f1f1f1"/> ${img(photos[1],90,1240,820,820)}</g>
   <text x="950" y="1645" class="name" font-size="${nameSize}">${name}</text>${details}
   <line x1="90" y1="2110" x2="1510" y2="2110" stroke="#222" stroke-width="2"/>
   <text x="445" y="101" text-anchor="middle" class="contact">https://inter-models.ru</text>
