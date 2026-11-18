@@ -694,14 +694,14 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   // information panel and the existing contact footer keeps its 1/4.
   const detailsTop = galleryH, footerH = infoH / 4, detailsBandH = infoH - footerH;
   const footerTop = detailsTop + detailsBandH;
-  const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidY meet"/>`;
+  const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
   const gallery = photos.slice(1).map((data, index) => {
     const row = Math.floor(index / 3);
     const col = index % 3;
     const x = mainW + col * cellW;
     const y = row === 0 ? 0 : firstRowH;
     const height = row === 0 ? firstRowH : secondRowH;
-    return `<image href="${data}" x="${x}" y="${y}" width="${cellW}" height="${height}" preserveAspectRatio="xMidY meet"/>`;
+    return `<image href="${data}" x="${x}" y="${y}" width="${cellW}" height="${height}" preserveAspectRatio="xMidYMid meet"/>`;
   }).join("");
   const infoScale = infoH / 317;
   const tabWidth = Math.min(mainW - 96, Math.max(360, rawName.length * 38 + 112));
