@@ -611,7 +611,9 @@ function imageDimensions(data: string): { width: number; height: number } {
 }
 function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru" | "en" = "ru"): string {
   if (photos.length !== 7) throw new Error("A composite requires exactly seven original photos");
-  const rawName = ((model.first_name || "").trim() + " " + (model.last_name || "").trim()).trim().toUpperCase();
+  const firstName = (model.first_name || "").trim();
+  const surnameInitial = (model.last_name || "").trim().charAt(0);
+  const rawName = (firstName + (surnameInitial ? " " + surnameInitial + "." : "")).toUpperCase();
   const labels = language === "en"
     ? ["HEIGHT", "BUST", "WAIST", "HIPS", "HAIR", "EYES", "CLOTHING", "SHOES"]
     : ["РОСТ", "ГРУДЬ", "ТАЛИЯ", "БЁДРА", "ВОЛОСЫ", "ГЛАЗА", "ОДЕЖДА", "ОБУВЬ"];
@@ -626,12 +628,11 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   const firstRow = values.slice(0, 4).map((value, index) => value ? labels[index] + " " + value : null).filter((value): value is string => Boolean(value));
   const secondRow = values.slice(4, 8).map((value, index) => value ? labels[index + 4] + " " + value : null).filter((value): value is string => Boolean(value));
 
-  // Approved landscape layout: one full-height hero. The right side is split
-  // vertically: the upper two-thirds hold six seamless gallery photos (3x2),
-  // and the lower third holds the model name, measurements, contacts and logo.
+  // Right column: 4/6 photo gallery and 2/6 information, with the lower
+  // information bands sized 1:2:1 (name, measurements, contacts/brand).
   const canvasW = 2400, canvasH = 1500;
-  const mainW = 1050, rightW = canvasW - mainW, galleryH = 900;
-  const nameBandH = 110, detailsBandH = 170, footerH = canvasH - galleryH - nameBandH - detailsBandH;
+  const mainW = 1050, rightW = canvasW - mainW, galleryH = 1000;
+  const nameBandH = 125, detailsBandH = 250, footerH = 125;
   const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
   const cellW = rightW / 3, cellH = galleryH / 2;
   const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
@@ -651,22 +652,22 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
   ${mainPhoto}
   ${gallery}
-  <text x="${mainW + 64}" y="${galleryH + 72}" class="name" font-size="${nameSize}">${escapeXml(rawName)}</text>
-  ${lineText(firstRow, detailsTop + 68)}
-  ${lineText(secondRow, detailsTop + 132)}
+  <text x="${mainW + rightW / 2}" y="${galleryH + 82}" text-anchor="middle" class="name" font-size="${nameSize}">${escapeXml(rawName)}</text>
+  ${lineText(firstRow, detailsTop + 105)}
+  ${lineText(secondRow, detailsTop + 205)}
   <line x1="${mainW}" y1="${footerTop}" x2="${canvasW}" y2="${footerTop}" class="separator"/>
-  <text x="${contactX}" y="${footerTop + 138}" class="phone">+7 902 632-32-72</text>
-  <text x="${contactX}" y="${footerTop + 200}" class="website">inter-models.ru</text>
-  <text x="${logoCenterX}" y="${footerTop + 175}" text-anchor="middle" class="brand">INTERMODELS</text>
-  <text x="${logoCenterX}" y="${footerTop + 225}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
+  <text x="${contactX}" y="${footerTop + 48}" class="phone">+7 902 632-32-72</text>
+  <text x="${contactX}" y="${footerTop + 91}" class="website">inter-models.ru</text>
+  <text x="${logoCenterX}" y="${footerTop + 62}" text-anchor="middle" class="brand">INTERMODELS</text>
+  <text x="${logoCenterX}" y="${footerTop + 99}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
   <style>
     text{font-family:"DejaVu Sans",Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
-    .detail{font-weight:600;letter-spacing:.2px}
-    .phone{font-size:34px;font-weight:600;letter-spacing:.2px}
-    .website{font-size:32px;font-weight:400}
-    .brand{font-size:68px;font-weight:900;letter-spacing:5px}
-    .tagline{font-size:29px;font-weight:500;letter-spacing:7px}
+    .detail{font-weight:300;letter-spacing:.1px}
+    .phone{font-size:23px;font-weight:500;letter-spacing:.1px}
+    .website{font-size:22px;font-weight:400}
+    .brand{font-size:42px;font-weight:800;letter-spacing:3px}
+    .tagline{font-size:16px;font-weight:400;letter-spacing:4px}
     .separator{stroke:#e5e5e5;stroke-width:2}
   </style></svg>`;
 }
@@ -1191,6 +1192,7 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
   for (let index = 0; index < names.length; index++) {
     const requestedName = names[index].trim();
     let modelId: string | null = null;
+    let itemStyle: "basic" | "fashion" = style;
     let failure: string | null = null;
     try {
       const normalized = normalizeName(requestedName);
@@ -1202,12 +1204,18 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
       if (!matches.length) throw new Error("Модель не найдена.");
       if (matches.length > 1) throw new Error("Найдено несколько моделей. Укажите имя и фамилию полностью.");
       modelId = matches[0].id;
+      const available = await env.DB.prepare("SELECT style,COUNT(*) AS count,MIN(position) AS min_position,MAX(position) AS max_position FROM model_telegram_photo_sets WHERE model_id=? GROUP BY style")
+        .bind(modelId).all<{style:"basic"|"fashion";count:number;min_position:number;max_position:number}>();
+      const validStyles = (available.results ?? []).filter(row => row.count === 7 && row.min_position === 1 && row.max_position === 7).map(row => row.style);
+      const effectiveStyle = validStyles.includes(itemStyle) ? itemStyle : validStyles.length === 1 ? validStyles[0] : null;
+      if (!effectiveStyle) throw new Error("У модели нет полного набора фотографий выбранного стиля. Проверьте MODEL BANK.");
       const photoResult = await env.DB.prepare("SELECT position FROM model_telegram_photo_sets WHERE model_id=? AND style=? ORDER BY position")
-        .bind(modelId, style).all<{position:number}>();
+        .bind(modelId, effectiveStyle).all<{position:number}>();
       const photos = photoResult.results ?? [];
       if (photos.length !== 7 || photos.some((photo, i) => photo.position !== i + 1)) {
-        throw new Error("У модели отсутствует набор " + (style === "basic" ? "Basic" : "Fashion") + ". Загрузите его в MODEL BANK.");
+        throw new Error("У модели отсутствует полный комплект фотографий. Загрузите его в MODEL BANK.");
       }
+      itemStyle = effectiveStyle;
       queued++;
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
@@ -1215,7 +1223,7 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
     const itemId = randomId();
     await env.DB.prepare(
       "INSERT INTO secretary_composite_batch_items(id,operation_id,position,requested_name,model_id,status,last_error,style,language) VALUES(?,?,?,?,?,?,?,?,?)",
-    ).bind(itemId, operationId, index + 1, requestedName, modelId, failure ? "failed" : "pending", failure, style, language).run();
+    ).bind(itemId, operationId, index + 1, requestedName, modelId, failure ? "failed" : "pending", failure, itemStyle, language).run();
     const itemMessage = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: chatId, message_thread_id: threadId,
       text: failure ? "❌ " + requestedName + " — " + failure : "⏳ " + requestedName + " — В очереди",
@@ -1460,7 +1468,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_composite_topics(id,chat_id,thread_id,configured_by) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,configured_by=excluded.configured_by")
       .bind(String(message.chat.id),message.message_thread_id,senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Тема КОМПОЗИТКИ подключена. Напишите имя или фамилию модели — одна строка для одиночной композитки, несколько строк для массовой. По умолчанию BASIC и русский язык."});return;
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Тема КОМПОЗИТКИ подключена. Напишите имя или фамилию модели — одна строка для одиночной композитки, несколько строк для массовой. Стиль определяется по доступным фотокомплектам: если их несколько, бот предложит выбор. Язык бот спрашивает всегда."});return;
   }
   console.info("Secretary group update", {
     chatId: message.chat.id,
@@ -1487,7 +1495,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_composite_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
       .bind(String(message.chat.id), message.message_thread_id, senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена. Просто отправьте имя или фамилию модели. Одна строка — одна композитка, несколько строк — массовая генерация. По умолчанию BASIC и русский язык." }); return;
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена. Просто отправьте имя или фамилию модели. Одна строка — одна композитка, несколько строк — массовая генерация. Стиль определяется по доступным фотокомплектам: если их несколько, бот предложит выбор. Язык бот спрашивает всегда." }); return;
   }
   if(/^\/topics_check(?:@\w+)?$/i.test(command)){
     if(!hasDirectorAccess(env,senderId)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Проверка тем доступна только владельцу или директору."});return;}
@@ -1535,33 +1543,47 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       if(!validCount||names.some(name=>name.length>100)){
         await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:mode==="single"?"Команда /comp принимает только одну модель. Для списка используйте /comps.":"Для /comps отправьте не более 20 моделей — по одной на строку."});return;
       }
-      await env.DB.prepare("INSERT INTO secretary_composite_request_pending(chat_id,thread_id,user_id,stage,mode,style,language,names_text,command_message_id,prompt_message_id) VALUES(?,?,?,'style',?,NULL,NULL,?,?,NULL) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET stage='style',mode=excluded.mode,style=NULL,language=NULL,names_text=excluded.names_text,command_message_id=excluded.command_message_id,prompt_message_id=NULL,created_at=CURRENT_TIMESTAMP").bind(String(message.chat.id),message.message_thread_id,senderId,mode,rawNames||null,message.message_id).run();
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Выберите стиль композитки:",reply_markup:{inline_keyboard:[[{text:"Basic",callback_data:"comp_style:basic"},{text:"Fashion",callback_data:"comp_style:fashion"}]]}});return;
+      if(rawNames){
+        await handleSecretaryGroupMessage(env,{...message,text:rawNames});
+        return;
+      }
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:mode==="single"?"Отправьте ФИО одной модели.":"Отправьте от 1 до 20 моделей — по одной на строку."});return;
     }
     if(/^\/comp_help(?:@\w+)?$/i.test(command)){
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Просто отправьте имя или фамилию. Одна строка — одна композитка; несколько строк — пакет. По умолчанию BASIC и русский язык."});return;
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Просто отправьте имя или фамилию. Одна строка — одна композитка; несколько строк — пакет. Стиль определяется по доступным фотокомплектам: если их несколько, бот предложит выбор. Язык бот спрашивает всегда."});return;
     }
     if(command && !command.startsWith("/")){
       const lines=command.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
-      let style:"basic"|"fashion"="basic";
-      let language:"ru"|"en"="ru";
-      const names=lines.map(line=>{
-        const prefix=line.match(/^(basic|fashion)\s+(.+)$/i);
-        const suffix=line.match(/^(.+?)\s+(basic|fashion)$/i);
-        const styleMatch=prefix??suffix;
-        if(styleMatch){
-          style=(prefix?prefix[1]:suffix![2]).toLowerCase() as "basic"|"fashion";
-          return (prefix?prefix[2]:suffix![1]).trim();
-        }
-        const langMatch=line.match(/^(english|английский|русский|russian)\s*[:,-]?\s*(.+)$/i);
-        if(langMatch){language=/^(english|английский)$/i.test(langMatch[1])?"en":"ru";return langMatch[2].trim();}
-        return line;
-      });
+      const names=lines.map(line=>line.replace(/^(basic|fashion)\s+/i,"").replace(/\s+(basic|fashion)$/i,"").trim());
       if(!names.length||names.length>20||names.some(name=>!name||name.length>100)){
         await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Отправьте от 1 до 20 моделей — по одной на строку."});return;
       }
-      if(names.length===1) await generateCompositeInTopic(env,message,names[0],style,language);
-      else await generateCompositeBatchInTopic(env,message,names,[message.message_id],style,language);
+      const modelStyles:Array<"basic"|"fashion">=[];
+      let hasStyleChoice=false;
+      for(const name of names){
+        const normalized=normalizeName(name),parts=normalized.split(" "),surname=parts[parts.length-1]??normalized;
+        const candidates=await findSecretaryModels(env,surname);
+        const exact=candidates.filter(m=>normalizeName(m.first_name+" "+m.last_name)===normalized);
+        const matches=exact.length?exact:candidates;
+        if(matches.length!==1){
+          await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:matches.length?"Уточните ФИО полностью — по одной модели на строку.":"Модель «"+name+"» не найдена."});return;
+        }
+        const sets=await env.DB.prepare("SELECT style,COUNT(*) AS count,MIN(position) AS min_position,MAX(position) AS max_position FROM model_telegram_photo_sets WHERE model_id=? GROUP BY style")
+          .bind(matches[0].id).all<{style:"basic"|"fashion";count:number;min_position:number;max_position:number}>();
+        const valid=(sets.results??[]).filter(row=>row.count===7&&row.min_position===1&&row.max_position===7).map(row=>row.style);
+        if(!valid.length){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"У модели «"+name+"» нет полного комплекта из 7 фотографий в MODEL BANK."});return;}
+        if(valid.length>1)hasStyleChoice=true;
+        modelStyles.push(valid[0]);
+      }
+      const initialStyle=modelStyles[0]??"basic";
+      const initialStage=hasStyleChoice?"style":"language";
+      await env.DB.prepare("INSERT INTO secretary_composite_request_pending(chat_id,thread_id,user_id,stage,mode,style,language,names_text,command_message_id,prompt_message_id) VALUES(?,?,?, ?,?,?,NULL,?,?,NULL) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET stage=excluded.stage,mode=excluded.mode,style=excluded.style,language=NULL,names_text=excluded.names_text,command_message_id=excluded.command_message_id,prompt_message_id=NULL,created_at=CURRENT_TIMESTAMP")
+        .bind(String(message.chat.id),message.message_thread_id,senderId,initialStage,names.length===1?"single":"batch",initialStyle,names.join("\n"),message.message_id).run();
+      const promptText=hasStyleChoice?"Выберите стиль композитки:":"Выберите язык композитки:";
+      const keyboard=hasStyleChoice?[[{text:"Basic",callback_data:"comp_style:basic"},{text:"Fashion",callback_data:"comp_style:fashion"}]]:[[{text:"Русский",callback_data:"comp_lang:ru"},{text:"English",callback_data:"comp_lang:en"}]];
+      const optionPrompt=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:promptText,reply_markup:{inline_keyboard:keyboard}});
+      await env.DB.prepare("UPDATE secretary_composite_request_pending SET prompt_message_id=? WHERE chat_id=? AND thread_id=? AND user_id=?")
+        .bind(optionPrompt.result?.message_id??null,String(message.chat.id),message.message_thread_id,senderId).run();
       return;
     }
     if (command.startsWith("/")) {
@@ -1999,8 +2021,8 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
   if(compLanguageMatch){
     const msg=callback.message;if(!msg||msg.chat.type!=="supergroup"||!msg.message_thread_id){await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Выбор доступен только в теме «КОМПОЗИТКИ».",show_alert:true});return;}
     const topic=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
-    const pending=await env.DB.prepare("SELECT stage,mode,style,names_text,command_message_id FROM secretary_composite_request_pending WHERE chat_id=? AND thread_id=? AND user_id=? AND created_at>=datetime('now','-30 minutes')").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).first<{stage:string;mode:"single"|"batch";style:"basic"|"fashion"|null;names_text:string|null;command_message_id:number|null}>();
-    if(!topic||topic.chat_id!==String(msg.chat.id)||topic.thread_id!==msg.message_thread_id||pending?.stage!=="language"||!pending.style){await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Выбор языка истёк. Запустите /comp ещё раз.",show_alert:true});return;}
+    const pending=await env.DB.prepare("SELECT stage,mode,style,names_text,command_message_id,prompt_message_id FROM secretary_composite_request_pending WHERE chat_id=? AND thread_id=? AND user_id=? AND created_at>=datetime('now','-30 minutes')").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).first<{stage:string;mode:"single"|"batch";style:"basic"|"fashion"|null;names_text:string|null;command_message_id:number|null;prompt_message_id:number|null}>();
+    if(!topic||topic.chat_id!==String(msg.chat.id)||topic.thread_id!==msg.message_thread_id||pending?.stage!=="language"||!pending.style){await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Выбор языка истёк. Запустите композитку ещё раз.",show_alert:true});return;}
     const language=compLanguageMatch[1] as "ru"|"en";
     await env.DB.prepare("UPDATE secretary_composite_request_pending SET stage='names',language=? WHERE chat_id=? AND thread_id=? AND user_id=?").bind(language,String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
     await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:language==="ru"?"Русский выбран.":"English selected."});
@@ -2009,9 +2031,12 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       if(!names.length||(pending.mode==="single"?names.length!==1:names.length>20)||names.some(name=>name.length>100)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:pending.mode==="single"?"Команда /comp принимает только одну модель. Для списка используйте /comps.":"В списке должно быть от 1 до 20 моделей."});return;}
       await env.DB.prepare("DELETE FROM secretary_composite_request_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
       await telegram(env.SECRETARY_BOT_TOKEN,"deleteMessage",{chat_id:msg.chat.id,message_id:msg.message_id});
+      if(pending.prompt_message_id&&pending.prompt_message_id!==msg.message_id)await deleteTelegramMessage(env,msg.chat.id,pending.prompt_message_id,"composite options prompt");
       const sourceMessage={...msg,from:callback.from};const ids=[pending.command_message_id].filter((id):id is number=>typeof id==="number");
-      if(pending.mode==="single") await generateCompositeInTopic(env,sourceMessage,names[0],pending.style,language);
-      else await generateCompositeBatchInTopic(env,sourceMessage,names,ids,pending.style,language);
+      if(pending.mode==="single"){
+        if(pending.command_message_id)await deleteTelegramMessage(env,msg.chat.id,pending.command_message_id,"composite source name");
+        await generateCompositeInTopic(env,sourceMessage,names[0],pending.style,language);
+      }else await generateCompositeBatchInTopic(env,sourceMessage,names,ids,pending.style,language);
     }else{
       await telegram(env.SECRETARY_BOT_TOKEN,"editMessageText",{chat_id:msg.chat.id,message_id:msg.message_id,text:"Выбрано: "+(pending.style==="basic"?"Basic":"Fashion")+" · "+(language==="ru"?"Русский":"English")+". "+(pending.mode==="single"?"Отправьте ФИО одной модели.":"Отправьте от 1 до 20 моделей — по одной на строку."),reply_markup:{inline_keyboard:[]}});
       await env.DB.prepare("UPDATE secretary_composite_request_pending SET prompt_message_id=? WHERE chat_id=? AND thread_id=? AND user_id=?").bind(msg.message_id,String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
