@@ -1276,6 +1276,31 @@ async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
   }
 }
 
+async function secretaryTopicDiagnostics(env:Env,chatId:number):Promise<string>{
+  const photo=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
+  const comp=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
+  const sameGroup=Boolean(photo&&comp&&photo.chat_id===comp.chat_id);
+  const me=await telegram(env.SECRETARY_BOT_TOKEN,"getMe",{}).catch(()=>null);
+  const botId=me?.result?.id;
+  const photoLive=photo?await telegram(env.SECRETARY_BOT_TOKEN,"getForumTopic",{chat_id:Number(photo.chat_id),message_thread_id:photo.thread_id}).catch(()=>null):null;
+  const compLive=comp?await telegram(env.SECRETARY_BOT_TOKEN,"getForumTopic",{chat_id:Number(comp.chat_id),message_thread_id:comp.thread_id}).catch(()=>null):null;
+  const permissions=photo&&sameGroup&&botId?await telegram(env.SECRETARY_BOT_TOKEN,"getChatMember",{chat_id:Number(photo.chat_id),user_id:botId}).catch(()=>null):null;
+  const photoName=photoLive?.result?.name??null;
+  const compName=compLive?.result?.name??null;
+  const member=permissions?.result;
+  const canDelete=member?.status==="creator"||(member?.status==="administrator"&&member?.can_delete_messages===true);
+  return [
+    "🔎 Проверка тем InterModels",
+    "MODEL BANK: "+(photo?(photo.chat_id+" · topic "+photo.thread_id+" · "+(photoName??"не подтверждена")):"не подключена"),
+    "КОМПОЗИТКИ: "+(comp?(comp.chat_id+" · topic "+comp.thread_id+" · "+(compName??"не подтверждена")):"не подключена"),
+    "Название MODEL BANK: "+(photoName?(photoName.toUpperCase().includes("MODEL BANK")?"совпадает":"не совпадает — ожидалось MODEL BANK"):"не удалось проверить"),
+    "Название КОМПОЗИТКИ: "+(compName?(compName.toUpperCase().includes("КОМПОЗИТКИ")?"совпадает":"не совпадает — ожидалось КОМПОЗИТКИ"):"не удалось проверить"),
+    "Обе темы в одной группе: "+(sameGroup?"да":"нет"),
+    "ID тем различаются: "+(photo&&comp&&photo.thread_id!==comp.thread_id?"да":"нет"),
+    "Secretary видит обе темы: "+(photoLive&&compLive?"да":"не удалось подтвердить"),
+    "Secretary может удалять сообщения: "+(permissions?(canDelete?"да":"нет"):"не удалось проверить")
+  ].join("\n");
+}
 async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): Promise<void> {
   if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup")) return;
   const senderId = String(message.from.id);
@@ -1289,11 +1314,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   if (!message.message_thread_id) {
     if(/^\/topics_check(?:@\w+)?$/i.test(command)){
       if(!hasDirectorAccess(env,senderId)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,text:"Проверка тем доступна только владельцу или директору."});return;}
-      const photo=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
-      const comp=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
-      const current=String(message.chat.id);const sameGroup=Boolean(photo&&comp&&photo.chat_id===comp.chat_id);
-      const lines=["🔎 Проверка тем InterModels","MODEL BANK: "+(photo?"chat "+photo.chat_id+" · topic "+photo.thread_id:"не подключена"),"КОМПОЗИТКИ: "+(comp?"chat "+comp.chat_id+" · topic "+comp.thread_id:"не подключена"),"Обе темы в одной группе: "+(sameGroup?"да":"нет"),"Текущая группа: "+current,"MODEL BANK в этой группе: "+(photo?.chat_id===current?"да":"нет"),"КОМПОЗИТКИ в этой группе: "+(comp?.chat_id===current?"да":"нет"),"ID тем различаются: "+(photo&&comp&&photo.thread_id!==comp.thread_id?"да":"нет")];
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,text:lines.join("\n")});return;
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,text:await secretaryTopicDiagnostics(env,message.chat.id)});return;
     }
     if (/^\/comp(?:@\w+)?(?:\s|$)/i.test(command)) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
@@ -1314,11 +1335,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   }
   if(/^\/topics_check(?:@\w+)?$/i.test(command)){
     if(!hasDirectorAccess(env,senderId)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Проверка тем доступна только владельцу или директору."});return;}
-    const photo=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
-    const comp=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
-    const current=String(message.chat.id);const sameGroup=Boolean(photo&&comp&&photo.chat_id===comp.chat_id);
-    const lines=["🔎 Проверка тем InterModels","MODEL BANK: "+(photo?"chat "+photo.chat_id+" · topic "+photo.thread_id:"не подключена"),"КОМПОЗИТКИ: "+(comp?"chat "+comp.chat_id+" · topic "+comp.thread_id:"не подключена"),"Обе темы в одной группе: "+(sameGroup?"да":"нет"),"Текущая группа: "+current,"MODEL BANK в этой группе: "+(photo?.chat_id===current?"да":"нет"),"КОМПОЗИТКИ в этой группе: "+(comp?.chat_id===current?"да":"нет"),"ID тем различаются: "+(photo&&comp&&photo.thread_id!==comp.thread_id?"да":"нет")];
-    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:lines.join("\n")});return;
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:await secretaryTopicDiagnostics(env,message.chat.id)});return;
   }
   const compositeTopic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_composite_topics WHERE id = 1").first<{chat_id:string;thread_id:number}>();
   const isCompositeTopic = Boolean(compositeTopic && compositeTopic.chat_id === String(message.chat.id) && compositeTopic.thread_id === message.message_thread_id);
