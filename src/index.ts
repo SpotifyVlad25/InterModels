@@ -1350,6 +1350,8 @@ async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
 
 async function secretaryTopicDiagnostics(env:Env,_chatId:number):Promise<string>{
   const photo=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
+  const basic=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_database_topics WHERE style='basic'").first<{chat_id:string;thread_id:number}>();
+  const fashion=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_database_topics WHERE style='fashion'").first<{chat_id:string;thread_id:number}>();
   const comp=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
   const sameGroup=Boolean(photo&&comp&&photo.chat_id===comp.chat_id);
   const me=await telegram(env.SECRETARY_BOT_TOKEN,"getMe",{}).catch(()=>null);
@@ -1375,6 +1377,8 @@ async function secretaryTopicDiagnostics(env:Env,_chatId:number):Promise<string>
   return [
     "🔎 Проверка тем InterModels",
     "MODEL BANK: "+(photo?(photo.chat_id+" · topic ID "+photo.thread_id):"не подключена"),
+    "PHOTO DATABASE BASIC: "+(basic?(basic.chat_id+" · topic ID "+basic.thread_id):"не подключена"),
+    "PHOTO DATABASE FASHION: "+(fashion?(fashion.chat_id+" · topic ID "+fashion.thread_id):"не подключена"),
     "КОМПОЗИТКИ: "+(comp?(comp.chat_id+" · topic ID "+comp.thread_id):"не подключена"),
     "Группа MODEL BANK: "+(photo?groupStatus(photoGroup):"не настроена"),
     "Группа КОМПОЗИТКИ: "+(comp?groupStatus(compGroup):"не настроена"),
