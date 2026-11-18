@@ -631,7 +631,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   // and the lower third holds the model name, measurements, contacts and logo.
   const canvasW = 2400, canvasH = 1500;
   const mainW = 1050, rightW = canvasW - mainW, galleryH = 1000;
-  const nameBandH = 110, detailsBandH = 243, footerH = canvasH - galleryH - nameBandH - detailsBandH;
+  const nameBandH = 110, detailsBandH = 170, footerH = canvasH - galleryH - nameBandH - detailsBandH;
   const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
   const cellW = rightW / 3, cellH = galleryH / 2;
   const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
@@ -652,13 +652,13 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   ${mainPhoto}
   ${gallery}
   <text x="${mainW + 64}" y="${galleryH + 72}" class="name" font-size="${nameSize}">${escapeXml(rawName)}</text>
-  ${lineText(firstRow, detailsTop + 82)}
-  ${lineText(secondRow, detailsTop + 170)}
+  ${lineText(firstRow, detailsTop + 68)}
+  ${lineText(secondRow, detailsTop + 132)}
   <line x1="${mainW}" y1="${footerTop}" x2="${canvasW}" y2="${footerTop}" class="separator"/>
-  <text x="${contactX}" y="${footerTop + 54}" class="phone">+7 902 632-32-72</text>
-  <text x="${contactX}" y="${footerTop + 105}" class="website">inter-models.ru</text>
-  <text x="${logoCenterX}" y="${footerTop + 82}" text-anchor="middle" class="brand">INTERMODELS</text>
-  <text x="${logoCenterX}" y="${footerTop + 122}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
+  <text x="${contactX}" y="${footerTop + 88}" class="phone">+7 902 632-32-72</text>
+  <text x="${contactX}" y="${footerTop + 150}" class="website">inter-models.ru</text>
+  <text x="${logoCenterX}" y="${footerTop + 125}" text-anchor="middle" class="brand">INTERMODELS</text>
+  <text x="${logoCenterX}" y="${footerTop + 175}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
   <style>
     text{font-family:"DejaVu Sans",Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
