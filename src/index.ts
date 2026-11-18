@@ -634,10 +634,10 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   const nameBandH = 110, detailsBandH = 243, footerH = canvasH - galleryH - nameBandH - detailsBandH;
   const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
   const cellW = rightW / 3, cellH = galleryH / 2;
-  const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid slice"/>`;
+  const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
   const gallery = photos.slice(1).map((data, index) => {
     const col = index % 3, row = Math.floor(index / 3);
-    return `<image href="${data}" x="${mainW + col * cellW}" y="${row * cellH}" width="${cellW}" height="${cellH}" preserveAspectRatio="xMidYMid meet"/>`;
+    return `<image href="${data}" x="${mainW + col * cellW}" y="${row * cellH}" width="${cellW}" height="${cellH}" preserveAspectRatio="xMidYMid slice"/>`;
   }).join("");
   const nameSize = rawName.length > 27 ? 58 : rawName.length > 20 ? 68 : 82;
   const lineText = (items: string[], y: number) => {
