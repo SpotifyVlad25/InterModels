@@ -518,21 +518,19 @@ async function getSecretaryPhotoData(env: Env, fileId: string): Promise<string> 
   const path = file.result?.file_path;
   if (typeof path !== "string" || !path) throw new Error("Telegram photo path missing");
   const imageUrl = "https://api.telegram.org/file/bot" + env.SECRETARY_BOT_TOKEN + "/" + path;
-  // Download the original Telegram file without Cloudflare image resizing or JPEG recompression.
-  const response = await fetch(imageUrl);
-  if (!response.ok) throw new Error("Unable to download Telegram image (HTTP " + response.status + ")");
+  // Downscale before Resvg decodes the embedded image. Keep the full frame and
+  // original aspect ratio; scale-down never crops or stretches the source.
+  // The 1800px bound is ample for the 1600x2844 output canvas and avoids
+  // excessive WASM memory use with high-resolution originals.
+  const response = await fetch(imageUrl, {
+    cf: { image: { width: 1800, height: 1800, fit: "scale-down", format: "jpeg", quality: 88 } },
+  });
+  if (!response.ok) throw new Error("Unable to download/resize Telegram image (HTTP " + response.status + ")");
   const bytes = new Uint8Array(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error("Original image size is invalid (maximum 20 MB)");
-  const headerType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-  const extension = path.split(".").pop()?.toLowerCase();
-  const mime = headerType.startsWith("image/") ? headerType :
-    extension === "png" ? "image/png" :
-    extension === "webp" ? "image/webp" :
-    extension === "jpg" || extension === "jpeg" ? "image/jpeg" : "";
-  if (!["image/jpeg", "image/png", "image/webp"].includes(mime)) {
-    throw new Error("Unsupported image format. Send JPEG, PNG or WEBP files.");
-  }
-  return "data:" + mime + ";base64," + bytesToBase64(bytes);
+  if (!bytes.length || bytes.length > 8 * 1024 * 1024) throw new Error("Optimized image size is invalid (maximum 8 MB)");
+  const mime = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (mime !== "image/jpeg") throw new Error("Cloudflare image optimization returned an unsupported format: " + (mime || "unknown"));
+  return "data:image/jpeg;base64," + bytesToBase64(bytes);
 }
 function imageDimensions(data: string): { width: number; height: number } {
   const comma = data.indexOf(",");
