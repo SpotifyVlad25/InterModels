@@ -1164,19 +1164,15 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
 async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage, names: string[]): Promise<void> {
   const chatId = message.chat.id;
   const threadId = message.message_thread_id!;
-  let completed = 0;
   const operationId = await startSecretaryOperation(env, "composite_batch", String(message.from!.id), chatId, threadId);
-  let wasCancelled = false;
+  let queued = 0;
+  let rejected = 0;
   for (let index = 0; index < names.length; index++) {
-    try { await assertSecretaryOperationActive(env, operationId); }
-    catch { wasCancelled = true; break; }
-    const rawName = names[index].trim();
-    const label = `[${index + 1}/${names.length}] ${rawName}`;
-    let statusMessageId: number | undefined;
-    let inFlightMessageId: number | undefined;
-    let publicationCommitted = false;
+    const requestedName = names[index].trim();
+    let modelId: string | null = null;
+    let failure: string | null = null;
     try {
-      const normalized = normalizeName(rawName);
+      const normalized = normalizeName(requestedName);
       const parts = normalized.split(" ");
       const surname = parts[parts.length - 1] ?? normalized;
       const candidates = await findSecretaryModels(env, surname);
@@ -1184,88 +1180,116 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
       const matches = exact.length ? exact : candidates;
       if (!matches.length) throw new Error("Модель не найдена.");
       if (matches.length > 1) throw new Error("Найдено несколько моделей. Укажите имя и фамилию полностью.");
-      const model = matches[0];
-      const photoResult = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position")
-        .bind(model.id).all<{position:number;telegram_file_id:string}>();
+      modelId = matches[0].id;
+      const photoResult = await env.DB.prepare("SELECT position FROM model_telegram_photos WHERE model_id=? ORDER BY position")
+        .bind(modelId).all<{position:number}>();
       const photos = photoResult.results ?? [];
       if (photos.length !== 4 || photos.some((photo, i) => photo.position !== i + 1)) {
         throw new Error("В MODEL BANK ещё нет полного комплекта из четырёх фотографий.");
       }
-      const status = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
-        chat_id: chatId, message_thread_id: threadId,
-        text: `В очереди ${label} · готово ${completed}/${names.length}`,
-        reply_markup: secretaryCancelKeyboard(operationId),
-      });
-      statusMessageId = status.result?.message_id;
-      await setSecretaryOperationStatusMessage(env, operationId, statusMessageId);
-      const updateStage = async (stage: string) => {
-        await assertSecretaryOperationActive(env, operationId);
-        if (!statusMessageId) return;
-        await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
-          chat_id: chatId, message_id: statusMessageId,
-          text: `Создание ${label}\n${stage} · готово ${completed}/${names.length}`,
-          reply_markup: secretaryCancelKeyboard(operationId),
-        });
-      };
-      await assertSecretaryOperationActive(env, operationId);
-      const png = await renderCompositePng(env, model, photos.map((p) => p.telegram_file_id), updateStage);
-      await assertSecretaryOperationActive(env, operationId);
-      await updateStage("Отправка готового PNG");
-      const newMessageId = await sendCompositePng(env, chatId, threadId, png, model.first_name + " " + model.last_name + " · InterModels");
-      inFlightMessageId = newMessageId;
-      if (!Number.isSafeInteger(newMessageId) || newMessageId <= 0) throw new Error("Telegram не вернул ID композитки.");
-      const recorded = await recordSecretaryOperationResult(env, operationId, chatId, newMessageId);
-      if (!recorded || !(await claimSecretaryOperationPublication(env, operationId))) {
-        await deleteTelegramMessage(env, chatId, newMessageId, "cancelled batch composite before publication");
-        throw new Error("SECRETARY_OPERATION_CANCELLED");
-      }
-      const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
-        .bind(model.id).first<{chat_id:string;message_id:number}>();
-      await env.DB.prepare(
-        `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at)
-         VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP)
-         ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
-           message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP`,
-      ).bind(model.id, String(chatId), threadId, newMessageId).run();
-      publicationCommitted = true;
-      if (oldPublication) {
-        try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: oldPublication.chat_id, message_id: oldPublication.message_id }); }
-        catch (error) { console.error("Previous composite could not be deleted", { modelId: model.id, error: compositeErrorText(error) }); }
-      }
-      await env.DB.prepare("UPDATE secretary_operations SET status='running',status_message_id=NULL,result_chat_id=NULL,result_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='publishing'")
-        .bind(operationId).run();
-      if (statusMessageId) await deleteTelegramMessage(env, chatId, statusMessageId, "completed batch item status");
-      inFlightMessageId = undefined;
-      publicationCommitted = false;
-      completed++;
+      queued++;
     } catch (error) {
-      const details = error instanceof Error ? error.message : String(error);
-      if (inFlightMessageId && !publicationCommitted) await deleteTelegramMessage(env, chatId, inFlightMessageId, "failed/cancelled batch composite");
-      if (details === "SECRETARY_OPERATION_CANCELLED") {
-        wasCancelled = true;
-        if (statusMessageId) await deleteTelegramMessage(env, chatId, statusMessageId, "cancelled batch status");
-        break;
+      failure = error instanceof Error ? error.message : String(error);
+      rejected++;
+    }
+    await env.DB.prepare(
+      "INSERT INTO secretary_composite_batch_items(id,operation_id,position,requested_name,model_id,status,last_error) VALUES(?,?,?,?,?,?,?)",
+    ).bind(randomId(), operationId, index + 1, requestedName, modelId, failure ? "failed" : "pending", failure).run();
+  }
+
+  const status = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+    chat_id: chatId, message_thread_id: threadId,
+    text: queued
+      ? `Партия принята: ${queued} композиток в очереди, ${rejected} пропущено. Обработка идёт последовательно.`
+      : `Партия проверена: нет заданий для генерации. Пропущено: ${rejected}.`,
+    ...(queued ? { reply_markup: secretaryCancelKeyboard(operationId) } : {}),
+  });
+  const statusMessageId = status.result?.message_id;
+  await setSecretaryOperationStatusMessage(env, operationId, statusMessageId);
+  if (!queued) {
+    await finishSecretaryOperation(env, operationId, "completed");
+    return;
+  }
+  await updateSecretaryCompositeBatchStatus(env, operationId, "Партия поставлена в очередь");
+}
+
+async function updateSecretaryCompositeBatchStatus(env: Env, operationId: string, stage?: string): Promise<void> {
+  const operation = await env.DB.prepare(
+    "SELECT chat_id,status_message_id,status FROM secretary_operations WHERE id=? AND kind='composite_batch'",
+  ).bind(operationId).first<{chat_id:string;status_message_id:number|null;status:string}>();
+  if (!operation || !operation.status_message_id || operation.status !== "running") return;
+  const stats = await env.DB.prepare(
+    "SELECT COUNT(*) AS total,SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) AS published,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status IN ('pending','processing') THEN 1 ELSE 0 END) AS waiting FROM secretary_composite_batch_items WHERE operation_id=?",
+  ).bind(operationId).first<{total:number;published:number|null;failed:number|null;waiting:number|null}>();
+  const total = stats?.total ?? 0;
+  const published = stats?.published ?? 0;
+  const failed = stats?.failed ?? 0;
+  const waiting = stats?.waiting ?? 0;
+  const text = `Партия композиток · готово ${published}/${total}\nОшибок: ${failed} · в очереди: ${waiting}${stage ? "\n" + stage : ""}`;
+  try {
+    await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
+      chat_id: operation.chat_id, message_id: operation.status_message_id,
+      text, reply_markup: secretaryCancelKeyboard(operationId),
+    });
+  } catch (error) {
+    console.warn("Unable to update composite batch status", {operationId,error:compositeErrorText(error)});
+  }
+}
+
+async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
+  for (let processed = 0; processed < 2; processed++) {
+    const job = await env.DB.prepare(
+      `SELECT j.id,j.operation_id,j.model_id,j.requested_name
+       FROM secretary_composite_batch_items j
+       JOIN secretary_operations o ON o.id=j.operation_id
+       WHERE j.status='pending' AND o.status='running'
+       ORDER BY j.created_at,j.position LIMIT 1`,
+    ).first<{id:string;operation_id:string;model_id:string;requested_name:string}>();
+    if (!job) break;
+    const claim = await env.DB.prepare(
+      "UPDATE secretary_composite_batch_items SET status='processing',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending' AND EXISTS (SELECT 1 FROM secretary_operations WHERE id=? AND status='running')",
+    ).bind(job.id,job.operation_id).run();
+    if (!(claim.meta?.changes ?? 0)) continue;
+    try {
+      await updateSecretaryCompositeBatchStatus(env,job.operation_id,"Сейчас: "+job.requested_name);
+      await publishCompositeModel(env,null,job.model_id,async(stage)=>{
+        await assertSecretaryOperationActive(env,job.operation_id);
+        await updateSecretaryCompositeBatchStatus(env,job.operation_id,job.requested_name+" · "+stage);
+      },job.operation_id);
+      await env.DB.prepare("UPDATE secretary_composite_batch_items SET status='published',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='processing'")
+        .bind(job.id).run();
+    } catch(error) {
+      const details=error instanceof Error?error.message:String(error);
+      const cancelled=details==="SECRETARY_OPERATION_CANCELLED";
+      await env.DB.prepare("UPDATE secretary_composite_batch_items SET status=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='processing'")
+        .bind(cancelled?"cancelled":"failed",cancelled?null:details.slice(0,1500),job.id).run();
+      if(!cancelled) console.error("Secretary composite batch item failed",{operationId:job.operation_id,jobId:job.id,modelId:job.model_id,error:details});
+    }
+    const remaining=await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM secretary_composite_batch_items WHERE operation_id=? AND status IN ('pending','processing')",
+    ).bind(job.operation_id).first<{count:number}>();
+    if((remaining?.count??0)===0){
+      const operation=await env.DB.prepare("SELECT status,chat_id,status_message_id FROM secretary_operations WHERE id=?")
+        .bind(job.operation_id).first<{status:string;chat_id:string;status_message_id:number|null}>();
+      if(operation?.status==="running"){
+        const stats=await env.DB.prepare(
+          "SELECT COUNT(*) AS total,SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) AS published,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed FROM secretary_composite_batch_items WHERE operation_id=?",
+        ).bind(job.operation_id).first<{total:number;published:number|null;failed:number|null}>();
+        await finishSecretaryOperation(env,job.operation_id,"completed");
+        if(operation.status_message_id){
+          try{await telegram(env.SECRETARY_BOT_TOKEN,"editMessageText",{
+            chat_id:operation.chat_id,message_id:operation.status_message_id,
+            text:`Партия завершена. Создано: ${stats?.published??0} из ${stats?.total??0}. Ошибок: ${stats?.failed??0}.`,
+            reply_markup:{inline_keyboard:[]},
+          });}catch(error){console.warn("Unable to finalize composite batch status",compositeErrorText(error));}
+        }
       }
-      await env.DB.prepare("UPDATE secretary_operations SET status='running',result_chat_id=NULL,result_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='publishing'")
-        .bind(operationId).run();
-      console.error("Composite batch item failed", { label, error: details });
-      if (statusMessageId) {
-        try { await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", { chat_id: chatId, message_id: statusMessageId, text: `Не удалось создать ${label}. ${details}` }); }
-        catch (notifyError) { console.error("Unable to report composite batch item failure", notifyError); }
-      } else {
-        await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: chatId, message_thread_id: threadId, text: `Не удалось создать ${label}. ${details}` });
-      }
+    } else {
+      await updateSecretaryCompositeBatchStatus(env,job.operation_id);
     }
   }
-  await finishSecretaryOperation(env, operationId, wasCancelled ? "cancelled" : "completed");
-  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
-    chat_id: chatId, message_thread_id: threadId,
-    text: wasCancelled
-      ? `Операция отменена. Успешно создано: ${completed} из ${names.length}.`
-      : `Обработка списка завершена: ${completed} из ${names.length} композиток создано.`,
-    reply_markup: wasCancelled ? undefined : { inline_keyboard: [[{ text: "➕ Создать композитку", callback_data: "composite:create" }]] },
-  });
 }
+
 async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): Promise<void> {
   if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup")) return;
   const senderId = String(message.from.id);
