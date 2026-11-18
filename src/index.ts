@@ -1619,7 +1619,7 @@ async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
      JOIN secretary_operations o ON o.id=j.operation_id
      WHERE j.status='pending' AND o.status='running'
        AND NOT EXISTS (SELECT 1 FROM secretary_composite_batch_items active WHERE active.status='processing')
-     ORDER BY j.created_at,j.position LIMIT 1`,
+     ORDER BY j.created_at,j.rowid LIMIT 1`,
   ).first<{id:string;operation_id:string;model_id:string;requested_name:string;style:"basic"|"fashion";language:"ru"|"en";status_message_id:number|null;chat_id:string;operation_type:"batch"|"set"}>();
   if (!job) return;
   const claim = await env.DB.prepare(
