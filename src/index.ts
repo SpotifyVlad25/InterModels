@@ -641,6 +641,9 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   });
   const firstRowAspectSum = aspects[1] + aspects[2] + aspects[3];
   const secondRowAspectSum = aspects[4] + aspects[5] + aspects[6];
+  if (!Number.isFinite(firstRowAspectSum) || !Number.isFinite(secondRowAspectSum)) {
+    throw new Error("Invalid gallery row aspect ratios");
+  }
   const firstRowH = rightW / firstRowAspectSum;
   const secondRowH = rightW / secondRowAspectSum;
   const galleryH = firstRowH + secondRowH;
