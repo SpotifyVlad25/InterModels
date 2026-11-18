@@ -1468,7 +1468,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_composite_topics(id,chat_id,thread_id,configured_by) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,configured_by=excluded.configured_by")
       .bind(String(message.chat.id),message.message_thread_id,senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Тема КОМПОЗИТКИ подключена. Напишите имя или фамилию модели — одна строка для одиночной композитки, несколько строк для массовой. По умолчанию BASIC и русский язык."});return;
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Тема КОМПОЗИТКИ подключена. Напишите имя или фамилию модели — одна строка для одиночной композитки, несколько строк для массовой. Стиль определяется по доступным фотокомплектам: если их несколько, бот предложит выбор. Язык бот спрашивает всегда."});return;
   }
   console.info("Secretary group update", {
     chatId: message.chat.id,
@@ -1495,7 +1495,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_composite_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
       .bind(String(message.chat.id), message.message_thread_id, senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена. Просто отправьте имя или фамилию модели. Одна строка — одна композитка, несколько строк — массовая генерация. По умолчанию BASIC и русский язык." }); return;
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена. Просто отправьте имя или фамилию модели. Одна строка — одна композитка, несколько строк — массовая генерация. Стиль определяется по доступным фотокомплектам: если их несколько, бот предложит выбор. Язык бот спрашивает всегда." }); return;
   }
   if(/^\/topics_check(?:@\w+)?$/i.test(command)){
     if(!hasDirectorAccess(env,senderId)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Проверка тем доступна только владельцу или директору."});return;}
@@ -1550,7 +1550,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:mode==="single"?"Отправьте ФИО одной модели.":"Отправьте от 1 до 20 моделей — по одной на строку."});return;
     }
     if(/^\/comp_help(?:@\w+)?$/i.test(command)){
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Просто отправьте имя или фамилию. Одна строка — одна композитка; несколько строк — пакет. По умолчанию BASIC и русский язык."});return;
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Просто отправьте имя или фамилию. Одна строка — одна композитка; несколько строк — пакет. Стиль определяется по доступным фотокомплектам: если их несколько, бот предложит выбор. Язык бот спрашивает всегда."});return;
     }
     if(command && !command.startsWith("/")){
       const lines=command.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
