@@ -763,7 +763,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   }).join("");
   const leftColumnX = mainW + 52 * infoScale;
   const rightColumnX = mainW + rightW / 2 + 18 * infoScale;
-  const contactX = mainW + 64 * infoScale;
+  const contactX = mainW + 48 * infoScale;
   const websiteCenterX = mainW + rightW * 0.41;
   const logoRightX = canvasW - 28 * infoScale;
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
@@ -784,8 +784,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
     .name{font-weight:800;letter-spacing:1px}
     .parameter-label{font-weight:700;letter-spacing:.4px;fill:#000}
     .parameter-value{font-weight:400}
-    .phone{font-size:${25 * infoScale}px;font-weight:600;letter-spacing:.1px}
-    .website{font-size:${24 * infoScale}px;font-weight:500}
+    .phone{font-size:${28 * infoScale}px;font-weight:700;letter-spacing:.1px}
+    .website{font-size:${27 * infoScale}px;font-weight:700}
     .brand{font-size:${42 * infoScale}px;font-weight:800;letter-spacing:${3 * infoScale}px}
     .tagline{font-size:${16 * infoScale}px;font-weight:400;letter-spacing:${4 * infoScale}px}
     .separator{stroke:#e5e5e5;stroke-width:2}
