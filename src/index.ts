@@ -572,7 +572,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   if (photos.length !== 7) throw new Error("A composite requires exactly seven original photos");
   const rawName = ((model.first_name || "").trim() + " " + (model.last_name || "").trim()).trim().toUpperCase();
   const name = escapeXml(rawName);
-  const nameSize = rawName.length > 24 ? 72 : rawName.length > 18 ? 88 : 104;
+  const nameSize = rawName.length > 24 ? 54 : rawName.length > 18 ? 66 : 78;
   const details = [
     model.height_cm != null ? "РОСТ  " + model.height_cm + " СМ" : null,
     model.bust_cm != null ? "ГРУДЬ  " + model.bust_cm + " СМ" : null,
@@ -586,8 +586,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
 
   // Landscape comp card: one full-height hero image, six flush gallery cells,
   // and an uninterrupted information area below the gallery.
-  const canvasW = 3200, canvasH = 2000;
-  const mainW = 1400, galleryW = canvasW - mainW, galleryH = 1200;
+  const canvasW = 2400, canvasH = 1500;
+  const mainW = 1050, galleryW = canvasW - mainW, galleryH = 900;
   const cellW = galleryW / 3, cellH = galleryH / 2;
   const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
   const gallery = photos.slice(1).map((data, index) => {
@@ -596,12 +596,12 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
     return `<image href="${data}" x="${x}" y="${y}" width="${cellW}" height="${cellH}" preserveAspectRatio="xMidYMid meet"/>`;
   }).join("");
 
-  const infoX = mainW + 90;
-  const nameY = galleryH + 150;
+  const infoX = mainW + 70;
+  const nameY = galleryH + 125;
   const detailColumns = [details.slice(0, 4), details.slice(4, 8)];
   const detailMarkup = detailColumns.map((items, column) => items.map((value, index) => {
-    const fontSize = value.length > 26 ? 34 : value.length > 20 ? 40 : 46;
-    return `<text x="${infoX + column * 820}" y="${galleryH + 310 + index * 92}" class="detail" font-size="${fontSize}">${escapeXml(value)}</text>`;
+    const fontSize = value.length > 26 ? 26 : value.length > 20 ? 30 : 34;
+    return `<text x="${infoX + column * 650}" y="${galleryH + 270 + index * 72}" class="detail" font-size="${fontSize}">${escapeXml(value)}</text>`;
   }).join("")).join("");
 
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
@@ -610,12 +610,12 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   ${gallery}
   <text x="${infoX}" y="${nameY}" class="name" font-size="${nameSize}">${name}</text>
   ${detailMarkup}
-  <text x="${canvasW - 90}" y="${canvasH - 100}" text-anchor="end" class="brand">INTERMODELS</text>
+  <text x="${canvasW - 70}" y="${canvasH - 55}" text-anchor="end" class="brand">INTERMODELS</text>
   <style>
     text{font-family:Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
     .detail{font-weight:600;letter-spacing:.3px}
-    .brand{font-size:44px;font-weight:800;letter-spacing:5px;fill:#777}
+    .brand{font-size:34px;font-weight:800;letter-spacing:5px;fill:#777}
   </style></svg>`;
 }
 function compositeErrorText(error: unknown): string {
