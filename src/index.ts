@@ -1459,6 +1459,45 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     return;
   }
+  if (/^\/photo_check(?:@\\w+)?$/i.test(command)) {
+    if (!hasDirectorAccess(env, senderId)) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id, message_thread_id: message.message_thread_id,
+        text: "Проверка доступна только владельцу или директору.",
+      });
+      return;
+    }
+    if (message.chat.type !== "supergroup") {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id, text: "Проверку нужно запускать в супергруппе агентства.",
+      });
+      return;
+    }
+    try {
+      const me = await telegram(env.SECRETARY_BOT_TOKEN, "getMe", {});
+      const member = await telegram(env.SECRETARY_BOT_TOKEN, "getChatMember", {
+        chat_id: message.chat.id, user_id: me.result.id,
+      });
+      const status = member.result?.status ?? "unknown";
+      const canDelete = status === "creator" || (status === "administrator" && member.result?.can_delete_messages === true);
+      const details = status === "administrator"
+        ? (canDelete ? "can_delete_messages: да" : "can_delete_messages: нет")
+        : status === "creator" ? "права создателя группы" : "не администратор";
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id, message_thread_id: message.message_thread_id,
+        text: "🔎 Проверка прав Secretary\\nСтатус: " + status + "\\n" + details + "\\n" +
+          (canDelete
+            ? "Бот имеет право удалять сообщения участников. Если фото остаются, проверим журнал ошибок удаления и ID сообщений."
+            : "Бот может удалять свои сообщения, но не сообщения участников. Для удаления фотографий участников нужно включить право «Удаление сообщений»."),
+      });
+    } catch (error) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: message.chat.id, message_thread_id: message.message_thread_id,
+        text: "Не удалось проверить права Secretary: " + compositeErrorText(error).slice(0, 300),
+      });
+    }
+    return;
+  }
   if (/^\/new(?:@\w+)?$/i.test(command)) {
     if (!hasDirectorAccess(env, senderId)) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
