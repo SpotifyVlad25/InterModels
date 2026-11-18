@@ -683,18 +683,17 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
     model.hips_cm != null ? String(model.hips_cm) + unit : null,
     model.hair_color || null, model.eye_color || null, model.clothing_size || null, model.shoe_size || null,
   ];
-  const firstRow = values.slice(0, 4).map((value, index) => value ? labels[index] + " " + value : null).filter((value): value is string => Boolean(value));
-  const secondRow = values.slice(4, 8).map((value, index) => value ? labels[index + 4] + " " + value : null).filter((value): value is string => Boolean(value));
-
   // Fixed InterModels comp-card canvas. Photo frames are never cropped or
   // distorted: SVG "meet" contains each full source image inside its cell.
   const canvasW = 1938, canvasH = 1364;
   const mainW = 909, rightW = 1029;
-  // The right column is split exactly 75% for the six-photo gallery and 25% for model information.
+  // The right column remains split exactly 75% gallery / 25% information.
   const galleryH = canvasH * 0.75, infoH = canvasH * 0.25;
   const cellW = 343, firstRowH = galleryH / 2, secondRowH = galleryH / 2;
-  const nameBandH = infoH / 4, detailsBandH = infoH / 2, footerH = infoH / 4;
-  const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
+  // The model name is overlaid on the main photo; parameters use 3/4 of the
+  // information panel and the existing contact footer keeps its 1/4.
+  const detailsTop = galleryH, footerH = infoH / 4, detailsBandH = infoH - footerH;
+  const footerTop = detailsTop + detailsBandH;
   const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
   const gallery = photos.slice(1).map((data, index) => {
     const row = Math.floor(index / 3);
@@ -705,14 +704,20 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
     return `<image href="${data}" x="${x}" y="${y}" width="${cellW}" height="${height}" preserveAspectRatio="xMidYMid meet"/>`;
   }).join("");
   const infoScale = infoH / 317;
-  const baseNameSize = rawName.length > 27 ? 58 : rawName.length > 20 ? 68 : 82;
-  const nameSize = baseNameSize * infoScale;
-  const lineText = (items: string[], y: number) => {
-    const value = items.join("  |  ");
-    const baseFontSize = value.length > 100 ? 27 : value.length > 78 ? 31 : 36;
-    const fontSize = baseFontSize * infoScale;
-    return value ? `<text x="${mainW + rightW / 2}" y="${y}" text-anchor="middle" class="detail" font-size="${fontSize}">${escapeXml(value)}</text>` : "";
-  };
+  const tabWidth = Math.min(mainW - 96, Math.max(360, rawName.length * 38 + 112));
+  const tabHeight = 112;
+  const tabX = (mainW - tabWidth) / 2;
+  const tabY = canvasH - tabHeight;
+  const nameSize = Math.min(76, (tabWidth - 64) / Math.max(1, rawName.length * 0.68));
+  const parameterColumn = (startIndex: number, x: number) => values.slice(startIndex, startIndex + 4).map((value, index) => {
+    if (!value) return "";
+    const y = detailsTop + (index + 0.66) * detailsBandH / 4;
+    const labelSize = 18 * infoScale;
+    const valueSize = 24 * infoScale;
+    return `<text x="${x}" y="${y}" class="parameter-label" font-size="${labelSize}">${escapeXml(labels[startIndex + index])}</text><text x="${x + 154 * infoScale}" y="${y}" class="parameter-value" font-size="${valueSize}">${escapeXml(value)}</text>`;
+  }).join("");
+  const leftColumnX = mainW + 52 * infoScale;
+  const rightColumnX = mainW + rightW / 2 + 18 * infoScale;
   const contactX = mainW + 64 * infoScale;
   const websiteCenterX = mainW + rightW / 2;
   const logoRightX = canvasW - 64 * infoScale;
@@ -720,9 +725,10 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
   ${mainPhoto}
   ${gallery}
-  <text x="${mainW + rightW / 2}" y="${galleryH + nameBandH * 0.68}" text-anchor="middle" class="name" font-size="${nameSize}">${escapeXml(rawName)}</text>
-  ${lineText(firstRow, detailsTop + detailsBandH * 0.38)}
-  ${lineText(secondRow, detailsTop + detailsBandH * 0.78)}
+  <path d="M ${tabX} ${canvasH} V ${tabY + 18} Q ${tabX} ${tabY} ${tabX + 18} ${tabY} H ${tabX + tabWidth - 18} Q ${tabX + tabWidth} ${tabY} ${tabX + tabWidth} ${tabY + 18} V ${canvasH} Z" fill="#fff"/>
+  <text x="${mainW / 2}" y="${canvasH - 36}" text-anchor="middle" class="name" font-size="${nameSize}">${escapeXml(rawName)}</text>
+  ${parameterColumn(0, leftColumnX)}
+  ${parameterColumn(4, rightColumnX)}
   <line x1="${mainW}" y1="${footerTop}" x2="${canvasW}" y2="${footerTop}" class="separator"/>
   <text x="${contactX}" y="${footerTop + footerH * 0.62}" class="phone">+7 902 632-32-72</text>
   <text x="${websiteCenterX}" y="${footerTop + footerH * 0.62}" text-anchor="middle" class="website">inter-models.ru</text>
@@ -731,7 +737,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   <style>
     text{font-family:"DejaVu Sans",Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
-    .detail{font-weight:300;letter-spacing:.1px}
+    .parameter-label{font-weight:400;letter-spacing:.4px;fill:#777}
+    .parameter-value{font-weight:600}
     .phone{font-size:${23 * infoScale}px;font-weight:500;letter-spacing:.1px}
     .website{font-size:${22 * infoScale}px;font-weight:400}
     .brand{font-size:${42 * infoScale}px;font-weight:800;letter-spacing:${3 * infoScale}px}
