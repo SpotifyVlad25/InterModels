@@ -69,8 +69,33 @@ async function assertSecretaryOperationActive(env: Env, operationId?: string): P
   if (!operation || operation.status !== "running") throw new Error("SECRETARY_OPERATION_CANCELLED");
 }
 async function finishSecretaryOperation(env: Env, operationId: string, status: "completed" | "cancelled" | "failed"): Promise<void> {
-  await env.DB.prepare("UPDATE secretary_operations SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'")
+  await env.DB.prepare("UPDATE secretary_operations SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('running','publishing')")
     .bind(status, operationId).run();
+}
+async function setSecretaryOperationStatusMessage(env: Env, operationId: string, messageId: number | undefined): Promise<void> {
+  if (!messageId) return;
+  await env.DB.prepare("UPDATE secretary_operations SET status_message_id=? WHERE id=? AND status='running'")
+    .bind(messageId, operationId).run();
+}
+async function recordSecretaryOperationResult(env: Env, operationId: string, chatId: number, messageId: number): Promise<boolean> {
+  const result = await env.DB.prepare(
+    "UPDATE secretary_operations SET result_chat_id=?,result_message_id=? WHERE id=? AND status='running'",
+  ).bind(String(chatId), messageId, operationId).run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+async function claimSecretaryOperationPublication(env: Env, operationId: string): Promise<boolean> {
+  const result = await env.DB.prepare(
+    "UPDATE secretary_operations SET status='publishing',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'",
+  ).bind(operationId).run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+async function deleteTelegramMessage(env: Env, chatId: number | string, messageId: number | undefined, context: string): Promise<void> {
+  if (!messageId) return;
+  try {
+    await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: chatId, message_id: messageId });
+  } catch (error) {
+    console.warn("Unable to clean up Telegram message", { context, chatId, messageId, error: compositeErrorText(error) });
+  }
 }
 function secretaryCancelKeyboard(operationId: string): Record<string, unknown> {
   return { inline_keyboard: [[{ text: "❌ Отменить", callback_data: "op_cancel:" + operationId }]] };
@@ -927,6 +952,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     await finishSecretaryOperation(env, operationId, "completed");
   } catch (error) {
     const cancelled = error instanceof Error && error.message === "SECRETARY_OPERATION_CANCELLED";
+    if (newMessageId && !publicationCommitted) await deleteTelegramMessage(env, message.chat.id, newMessageId, "failed/cancelled composite");
     await finishSecretaryOperation(env, operationId, cancelled ? "cancelled" : "failed");
     if (uploadStatusId) {
       try { await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
@@ -1019,8 +1045,11 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     reply_markup: secretaryCancelKeyboard(operationId),
   });
   const statusMessageId = status.result?.message_id;
+  await setSecretaryOperationStatusMessage(env, operationId, statusMessageId);
   const startedAt = Date.now();
   let compositeStage = "render_png";
+  let newMessageId: number | undefined;
+  let publicationCommitted = false;
   const updateStage = async (stage: string) => {
     await assertSecretaryOperationActive(env, operationId);
     if (!statusMessageId) return;
@@ -1037,10 +1066,16 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     compositeStage = "deliver_png";
     await updateStage("Публикация готового PNG");
     await assertSecretaryOperationActive(env, operationId);
-    const newMessageId = await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels");
+    newMessageId = await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels");
+    if (!Number.isSafeInteger(newMessageId) || newMessageId <= 0) throw new Error("Telegram не вернул ID композитки.");
+    const recorded = await recordSecretaryOperationResult(env, operationId, message.chat.id, newMessageId);
+    if (!recorded || !(await claimSecretaryOperationPublication(env, operationId))) {
+      await deleteTelegramMessage(env, message.chat.id, newMessageId, "cancelled composite before publication");
+      newMessageId = undefined;
+      throw new Error("SECRETARY_OPERATION_CANCELLED");
+    }
     const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
       .bind(model.id).first<{ chat_id: string; message_id: number }>();
-    await assertSecretaryOperationActive(env, operationId);
     if (oldPublication) {
       try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: oldPublication.chat_id, message_id: oldPublication.message_id }); }
       catch (deleteError) { console.error("Previous composite could not be deleted", { modelId: model.id, error: compositeErrorText(deleteError) }); }
@@ -1051,6 +1086,9 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
        ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
          message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP`,
     ).bind(model.id, String(message.chat.id), message.message_thread_id!, newMessageId).run();
+    publicationCommitted = true;
+    await env.DB.prepare("UPDATE secretary_operations SET result_chat_id=NULL,result_message_id=NULL WHERE id=?")
+      .bind(operationId).run();
     await finishSecretaryOperation(env, operationId, "completed");
     console.info("Composite generation completed", { modelId: model.id, elapsedMs: Date.now() - startedAt, pngBytes: png.byteLength });
     compositeStage = "delete_status";
@@ -1067,14 +1105,18 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
       : { message: String(error) };
     console.error("Composite generation failed", { modelId: model.id, stage: compositeStage, ...details });
     if (statusMessageId) {
-      try {
-        await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
-          chat_id: message.chat.id, message_id: statusMessageId,
-          text: cancelled ? "Операция отменена." : "Не удалось создать композитку. Ошибка записана, можно попробовать ещё раз позже.",
-          reply_markup: { inline_keyboard: [] },
-        });
-      } catch (notifyError) {
-        console.error("Unable to report composite generation failure", notifyError);
+      if (cancelled) {
+        await deleteTelegramMessage(env, message.chat.id, statusMessageId, "cancelled composite status");
+      } else {
+        try {
+          await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
+            chat_id: message.chat.id, message_id: statusMessageId,
+            text: "Не удалось создать композитку. Ошибка записана, можно попробовать ещё раз позже.",
+            reply_markup: { inline_keyboard: [] },
+          });
+        } catch (notifyError) {
+          console.error("Unable to report composite generation failure", notifyError);
+        }
       }
     }
   }
@@ -1113,6 +1155,7 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
         reply_markup: secretaryCancelKeyboard(operationId),
       });
       statusMessageId = status.result?.message_id;
+      await setSecretaryOperationStatusMessage(env, operationId, statusMessageId);
       const updateStage = async (stage: string) => {
         await assertSecretaryOperationActive(env, operationId);
         if (!statusMessageId) return;
@@ -1128,9 +1171,13 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
       await updateStage("Отправка готового PNG");
       const newMessageId = await sendCompositePng(env, chatId, threadId, png, model.first_name + " " + model.last_name + " · InterModels");
       if (!Number.isSafeInteger(newMessageId) || newMessageId <= 0) throw new Error("Telegram не вернул ID композитки.");
+      const recorded = await recordSecretaryOperationResult(env, operationId, chatId, newMessageId);
+      if (!recorded || !(await claimSecretaryOperationPublication(env, operationId))) {
+        await deleteTelegramMessage(env, chatId, newMessageId, "cancelled batch composite before publication");
+        throw new Error("SECRETARY_OPERATION_CANCELLED");
+      }
       const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
         .bind(model.id).first<{chat_id:string;message_id:number}>();
-      await assertSecretaryOperationActive(env, operationId);
       if (oldPublication) {
         try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: oldPublication.chat_id, message_id: oldPublication.message_id }); }
         catch (error) { console.error("Previous composite could not be deleted", { modelId: model.id, error: compositeErrorText(error) }); }
@@ -1141,15 +1188,15 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
          ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
            message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP`,
       ).bind(model.id, String(chatId), threadId, newMessageId).run();
-      if (statusMessageId) await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: chatId, message_id: statusMessageId });
+      await env.DB.prepare("UPDATE secretary_operations SET result_chat_id=NULL,result_message_id=NULL WHERE id=?")
+        .bind(operationId).run();
+      if (statusMessageId) await deleteTelegramMessage(env, chatId, statusMessageId, "completed batch item status");
       completed++;
     } catch (error) {
       const details = error instanceof Error ? error.message : String(error);
       if (details === "SECRETARY_OPERATION_CANCELLED") {
         wasCancelled = true;
-        if (statusMessageId) {
-          try { await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", { chat_id: chatId, message_id: statusMessageId, text: "Операция отменена.", reply_markup: { inline_keyboard: [] } }); } catch {}
-        }
+        if (statusMessageId) await deleteTelegramMessage(env, chatId, statusMessageId, "cancelled batch status");
         break;
       }
       console.error("Composite batch item failed", { label, error: details });
@@ -1404,8 +1451,11 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
   const cancelMatch = data.match(/^op_cancel:([a-f0-9]{12})$/);
   if (cancelMatch) {
     const operationId = cancelMatch[1];
-    const operation = await env.DB.prepare("SELECT kind,source_key FROM secretary_operations WHERE id=? AND actor_id=?")
-      .bind(operationId, String(callback.from.id)).first<{kind:string;source_key:string|null}>();
+    const operation = await env.DB.prepare(
+      "SELECT kind,source_key,status_message_id,result_chat_id,result_message_id,status FROM secretary_operations WHERE id=? AND actor_id=?",
+    ).bind(operationId, String(callback.from.id)).first<{
+      kind:string;source_key:string|null;status_message_id:number|null;result_chat_id:string|null;result_message_id:number|null;status:string;
+    }>();
     const result = await env.DB.prepare(
       "UPDATE secretary_operations SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=? AND actor_id=? AND status='running'",
     ).bind(operationId, String(callback.from.id)).run();
@@ -1419,19 +1469,31 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
           .bind(chatId, Number(threadId), uploaderId, albumId).run();
       }
     }
-    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: cancelled ? "Отмена запрошена." : "Операция уже завершена или недоступна.",
-      show_alert: false,
-    });
-    if (callback.message && cancelled) {
+    if (cancelled && operation && (operation.kind === "composite" || operation.kind === "composite_batch")) {
+      const resultChatId = operation.result_chat_id ?? String(callback.message?.chat.id ?? "");
+      await deleteTelegramMessage(env, resultChatId, operation.result_message_id ?? undefined, "cancelled composite result");
+      const statusMessageId = operation.status_message_id ?? callback.message?.message_id;
+      await deleteTelegramMessage(env, resultChatId, statusMessageId ?? undefined, "cancelled composite status");
+    } else if (cancelled && callback.message) {
       try {
         await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
           chat_id: callback.message.chat.id, message_id: callback.message.message_id,
-          text: operation?.kind === "photo_upload" ? "⏹ Загрузка отменена. Незавершённый альбом очищен." : "⏹ Отмена запрошена. Останавливаю процесс…",
+          text: "⏹ Загрузка отменена. Незавершённый альбом очищен.",
           reply_markup: { inline_keyboard: [] },
         });
       } catch (error) { console.warn("Unable to update cancellation status message", compositeErrorText(error)); }
+    }
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: cancelled ? "⏹ Отмена принята. Временные сообщения очищены." :
+        operation?.status === "publishing" ? "Публикация уже завершается — отменить её поздно." : "Операция уже завершена или недоступна.",
+      show_alert: false,
+    });
+    if (!cancelled && operation?.status === "publishing" && callback.message) {
+      try { await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
+        chat_id: callback.message.chat.id, message_id: callback.message.message_id,
+        text: "Публикация уже завершается…", reply_markup: { inline_keyboard: [] },
+      }); } catch {}
     }
     return;
   }
