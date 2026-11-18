@@ -408,13 +408,20 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Эта тема не подключена как КОМПОЗИТКИ.", show_alert: true });
       return;
     }
-    await env.DB.prepare("INSERT INTO secretary_composite_input_pending(chat_id,thread_id,user_id) VALUES(?,?,?) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET created_at=CURRENT_TIMESTAMP")
+    await env.DB.prepare("DELETE FROM secretary_composite_input_pending WHERE chat_id=? AND thread_id=? AND user_id=?")
       .bind(String(msg.chat.id), msg.message_thread_id, String(callback.from.id)).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Ожидаю список моделей." });
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+    const prompt = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: msg.chat.id, message_thread_id: msg.message_thread_id,
-      text: "Введите фамилии или ФИО моделей — по одной на строку. Можно отправить сразу несколько, до 20 моделей.",
+      text: "Выберите стиль композитки:",
+      reply_markup: { inline_keyboard: [[
+        { text: "Basic", callback_data: "comp_style:basic" },
+        { text: "Fashion", callback_data: "comp_style:fashion" },
+      ]] },
     });
+    await env.DB.prepare(
+      "INSERT INTO secretary_composite_request_pending(chat_id,thread_id,user_id,stage,style,language,names_text,command_message_id,prompt_message_id) VALUES(?,?,?,'style',NULL,NULL,NULL,NULL,?) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET stage='style',style=NULL,language=NULL,names_text=NULL,command_message_id=NULL,prompt_message_id=excluded.prompt_message_id,created_at=CURRENT_TIMESTAMP",
+    ).bind(String(msg.chat.id), msg.message_thread_id, String(callback.from.id), prompt.result?.message_id ?? null).run();
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Выберите стиль и язык." });
     return;
   }
   const approve = data.match(/^a:([a-f0-9]{12}):([a-zA-Z0-9_-]{1,40})$/);
