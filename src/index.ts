@@ -1092,7 +1092,7 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     }
   }
 }
-async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage, names: string[], inputMessageIds: number[] = []): Promise<void> {
+async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage, names: string[], inputMessageIds: number[] = [], style: "basic" | "fashion" = "basic", language: "ru" | "en" = "ru"): Promise<void> {
   const chatId = message.chat.id;
   const threadId = message.message_thread_id!;
   const operationId = await startSecretaryOperation(env, "composite_batch", String(message.from!.id), chatId, threadId);
@@ -1117,20 +1117,17 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
       if (!matches.length) throw new Error("Модель не найдена.");
       if (matches.length > 1) throw new Error("Найдено несколько моделей. Укажите имя и фамилию полностью.");
       modelId = matches[0].id;
-      const photoResult = await env.DB.prepare("SELECT position FROM model_telegram_photos WHERE model_id=? ORDER BY position")
-        .bind(modelId).all<{position:number}>();
-      const photos = photoResult.results ?? [];
-      if (photos.length !== 7 || photos.some((photo, i) => photo.position !== i + 1)) {
-        throw new Error("В MODEL BANK ещё нет полного комплекта из семи фотографий.");
-      }
+      const photoResult=await env.DB.prepare("SELECT position FROM model_telegram_photo_sets WHERE model_id=? AND style=? ORDER BY position").bind(modelId,style).all<{position:number}>();
+      const photos=photoResult.results??[];
+      if(photos.length!==7||photos.some((photo,i)=>photo.position!==i+1))throw new Error("У модели отсутствует набор "+(style==="basic"?"Basic":"Fashion")+". Загрузите его в MODEL BANK.");
       queued++;
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
       rejected++;
     }
     await env.DB.prepare(
-      "INSERT INTO secretary_composite_batch_items(id,operation_id,position,requested_name,model_id,status,last_error) VALUES(?,?,?,?,?,?,?)",
-    ).bind(randomId(), operationId, index + 1, requestedName, modelId, failure ? "failed" : "pending", failure).run();
+      "INSERT INTO secretary_composite_batch_items(id,operation_id,position,requested_name,model_id,status,last_error,style,language) VALUES(?,?,?,?,?,?,?,?,?)",
+    ).bind(randomId(), operationId, index + 1, requestedName, modelId, failure ? "failed" : "pending", failure, style, language).run();
   }
 
   const rejectedRows = await env.DB.prepare(
@@ -1252,12 +1249,12 @@ async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
 
   for (let processed = 0; processed < 2; processed++) {
     const job = await env.DB.prepare(
-      `SELECT j.id,j.operation_id,j.model_id,j.requested_name
+      `SELECT j.id,j.operation_id,j.model_id,j.requested_name,j.style,j.language
        FROM secretary_composite_batch_items j
        JOIN secretary_operations o ON o.id=j.operation_id
        WHERE j.status='pending' AND o.status='running'
        ORDER BY j.created_at,j.position LIMIT 1`,
-    ).first<{id:string;operation_id:string;model_id:string;requested_name:string}>();
+    ).first<{id:string;operation_id:string;model_id:string;requested_name:string;style:"basic"|"fashion";language:"ru"|"en"}>();
     if (!job) break;
     const claim = await env.DB.prepare(
       "UPDATE secretary_composite_batch_items SET status='processing',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending' AND EXISTS (SELECT 1 FROM secretary_operations WHERE id=? AND status='running')",
@@ -1268,7 +1265,7 @@ async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
       await publishCompositeModel(env,null,job.model_id,async(stage)=>{
         await assertSecretaryOperationActive(env,job.operation_id);
         await updateSecretaryCompositeBatchStatus(env,job.operation_id,job.requested_name+" · "+stage);
-      },job.operation_id);
+      },job.operation_id,job.style,job.language);
       await env.DB.prepare("UPDATE secretary_composite_batch_items SET status='published',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='processing'")
         .bind(job.id).run();
     } catch(error) {
@@ -2211,6 +2208,7 @@ async function queueCompositeRefresh(env: Env, modelIds: string[] | null, actorI
 async function publishCompositeModel(
   env: Env, campaignId: string | null, modelId: string,
   onStage?: (stage: string) => Promise<void>, operationId?: string,
+  style: "basic" | "fashion" = "basic", language: "ru" | "en" = "ru",
 ): Promise<void> {
   const stage = async (value: string) => {
     await assertSecretaryOperationActive(env, operationId);
@@ -2229,13 +2227,10 @@ async function publishCompositeModel(
   ).bind(modelId).first<SecretaryModelRow>();
   if (!model) throw new Error("Модель не найдена в активной базе.");
   await stage("Проверка фотографий модели");
-  const result = await env.DB.prepare("SELECT position,telegram_file_id FROM model_telegram_photos WHERE model_id=? ORDER BY position")
-    .bind(modelId).all<{ position: number; telegram_file_id: string }>();
-  const photos = result.results ?? [];
-  if (photos.length !== 7 || photos.some((photo, index) => photo.position !== index + 1)) {
-    throw new Error("Для модели не загружены все семь фотографий.");
-  }
-  const png = await renderCompositePng(env, model, photos.map((photo) => photo.telegram_file_id), stage);
+  const result=await env.DB.prepare("SELECT position,telegram_file_id FROM model_telegram_photo_sets WHERE model_id=? AND style=? ORDER BY position").bind(modelId,style).all<{position:number;telegram_file_id:string}>();
+  const photos=result.results??[];
+  if(photos.length!==7||photos.some((photo,index)=>photo.position!==index+1))throw new Error("У модели отсутствует набор "+(style==="basic"?"Basic":"Fashion")+". Загрузите его в MODEL BANK.");
+  const png=await renderCompositePng(env,model,photos.map(photo=>photo.telegram_file_id),stage,language);
   await stage("Отправка PNG в Telegram");
   const messageId = await sendCompositePng(env, Number(topic.chat_id), topic.thread_id, png, model.first_name + " " + model.last_name + " · InterModels", modelId);
   if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("Telegram не вернул ID новой композитки.");
@@ -2256,13 +2251,14 @@ async function publishCompositeModel(
     old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
     .bind(modelId).first<{ chat_id: string; message_id: number }>();
     await env.DB.prepare(
-      `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at,photo_file_ids_json,model_snapshot_json)
-       VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,?,?)
+      `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at,photo_file_ids_json,model_snapshot_json,style,language)
+       VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,?,?,?,?)
        ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
          message_id=excluded.message_id,campaign_id=excluded.campaign_id,published_at=CURRENT_TIMESTAMP,
-         photo_file_ids_json=excluded.photo_file_ids_json,model_snapshot_json=excluded.model_snapshot_json`,
+         photo_file_ids_json=excluded.photo_file_ids_json,model_snapshot_json=excluded.model_snapshot_json,
+         style=excluded.style,language=excluded.language`,
     ).bind(modelId, topic.chat_id, topic.thread_id, messageId, campaignId,
-      JSON.stringify(photos.map((photo) => photo.telegram_file_id)), JSON.stringify(model)).run();
+      JSON.stringify(photos.map((photo) => photo.telegram_file_id)), JSON.stringify(model),style,language).run();
     if (publicationClaimed) {
       await env.DB.prepare("UPDATE secretary_operations SET status='running',result_chat_id=NULL,result_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='publishing'")
         .bind(operationId).run();
