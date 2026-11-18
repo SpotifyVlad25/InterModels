@@ -1333,7 +1333,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     command: command.slice(0, 120),
   });
   if (!message.message_thread_id) {
-    if (command.toLowerCase() === "/comp" || command.toLowerCase().startsWith("/comp ") || command.toLowerCase().startsWith("/comp@")) {
+    if (/^\/comp(?:@\w+)?(?:\s|$)/i.test(command)) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
         chat_id: message.chat.id,
         text: "Композитку можно запросить только внутри темы «КОМПОЗИТКИ».",
@@ -1352,7 +1352,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   }
   const compositeTopic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_composite_topics WHERE id = 1").first<{chat_id:string;thread_id:number}>();
   const isCompositeTopic = Boolean(compositeTopic && compositeTopic.chat_id === String(message.chat.id) && compositeTopic.thread_id === message.message_thread_id);
-  const isCompCommand = command.toLowerCase() === "/comp" || command.toLowerCase().startsWith("/comp ") || command.toLowerCase().startsWith("/comp@");
+  const isCompCommand = /^\/comp(?:@\w+)?(?:\s|$)/i.test(command);
   if (isCompCommand && !isCompositeTopic) {
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
