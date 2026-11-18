@@ -554,7 +554,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   const renderDetails = (items: Array<string | null>, x: number) => items.map((v, i) => {
     if (!v) return "";
     const fontSize = v.length > 25 ? 23 : v.length > 20 ? 26 : 30;
-    return \`<text x="\${x}" y="\${625 + i * 76}" class="detail" font-size="\${fontSize}">\${escapeXml(v)}</text>\`;
+    return `<text x="${x}" y="${625 + i * 76}" class="detail" font-size="${fontSize}">${escapeXml(v)}</text>`;
   }).join("");
   const details = renderDetails(leftValues, 875) + renderDetails(rightValues, 1230);
   const canvasW = 1600, canvasH = 2844, half = 800;
@@ -567,16 +567,16 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   const leftImages = leftPhotos.map((photo) => {
     const h = leftImageWidth * photo.height / photo.width;
     const x = (half - leftImageWidth) / 2;
-    const element = \`<image href="\${photo.data}" x="\${x.toFixed(2)}" y="\${leftY.toFixed(2)}" width="\${leftImageWidth.toFixed(2)}" height="\${h.toFixed(2)}" preserveAspectRatio="none"/>\`;
+    const element = `<image href="${photo.data}" x="${x.toFixed(2)}" y="${leftY.toFixed(2)}" width="${leftImageWidth.toFixed(2)}" height="${h.toFixed(2)}" preserveAspectRatio="none"/>`;
     leftY += h;
     return element;
   }).join("");
-  const main = \`<image href="\${photos[0]}" x="850" y="1000" width="700" height="1500" preserveAspectRatio="xMidYMid meet"/>\`;
-  return \`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="\${canvasW}" height="\${canvasH}" viewBox="0 0 \${canvasW} \${canvasH}">
-  <rect width="\${canvasW}" height="\${canvasH}" fill="#fff"/>
-  <rect x="0" y="0" width="\${half}" height="\${canvasH}" fill="#f3f3f3"/>
-  \${leftImages}
-  <line x1="\${half}" y1="0" x2="\${half}" y2="\${canvasH}" stroke="#dedede" stroke-width="2"/>
+  const main = `<image href="${photos[0]}" x="850" y="1000" width="700" height="1500" preserveAspectRatio="xMidYMid meet"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
+  <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
+  <rect x="0" y="0" width="${half}" height="${canvasH}" fill="#f3f3f3"/>
+  ${leftImages}
+  <line x1="${half}" y1="0" x2="${half}" y2="${canvasH}" stroke="#dedede" stroke-width="2"/>
   <text x="850" y="115" class="brand">INTERMODELS</text>
   <text x="850" y="170" class="agency">MODEL AGENCY</text>
   <text x="850" y="235" class="contact">inter-models.ru</text>
@@ -584,9 +584,9 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   <line x1="850" y1="330" x2="1550" y2="330" stroke="#222" stroke-width="2"/>
   <text x="850" y="485" class="section">ПАРАМЕТРЫ МОДЕЛИ</text>
   <line x1="1200" y1="540" x2="1200" y2="850" stroke="#bdbdbd" stroke-width="2"/>
-  \${details}
-  \${main}
-  <text x="1200" y="2665" text-anchor="middle" class="name" font-size="\${nameSize}">\${name}</text>
+  ${details}
+  ${main}
+  <text x="1200" y="2665" text-anchor="middle" class="name" font-size="${nameSize}">${name}</text>
   <text x="1200" y="2735" text-anchor="middle" class="model">MODEL</text>
   <style>
     text{font-family:Roboto,sans-serif;fill:#171717}
@@ -597,7 +597,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
     .detail{font-size:30px;font-weight:600;letter-spacing:.3px}
     .name{font-size:68px;font-weight:800;letter-spacing:.5px}
     .model{font-size:30px;font-weight:500;letter-spacing:12px;fill:#777}
-  </style></svg>\`;
+  </style></svg>`;
 }
 function compositeErrorText(error: unknown): string {
   if (error instanceof Error) return error.stack || error.message;
