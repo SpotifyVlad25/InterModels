@@ -1359,68 +1359,6 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     return false;
   }
 }
-async function generateCompositeSetInTopic(env:Env,message:TelegramMessage,rawName:string):Promise<void>{
-  const normalized=normalizeName(rawName);
-  const parts=normalized.split(" ");
-  const surname=parts[parts.length-1]??normalized;
-  const candidates=await findSecretaryModels(env,surname);
-  const exact=candidates.filter(model=>normalizeName(model.first_name+" "+model.last_name)===normalized);
-  if(exact.length!==1){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:exact.length?"Укажите имя и фамилию полностью, чтобы выбрать одну модель.":"Модель «"+rawName+"» не найдена."});return;}
-  const model=exact[0];
-  const variants=[
-    {style:"basic" as const,language:"ru" as const,label:"RU Basic"},
-    {style:"fashion" as const,language:"ru" as const,label:"RU Fashion"},
-    {style:"basic" as const,language:"en" as const,label:"EN Basic"},
-    {style:"fashion" as const,language:"en" as const,label:"EN Fashion"},
-  ];
-  for(const variant of variants){
-    const rows=await env.DB.prepare("SELECT position FROM model_telegram_photo_sets WHERE model_id=? AND style=? ORDER BY position").bind(model.id,variant.style).all<{position:number}>();
-    const photos=rows.results??[];
-    if(photos.length!==7||photos.some((photo,index)=>photo.position!==index+1)){
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Для полного сета у "+model.first_name+" "+model.last_name+" должен быть полный комплект из 7 фотографий Basic и Fashion. Не хватает: "+variant.style.toUpperCase()+". Сет не запускался."});
-      return;
-    }
-  }
-
-  // A full set is queued and processed by Cron one variant at a time. Never render all four
-  // variants inside the Telegram webhook: the request can time out midway through the set.
-  const operationId=await startSecretaryOperation(env,"composite_batch",String(message.from!.id),message.chat.id,message.message_thread_id!);
-  await env.DB.prepare("UPDATE secretary_operations SET operation_type='set' WHERE id=?").bind(operationId).run();
-  const intro=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
-    chat_id:message.chat.id,message_thread_id:message.message_thread_id,
-    text:"СЕТ для "+model.first_name+" "+model.last_name+" принят в очередь. Порядок: RU Basic → RU Fashion → EN Basic → EN Fashion.",
-  });
-  await env.DB.prepare("UPDATE secretary_operations SET intro_message_id=? WHERE id=?").bind(intro.result?.message_id??null,operationId).run();
-
-  for(let index=0;index<variants.length;index++){
-    const variant=variants[index];
-    const itemId=randomId();
-    await env.DB.prepare(
-      "INSERT INTO secretary_composite_batch_items(id,operation_id,position,requested_name,model_id,status,last_error,style,language) VALUES(?,?,?,?,?,'pending',NULL,?,?)",
-    ).bind(itemId,operationId,index+1,variant.label,model.id,variant.style,variant.language).run();
-    const itemMessage=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
-      chat_id:message.chat.id,message_thread_id:message.message_thread_id,
-      text:"⏳ "+variant.label+" — В очереди",
-    });
-    if(itemMessage.result?.message_id){
-      await env.DB.prepare("UPDATE secretary_composite_batch_items SET status_message_id=? WHERE id=?").bind(itemMessage.result.message_id,itemId).run();
-    }
-  }
-
-  const status=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
-    chat_id:message.chat.id,message_thread_id:message.message_thread_id,
-    text:"СЕТ поставлен в очередь. Создано: 0/4.",
-    reply_markup:secretaryCancelKeyboard(operationId),
-  });
-  const queue=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
-    chat_id:message.chat.id,message_thread_id:message.message_thread_id,
-    text:"Порядок очереди: RU Basic → RU Fashion → EN Basic → EN Fashion.",
-  });
-  await setSecretaryOperationStatusMessage(env,operationId,status.result?.message_id);
-  await env.DB.prepare("UPDATE secretary_operations SET queue_message_id=? WHERE id=?").bind(queue.result?.message_id??null,operationId).run();
-  await updateSecretaryCompositeBatchStatus(env,operationId,"СЕТ подготовлен");
-  console.info("Secretary composite set queued",{operationId,modelId:model.id,variants:variants.map(v=>v.label)});
-}
 async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage, names: string[], inputMessageIds: number[] = [], style: "basic" | "fashion" = "basic", language: "ru" | "en" = "ru"): Promise<void> {
   const chatId = message.chat.id;
   const threadId = message.message_thread_id!;
@@ -1737,7 +1675,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_composite_topics(id,chat_id,thread_id,configured_by) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,configured_by=excluded.configured_by")
       .bind(String(message.chat.id),message.message_thread_id,senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Тема КОМПОЗИТКИ подключена. Создавайте отдельные композитки или полный сет кнопками ниже. Для сета нужны оба фотокомплекта — Basic и Fashion.",reply_markup:{inline_keyboard:[[{text:"➕ Композитка",callback_data:"composite:create"},{text:"🧩 СЕТ",callback_data:"composite:set"}]]}});return;
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Тема КОМПОЗИТКИ подключена. Напишите фамилию модели, чтобы создать композитку.",reply_markup:{inline_keyboard:[[{text:"➕ Композитка",callback_data:"composite:create"}]]}});return;
   }
   console.info("Secretary group update", {
     chatId: message.chat.id,
@@ -1769,7 +1707,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_composite_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
       .bind(String(message.chat.id), message.message_thread_id, senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена. Создавайте отдельные композитки или полный сет кнопками ниже.",reply_markup:{inline_keyboard:[[{text:"➕ Композитка",callback_data:"composite:create"},{text:"🧩 СЕТ",callback_data:"composite:set"}]]} }); return;
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена. Напишите фамилию модели, чтобы создать композитку.",reply_markup:{inline_keyboard:[[{text:"➕ Композитка",callback_data:"composite:create"}]]} }); return;
   }
   if(/^\/topics_check(?:@\w+)?$/i.test(command)){
     if(!hasDirectorAccess(env,senderId)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Проверка тем доступна только владельцу или директору."});return;}
@@ -1822,14 +1760,6 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       });
       return;
     }
-    const setPending=await env.DB.prepare("SELECT prompt_message_id FROM secretary_composite_set_pending WHERE chat_id=? AND thread_id=? AND user_id=? AND created_at>=datetime('now','-30 minutes')").bind(String(message.chat.id),message.message_thread_id,senderId).first<{prompt_message_id:number|null}>();
-    if(setPending&&command&&!command.startsWith("/")){
-      await env.DB.prepare("DELETE FROM secretary_composite_set_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(message.chat.id),message.message_thread_id,senderId).run();
-      await deleteTelegramMessage(env,message.chat.id,setPending.prompt_message_id??undefined,"Compositarium set name prompt");
-      await deleteTelegramMessage(env,message.chat.id,message.message_id,"Compositarium set name input");
-      await generateCompositeSetInTopic(env,message,command);
-      return;
-    }
     const optionPending=await env.DB.prepare("SELECT stage,mode,style,language,names_text,command_message_id,prompt_message_id FROM secretary_composite_request_pending WHERE chat_id=? AND thread_id=? AND user_id=? AND created_at>=datetime('now','-30 minutes')").bind(String(message.chat.id),message.message_thread_id,senderId).first<{stage:string;mode:"single"|"batch";style:"basic"|"fashion"|null;language:"ru"|"en"|null;names_text:string|null;command_message_id:number|null;prompt_message_id:number|null}>();
     if(optionPending?.stage==="names"&&command&&!command.startsWith("/")){
       const names=command.split(/\r?\n/).map(name=>name.trim()).filter(Boolean);
@@ -1857,7 +1787,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:mode==="single"?"Отправьте ФИО одной модели.":"Отправьте от 1 до 20 моделей — по одной на строку."});return;
     }
     if(/^\/comp_help(?:@\w+)?$/i.test(command)){
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Для отдельной композитки используйте «➕ Композитка». Для четырёх вариантов одной модели — «🧩 СЕТ».",reply_markup:{inline_keyboard:[[{text:"➕ Композитка",callback_data:"composite:create"},{text:"🧩 СЕТ",callback_data:"composite:set"}]]}});return;
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Напишите фамилию или ФИО модели в теме «КОМПОЗИТКИ» либо нажмите «➕ Композитка». Затем выберите стиль и язык." ,reply_markup:{inline_keyboard:[[{text:"➕ Композитка",callback_data:"composite:create"}]]}});return;
     }
     if(command && !command.startsWith("/")){
       const lines=command.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
@@ -2405,17 +2335,6 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
       .bind(String(msg.chat.id), msg.message_thread_id, String(callback.from.id)).run();
     return;
-  }
-  if(data==="composite:set"){
-    const msg=callback.message;
-    if(!msg||msg.chat.type!=="supergroup"||!msg.message_thread_id){await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"СЕТ запускается только в теме КОМПОЗИТКИ.",show_alert:true});return;}
-    const topic=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
-    const archive=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_compositarium_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
-    if(!topic||topic.chat_id!==String(msg.chat.id)||topic.thread_id!==msg.message_thread_id){await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Это не зарегистрированная тема КОМПОЗИТКИ.",show_alert:true});return;}
-    if(!archive){await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Сначала подключите отдельную тему КОМПОЗИТАРИЙ фразой «подключить композитарий».",show_alert:true});return;}
-    const prompt=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:"Для полного сета отправьте имя и фамилию одной модели. Нужны оба фотокомплекта — Basic и Fashion."});
-    await env.DB.prepare("INSERT INTO secretary_composite_set_pending(chat_id,thread_id,user_id,prompt_message_id,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET prompt_message_id=excluded.prompt_message_id,created_at=CURRENT_TIMESTAMP").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id),prompt.result?.message_id??null).run();
-    await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Отправьте ФИО одной модели."});return;
   }
   if(data==="composite:create"){
     const msg=callback.message;if(!msg||msg.chat.type!=="supergroup"||!msg.message_thread_id){await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Кнопка работает только в теме «КОМПОЗИТКИ».",show_alert:true});return;}
