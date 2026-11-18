@@ -229,8 +229,8 @@ async function showModelProfilePrompt(env: Env, telegramId: string, chatId: numb
   const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?").bind(telegramId).first<{state:string}>();
   const model = await env.DB.prepare("SELECT lifecycle_status FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(telegramId).first<{lifecycle_status:string}>();
   const step = PROFILE_STEPS.find((item) => item.state === session?.state);
-  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\\n\\n" + step.prompt, threadId);
-  else if (model?.lifecycle_status === "frozen") await sendModel(env, chatId, "🥶\\n\\nУпс, ваша анкета заморожена и временно не отображается в активной базе.\\nОтправьте /profile, чтобы обновить параметры и восстановить доступ.", threadId);
+  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\n\n" + step.prompt, threadId);
+  else if (model?.lifecycle_status === "frozen") await sendModel(env, chatId, "🥶\n\nУпс, ваша анкета заморожена и временно не отображается в активной базе.\nОтправьте /profile, чтобы обновить параметры и восстановить доступ.", threadId);
   else if (session?.state === "profile_complete") await sendModel(env, chatId, "Ваша анкета подключена и заполнена. Чтобы изменить данные, отправьте /profile.", threadId);
   else await beginModelProfile(env, telegramId, chatId, threadId);
 }
@@ -1094,7 +1094,7 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     if (!statusMessageId) return;
     await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
       chat_id: message.chat.id, message_id: statusMessageId,
-      text: `Создаю композитку для ${model.first_name} ${model.last_name}…\\n${stage}`,
+      text: `Создаю композитку для ${model.first_name} ${model.last_name}…\n${stage}`,
       reply_markup: secretaryCancelKeyboard(operationId),
     });
   };
@@ -1200,13 +1200,13 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
   const rejectedRows = await env.DB.prepare(
     "SELECT requested_name,last_error FROM secretary_composite_batch_items WHERE operation_id=? AND status='failed' ORDER BY position",
   ).bind(operationId).all<{requested_name:string;last_error:string|null}>();
-  const rejectedDetails = (rejectedRows.results ?? []).map((row) => "• " + row.requested_name + " — " + (row.last_error ?? "ошибка проверки")).join("\\n").slice(0, 2800);
+  const rejectedDetails = (rejectedRows.results ?? []).map((row) => "• " + row.requested_name + " — " + (row.last_error ?? "ошибка проверки")).join("\n").slice(0, 2800);
   const initialText = queued
     ? `Партия принята: ${queued} композиток в очереди, ${rejected} пропущено. Обработка идёт последовательно.`
     : `Партия проверена: нет заданий для генерации. Пропущено: ${rejected}.`;
   const status = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
     chat_id: chatId, message_thread_id: threadId,
-    text: initialText + (rejectedDetails ? "\\n\\nНе поставлены в очередь:\\n" + rejectedDetails : ""),
+    text: initialText + (rejectedDetails ? "\n\nНе поставлены в очередь:\n" + rejectedDetails : ""),
     ...(queued ? { reply_markup: secretaryCancelKeyboard(operationId) } : {}),
   });
   const statusMessageId = status.result?.message_id;
@@ -1255,13 +1255,13 @@ async function finalizeSecretaryCompositeBatchOperation(env: Env, operationId: s
   const failedRows = await env.DB.prepare(
     "SELECT requested_name,last_error FROM secretary_composite_batch_items WHERE operation_id=? AND status='failed' ORDER BY position",
   ).bind(operationId).all<{requested_name:string;last_error:string|null}>();
-  const failureDetails = (failedRows.results ?? []).map((row) => "• " + row.requested_name + " — " + (row.last_error ?? "ошибка рендеринга")).join("\\n").slice(0, 2800);
+  const failureDetails = (failedRows.results ?? []).map((row) => "• " + row.requested_name + " — " + (row.last_error ?? "ошибка рендеринга")).join("\n").slice(0, 2800);
   await finishSecretaryOperation(env,operationId,"completed");
   if (operation.status_message_id) {
     try {
       await telegram(env.SECRETARY_BOT_TOKEN,"editMessageText",{
         chat_id:operation.chat_id,message_id:operation.status_message_id,
-        text:`Партия завершена. Создано: ${stats?.published??0} из ${stats?.total??0}. Ошибок: ${stats?.failed??0}.` + (failureDetails ? "\\n\\nНе удалось создать:\\n" + failureDetails : ""),
+        text:`Партия завершена. Создано: ${stats?.published??0} из ${stats?.total??0}. Ошибок: ${stats?.failed??0}.` + (failureDetails ? "\n\nНе удалось создать:\n" + failureDetails : ""),
         reply_markup:{inline_keyboard:[]},
       });
     } catch(error) { console.warn("Unable to finalize composite batch status",compositeErrorText(error)); }
