@@ -81,13 +81,15 @@ const server = createServer(async (req, res) => {
       });
       res.end(Buffer.from(png));
       console.info("Composite rendered", { durationMs: Date.now() - startedAt, svgCharacters: payload.svg.length, pngBytes: png.length });
-    } finally {
-      renderer.free();
     }
   } catch (error) {
     const status = Number(error?.status) || 500;
     console.error("Composite render failed", { status, durationMs: Date.now() - startedAt, error: error instanceof Error ? error.message : String(error) });
-    sendJson(res, status, { error: status === 413 ? "Request body too large" : "Composite rendering failed" });
+    if (!res.headersSent) {
+      sendJson(res, status, { error: status === 413 ? "Request body too large" : "Composite rendering failed" });
+    } else if (!res.writableEnded) {
+      res.destroy(error instanceof Error ? error : undefined);
+    }
   }
 });
 
