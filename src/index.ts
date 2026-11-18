@@ -1286,6 +1286,14 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     command: command.slice(0, 120),
   });
   if (!message.message_thread_id) {
+    if(/^\/topics_check(?:@\\w+)?$/i.test(command)){
+      if(!hasDirectorAccess(env,senderId)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,text:"Проверка тем доступна только владельцу или директору."});return;}
+      const photo=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
+      const comp=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
+      const current=String(message.chat.id);const sameGroup=Boolean(photo&&comp&&photo.chat_id===comp.chat_id);
+      const lines=["🔎 Проверка тем InterModels","MODEL BANK: "+(photo?"chat "+photo.chat_id+" · topic "+photo.thread_id:"не подключена"),"КОМПОЗИТКИ: "+(comp?"chat "+comp.chat_id+" · topic "+comp.thread_id:"не подключена"),"Обе темы в одной группе: "+(sameGroup?"да":"нет"),"Текущая группа: "+current,"MODEL BANK в этой группе: "+(photo?.chat_id===current?"да":"нет"),"КОМПОЗИТКИ в этой группе: "+(comp?.chat_id===current?"да":"нет"),"ID тем различаются: "+(photo&&comp&&photo.thread_id!==comp.thread_id?"да":"нет")];
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,text:lines.join("\n")});return;
+    }
     if (/^\/comp(?:@\w+)?(?:\s|$)/i.test(command)) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
         chat_id: message.chat.id,
