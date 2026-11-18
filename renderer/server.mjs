@@ -70,8 +70,7 @@ const server = createServer(async (req, res) => {
     const renderer = new Resvg(payload.svg, {
       font: { fontBuffers, defaultFontFamily: "Roboto", loadSystemFonts: false },
     });
-    try {
-      const png = renderer.render().asPng();
+    const png = renderer.render().asPng();
       if (!png.length || png.length > maxPngBytes) return sendJson(res, 413, { error: "Rendered PNG exceeds the configured limit" });
       res.writeHead(200, {
         "content-type": "image/png",
@@ -80,8 +79,7 @@ const server = createServer(async (req, res) => {
         "x-render-duration-ms": String(Date.now() - startedAt),
       });
       res.end(Buffer.from(png));
-      console.info("Composite rendered", { durationMs: Date.now() - startedAt, svgCharacters: payload.svg.length, pngBytes: png.length });
-    }
+    console.info("Composite rendered", { durationMs: Date.now() - startedAt, svgCharacters: payload.svg.length, pngBytes: png.length });
   } catch (error) {
     const status = Number(error?.status) || 500;
     console.error("Composite render failed", { status, durationMs: Date.now() - startedAt, error: error instanceof Error ? error.message : String(error) });
