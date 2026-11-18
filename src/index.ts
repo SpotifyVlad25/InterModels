@@ -628,9 +628,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   const firstRow = values.slice(0, 4).map((value, index) => value ? labels[index] + " " + value : null).filter((value): value is string => Boolean(value));
   const secondRow = values.slice(4, 8).map((value, index) => value ? labels[index + 4] + " " + value : null).filter((value): value is string => Boolean(value));
 
-  // The original photos define the geometry: fit the main image to the full
-  // canvas height, then calculate a seamless 3x2 gallery using that same ratio.
-  // This keeps every source frame complete and avoids both cropping and stretching.
+  // Test layout: equal left/right columns; the right side is split 75/25
+  // between a seamless 3x2 photo gallery and the model information block.
   const canvasW = 2560, canvasH = 1706;
   const dimensions = photos.map(imageDimensions);
   const photoAspect = dimensions[0].width / dimensions[0].height;
@@ -641,14 +640,12 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
       throw new Error("All seven composite photos must have the same aspect ratio (within 1%)");
     }
   }
-  const mainW = canvasH * photoAspect;
+  const mainW = canvasW / 2;
   const rightW = canvasW - mainW;
-  if (rightW <= 0) throw new Error("Source photos are too wide for the 2560x1706 composite canvas");
   const cellW = rightW / 3;
-  const cellH = cellW / photoAspect;
-  const galleryH = cellH * 2;
+  const galleryH = canvasH * 0.75;
+  const cellH = galleryH / 2;
   const infoH = canvasH - galleryH;
-  if (infoH <= 0) throw new Error("Source photo aspect ratio leaves no room for the information area");
   const nameBandH = infoH / 4, detailsBandH = infoH / 2, footerH = infoH / 4;
   const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
   const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="none"/>`;
