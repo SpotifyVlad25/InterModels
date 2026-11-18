@@ -1007,9 +1007,14 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?").bind(String(message.chat.id),threadId,senderId,albumId).run();
     await env.DB.prepare("DELETE FROM secretary_photo_upload_intents WHERE chat_id=? AND thread_id=? AND uploader_id=?").bind(String(message.chat.id),threadId,senderId).run();
     if(databaseStyle){
-      await recordSecretaryPhotoDatabasePublication(env,resolvedModelId,selectedStyle,message.chat.id,threadId,items.map(item=>item.message_id));
+      const caption=(model?.first_name??"")+" "+(model?.last_name??"")+" "+selectedStyle.toUpperCase();
+      const published=await telegram(env.SECRETARY_BOT_TOKEN,"sendMediaGroup",{chat_id:message.chat.id,message_thread_id:threadId,media:items.map((item,index)=>({type:"photo",media:item.file_id,...(index===0?{caption}: {})}))});
+      const publishedIds=(published.result??[]).map((item:any)=>item.message_id).filter((id:any)=>Number.isSafeInteger(id)&&id>0);
+      if(publishedIds.length!==7)throw new Error("Не удалось опубликовать все 7 фотографий от имени бота; исходный альбом оставлен.");
+      await recordSecretaryPhotoDatabasePublication(env,resolvedModelId,selectedStyle,message.chat.id,threadId,publishedIds);
+      for(const item of items)await deleteTelegramMessage(env,message.chat.id,item.message_id,"replace source album with bot publication");
       if(progressMessageId) await deleteTelegramMessage(env,message.chat.id,progressMessageId,"external photo database album complete");
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Комплект "+(model?.first_name??"")+" "+(model?.last_name??"")+" · "+(selectedStyle==="basic"?"BASIC":"FASHION")+" сохранён. Предыдущий пакет заменён."});
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Готово: "+caption+". Альбом опубликован от имени бота."});
     }else{
       try{await publishSecretaryPhotoSetToDatabase(env,resolvedModelId,selectedStyle,message.chat.id,threadId);}
       catch(error){console.error("Photo database mirror failed",{modelId:resolvedModelId,style:selectedStyle,error:compositeErrorText(error)});await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Фотографии сохранены в MODEL BANK, но не удалось обновить внешний PHOTO DATABASE. Проверьте права бота в целевой теме."});}
