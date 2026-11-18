@@ -1558,7 +1558,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       if(!names.length||names.length>20||names.some(name=>!name||name.length>100)){
         await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Отправьте от 1 до 20 моделей — по одной на строку."});return;
       }
-      const modelStyles:Array<"basic"|"fashion">[]=[];
+      const modelStyles:Array<"basic"|"fashion">=[];
       let hasStyleChoice=false;
       for(const name of names){
         const normalized=normalizeName(name),parts=normalized.split(" "),surname=parts[parts.length-1]??normalized;
