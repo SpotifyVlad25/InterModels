@@ -699,7 +699,7 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
       }
       stage = "external_render";
       await onStage?.("Рендеринг на выделенном сервере");
-      const endpoint = env.COMPOSITE_RENDERER_URL.replace(/\\/+$/, "") + "/render";
+      const endpoint = env.COMPOSITE_RENDERER_URL.replace(/\/+$/, "") + "/render";
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -2117,9 +2117,11 @@ async function publishCompositeModel(
     publicationClaimed = true;
   }
 
-  const old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
-    .bind(modelId).first<{ chat_id: string; message_id: number }>();
+  let old: { chat_id: string; message_id: number } | null = null;
   try {
+
+    old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
+    .bind(modelId).first<{ chat_id: string; message_id: number }>();
     await env.DB.prepare(
       `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at)
        VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
