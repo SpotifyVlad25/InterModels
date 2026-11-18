@@ -1153,11 +1153,43 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
   } catch (error) {
     const cancelled = error instanceof Error && error.message === "SECRETARY_OPERATION_CANCELLED";
     if (newMessageId && !publicationCommitted) await deleteTelegramMessage(env, message.chat.id, newMessageId, "failed/cancelled composite");
-    await finishSecretaryOperation(env, operationId, cancelled ? "cancelled" : "failed");
+    const errorMessage = error instanceof Error ? error.message : String(error);
     const details = error instanceof Error
       ? { name: error.name, message: error.message, stack: error.stack }
-      : { message: String(error) };
-    console.error("Composite generation failed", { modelId: model.id, stage: compositeStage, ...details });
+      : { message: errorMessage };
+    const renderStage = errorMessage.match(/^Composite PNG ([^:]+):/)?.[1];
+    const failureStage = renderStage ?? compositeStage;
+    if (!cancelled) {
+      try {
+        await env.DB.prepare(
+          `UPDATE secretary_operations
+           SET failure_stage=?,failure_message=?,failure_stack=?,failed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+           WHERE id=? AND status IN ('running','publishing')`,
+        ).bind(failureStage, errorMessage.slice(0, 4000),
+          error instanceof Error ? (error.stack ?? "").slice(0, 12000) || null : null,
+          operationId).run();
+      } catch (persistError) {
+        console.error("Unable to persist composite failure details", {
+          operationId, error: compositeErrorText(persistError), originalError: errorMessage.slice(0, 1200),
+        });
+      }
+    }
+    await finishSecretaryOperation(env, operationId, cancelled ? "cancelled" : "failed");
+    console.error("Composite generation failed", { operationId, modelId: model.id, stage: failureStage, ...details });
+    if (!cancelled) {
+      try {
+        await sendDirector(env,
+          "🚨 Ошибка создания композитки\n" +
+          "Модель: " + model.first_name + " " + model.last_name + " (" + model.id + ")\n" +
+          "Операция: " + operationId + "\n" +
+          "Этап: " + failureStage + "\n" +
+          "Причина: " + errorMessage.slice(0, 1600));
+      } catch (directorNotifyError) {
+        console.error("Unable to notify director about composite failure", {
+          operationId, error: compositeErrorText(directorNotifyError),
+        });
+      }
+    }
     if (statusMessageId) {
       if (cancelled) {
         await deleteTelegramMessage(env, message.chat.id, statusMessageId, "cancelled composite status");
@@ -1165,7 +1197,7 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
         try {
           await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
             chat_id: message.chat.id, message_id: statusMessageId,
-            text: "Не удалось создать композитку. Ошибка записана, можно попробовать ещё раз позже.",
+            text: "Не удалось создать композитку. Подробности отправлены директору.",
             reply_markup: { inline_keyboard: [] },
           });
         } catch (notifyError) {
