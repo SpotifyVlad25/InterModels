@@ -1787,8 +1787,6 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       await saveSecretaryPhotoSet(env, pendingPhotoSet.model_id, newPhotos, String(callback.from.id), msg.chat.id, msg.message_thread_id);
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Фотографии заменены." });
       const replacedModel = await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(pendingPhotoSet.model_id).first<{first_name:string;last_name:string}>();
-      const oldPreview = await env.DB.prepare("SELECT message_id FROM secretary_photo_upload_sessions WHERE chat_id=? AND thread_id=? AND uploader_id=?")
-        .bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).first<{message_id:number}>();
       await cleanupSecretaryPhotoUploadMessages(env,msg.chat.id,msg.message_thread_id,String(callback.from.id),[msg.message_id]);
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
         chat_id: msg.chat.id, message_thread_id: msg.message_thread_id,
