@@ -602,12 +602,12 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   let leftY = (canvasH - totalLeftHeight) / 2;
   const leftImages = leftPhotos.map((photo) => {
     const h = leftImageWidth * photo.height / photo.width;
-    const x = (half - leftImageWidth) / 2;
+    const x = 0;
     const element = `<image href="${photo.data}" x="${x.toFixed(2)}" y="${leftY.toFixed(2)}" width="${leftImageWidth.toFixed(2)}" height="${h.toFixed(2)}" preserveAspectRatio="none"/>`;
     leftY += h;
     return element;
   }).join("");
-  const main = `<image href="${photos[0]}" x="850" y="1000" width="700" height="1500" preserveAspectRatio="xMidYMid meet"/>`;
+  const main = `<image href="${photos[0]}" x="800" y="900" width="800" height="1700" preserveAspectRatio="xMidYMid meet"/>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
   <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
   <rect x="0" y="0" width="${half}" height="${canvasH}" fill="#f3f3f3"/>
