@@ -500,7 +500,6 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
   }}
 
 
-
 async function secretaryAllowed(env: Env, telegramId: string): Promise<boolean> {
   return hasDirectorAccess(env, telegramId);
 }
@@ -956,7 +955,6 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+". Выберите набор фотографий:",
     reply_markup:{inline_keyboard:[[{text:"Basic",callback_data:"photo_style:basic"},{text:"Fashion",callback_data:"photo_style:fashion"}]]}});
 }
-async function sendCompositePng}
 async function sendCompositePng(env: Env, chatId: number, threadId: number, png: Uint8Array, caption: string, modelId: string): Promise<number> {
   const endpoint = `https://api.telegram.org/bot${env.SECRETARY_BOT_TOKEN}/sendPhoto`;
   const form = new FormData();
@@ -997,8 +995,7 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     }); return;
   }
   await env.DB.prepare("DELETE FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
-    .bind(String(message.chat.id), message.message_thread_id!, String(message.from!.id)).run();
-  const model = matches[0];
+    .bind(String(message.chat.id), message.message_thread_id!, String(message.from!.id)).run();  const model = matches[0];
   const photoResult = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photo_sets WHERE model_id = ? AND style = 'basic' ORDER BY position").bind(model.id).all<{position:number;telegram_file_id:string}>();
   const photos = photoResult.results ?? [];
   if (photos.length !== 7 || photos.some((photo, i) => photo.position !== i + 1)) {
@@ -1497,8 +1494,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     const target = normalizeName(caption);
     const models = await getActiveModels(env);
-    const matches = models.filter((m) => normalizeName(m.first_name + " " + m.last_name) === target);
-    if (matches.length !== 1) {
+    const matches = models.filter((m) => normalizeName(m.first_name + " " + m.last_name) === target);    if (matches.length !== 1) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: matches.length ? "Найдено несколько анкет с таким ФИО. Уточните данные в базе." : "Анкета «" + caption + "» не найдена. Проверьте ФИО." });
       return;
     }
@@ -1997,8 +1993,7 @@ input,select,button{box-sizing:border-box;width:100%;padding:11px;margin:5px 0;b
   const nav=document.querySelector('.im-bottom-nav');
   nav.before(pageHost);
   const pageNodes={
-    home:['#dashboardHome','.im-greeting','#status','.im-metrics','.im-section'],
-    models:['#modelsPanel'],
+    home:['#dashboardHome','.im-greeting','#status','.im-metrics','.im-section'],    models:['#modelsPanel'],
     composites:['#compositesPanel'],
     tasks:['#tasksPanel','#schedulePanel']
   };
@@ -2295,13 +2290,14 @@ async function publishCompositeModel(env:Env,campaignId:string|null,modelId:stri
     old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
     .bind(modelId).first<{ chat_id: string; message_id: number }>();
     await env.DB.prepare(
-      `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at,photo_file_ids_json,model_snapshot_json)
-       VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,?,?)
+      `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at,photo_file_ids_json,model_snapshot_json,style,language)
+       VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,?,?,?,?)
        ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
          message_id=excluded.message_id,campaign_id=excluded.campaign_id,published_at=CURRENT_TIMESTAMP,
-         photo_file_ids_json=excluded.photo_file_ids_json,model_snapshot_json=excluded.model_snapshot_json`,
+         photo_file_ids_json=excluded.photo_file_ids_json,model_snapshot_json=excluded.model_snapshot_json,
+         style=excluded.style,language=excluded.language`,
     ).bind(modelId, topic.chat_id, topic.thread_id, messageId, campaignId,
-      JSON.stringify(photos.map((photo) => photo.telegram_file_id)), JSON.stringify(model)).run();
+      JSON.stringify(photos.map((photo) => photo.telegram_file_id)), JSON.stringify(model), style, language).run();
     if (publicationClaimed) {
       await env.DB.prepare("UPDATE secretary_operations SET status='running',result_chat_id=NULL,result_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='publishing'")
         .bind(operationId).run();
@@ -2497,8 +2493,7 @@ async function processPendingSecretaryAlbums(env: Env): Promise<void> {
        (SELECT x.telegram_file_unique_id FROM secretary_photo_album_items x
         WHERE x.chat_id = a.chat_id AND x.thread_id = a.thread_id
           AND x.uploader_id = a.uploader_id AND x.media_group_id = a.media_group_id
-        ORDER BY x.message_id LIMIT 1) AS file_unique_id
-     FROM secretary_photo_album_items a
+        ORDER BY x.message_id LIMIT 1) AS file_unique_id     FROM secretary_photo_album_items a
      GROUP BY a.chat_id, a.thread_id, a.uploader_id, a.media_group_id
      HAVING COUNT(*) = 4
        AND MIN(a.created_at) <= datetime('now', '-10 seconds')
