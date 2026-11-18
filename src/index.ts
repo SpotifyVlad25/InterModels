@@ -1349,7 +1349,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_composite_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
       .bind(String(message.chat.id), message.message_thread_id, senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена.\\n\\n/comp — одна композитка.\\n/comps — список моделей.\\n/comp_help — подсказка команд.",
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена.\n\n/comp — одна композитка.\n/comps — список моделей.\n/comp_help — подсказка команд.",
       reply_markup: { inline_keyboard: [[{ text: "➕ Создать композитку", callback_data: "composite:create" }]] } }); return;
   }
   if(/^\/topics_check(?:@\w+)?$/i.test(command)){
