@@ -1206,6 +1206,8 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
         if (statusMessageId) await deleteTelegramMessage(env, chatId, statusMessageId, "cancelled batch status");
         break;
       }
+      await env.DB.prepare("UPDATE secretary_operations SET status='running',result_chat_id=NULL,result_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='publishing'")
+        .bind(operationId).run();
       console.error("Composite batch item failed", { label, error: details });
       if (statusMessageId) {
         try { await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", { chat_id: chatId, message_id: statusMessageId, text: `Не удалось создать ${label}. ${details}` }); }
@@ -1492,7 +1494,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     }
     await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", {
       callback_query_id: callback.id,
-      text: cancelled ? "⏹ Отмена принята. Временные сообщения очищены." :
+      text: cancelled ? "⏹ Отмена принята." :
         operation?.status === "publishing" ? "Публикация уже завершается — отменить её поздно." : "Операция уже завершена или недоступна.",
       show_alert: false,
     });
