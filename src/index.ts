@@ -987,6 +987,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     }
     return;
   }
+  await env.DB.prepare("DELETE FROM secretary_photo_upload_intents WHERE chat_id=? AND thread_id=? AND uploader_id=?").bind(String(message.chat.id),threadId,senderId).run();
   await env.DB.prepare("INSERT INTO secretary_photo_replacement_pending(chat_id,thread_id,user_id,model_id,photos_json,style) VALUES(?,?,?,?,?,'basic') ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET model_id=excluded.model_id,photos_json=excluded.photos_json,style='basic',created_at=CURRENT_TIMESTAMP").bind(String(message.chat.id),threadId,senderId,resolvedModelId,JSON.stringify(newPhotos)).run();
   await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,progressMessageId?[progressMessageId]:[]);
   await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+". Выберите набор фотографий:",
@@ -1356,6 +1357,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   const command = (message.text ?? "").trim();
   const setupText = command.match(/^подключить\s+(basic|fashion|model\s*bank|композитки)$/i);
   if(setupText){
+    if(!message.message_thread_id){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,text:"Отправьте фразу подключения внутри нужной темы Telegram."});return;}
     if(!hasDirectorAccess(env,senderId)){
       await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Подключать темы может только владелец или директор."});return;
     }
@@ -2641,7 +2643,7 @@ async function processPendingSecretaryAlbums(env: Env): Promise<void> {
           AND x.uploader_id = a.uploader_id AND x.media_group_id = a.media_group_id
         ORDER BY x.message_id LIMIT 1) AS file_unique_id     FROM secretary_photo_album_items a
      GROUP BY a.chat_id, a.thread_id, a.uploader_id, a.media_group_id
-     HAVING COUNT(*) = 4
+     HAVING COUNT(*) = 7
        AND MIN(a.created_at) <= datetime('now', '-10 seconds')
        AND (MAX(a.processed_at) IS NULL OR MAX(a.processed_at) < datetime('now', '-5 minutes'))
      LIMIT 10`,
