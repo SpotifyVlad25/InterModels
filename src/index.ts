@@ -376,10 +376,15 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
     ).bind(campaignId).all<{model_id:string}>();
     let queued = 0;
     for (const row of updated.results ?? []) {
-      const inserted = await env.DB.prepare(
-        "INSERT OR IGNORE INTO composite_refresh_jobs(campaign_id,model_id,status,attempts,last_error,updated_at) VALUES(?,?,'pending',0,NULL,CURRENT_TIMESTAMP)",
-      ).bind(campaignId, row.model_id).run();
-      queued += inserted.meta?.changes ?? 0;
+      const variants = await env.DB.prepare("SELECT style,language FROM composite_topic_publications WHERE model_id=?")
+        .bind(row.model_id).all<{style:"basic"|"fashion";language:"ru"|"en"}>();
+      const targets = variants.results?.length ? variants.results : [{style:"basic" as const,language:"ru" as const}];
+      for (const variant of targets) {
+        const inserted = await env.DB.prepare(
+          "INSERT OR IGNORE INTO composite_refresh_jobs(campaign_id,model_id,style,language,status,attempts,last_error,updated_at) VALUES(?,?,?,?,'pending',0,NULL,CURRENT_TIMESTAMP)",
+        ).bind(campaignId,row.model_id,variant.style,variant.language).run();
+        queued += inserted.meta?.changes ?? 0;
+      }
     }
     await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'composite.refresh.campaign_queued', ?)")
       .bind(randomId(), actorId, JSON.stringify({campaign_id:campaignId,updated_models:updated.results?.length ?? 0,queued})).run();
@@ -1244,12 +1249,12 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
       newMessageId = undefined;
       throw new Error("SECRETARY_OPERATION_CANCELLED");
     }
-    const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
-      .bind(model.id).first<{ chat_id: string; message_id: number }>();
+    const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=? AND style=? AND language=?")
+      .bind(model.id,style,language).first<{ chat_id: string; message_id: number }>();
     await env.DB.prepare(
       `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at,photo_file_ids_json,model_snapshot_json,style,language)
        VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP,?,?,?,?)
-       ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
+       ON CONFLICT(model_id,style,language) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
          message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP,
          photo_file_ids_json=excluded.photo_file_ids_json,model_snapshot_json=excluded.model_snapshot_json,
          style=excluded.style,language=excluded.language`,
@@ -2570,16 +2575,20 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
       const modelId = String(body.retry_model_id);
       if (!/^[a-zA-Z0-9_-]{1,50}$/.test(modelId)) return json({ error: "Некорректный ID модели." }, 400);
       const failed = await env.DB.prepare(
-        "SELECT campaign_id FROM composite_refresh_jobs WHERE model_id=? AND status='failed' ORDER BY updated_at DESC LIMIT 1",
-      ).bind(modelId).first<{campaign_id:string}>();
-      if (!failed) return json({ error: "Не найдено неудачное задание для этой модели. Повтор не поставлен." }, 409);
-      const updated = await env.DB.prepare(
-        "UPDATE composite_refresh_jobs SET status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND status='failed'",
-      ).bind(failed.campaign_id, modelId).run();
-      if (!updated.meta.changes) return json({ error: "Статус задания изменился. Обновите список." }, 409);
+        "SELECT campaign_id,style,language FROM composite_refresh_jobs WHERE model_id=? AND status='failed' ORDER BY updated_at DESC",
+      ).bind(modelId).all<{campaign_id:string;style:"basic"|"fashion";language:"ru"|"en"}>();
+      if (!failed.results?.length) return json({ error: "Не найдено неудачных заданий для этой модели. Повтор не поставлен." }, 409);
+      let queued=0;
+      for (const job of failed.results) {
+        const updated = await env.DB.prepare(
+          "UPDATE composite_refresh_jobs SET status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND style=? AND language=? AND status='failed'",
+        ).bind(job.campaign_id,modelId,job.style,job.language).run();
+        queued += updated.meta?.changes ?? 0;
+      }
+      if (!queued) return json({ error: "Статусы заданий изменились. Обновите список." }, 409);
       await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'composite.refresh.retry', ?)")
-        .bind(randomId(), actor.id, JSON.stringify({ campaign_id: failed.campaign_id, model_id: modelId })).run();
-      return json({ ok: true, queued: 1, retry: true });
+        .bind(randomId(),actor.id,JSON.stringify({model_id:modelId,queued})).run();
+      return json({ok:true,queued,retry:true});
     }
     if (body?.model_ids !== undefined && (!Array.isArray(body.model_ids) || body.model_ids.length > 100 || body.model_ids.some((id: unknown) => typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,50}$/.test(id)))) {
       return json({ error: "Некорректный список моделей." }, 400);
@@ -2626,32 +2635,24 @@ async function queueCompositeRefresh(env: Env, modelIds: string[] | null, actorI
     if (!campaign) throw new Error("Ежемесячная кампания обновления ещё не запускалась.");
     campaignId = campaign.id;
   }
-  let rows: { model_id: string }[];
-  if (modelIds?.length) {
-    const ids = Array.from(new Set(modelIds)).slice(0, 100);
-    const placeholders = ids.map(() => "?").join(",");
-    const result = await env.DB.prepare(
-      `SELECT m.id AS model_id FROM models m
-       WHERE m.is_active = 1 AND m.lifecycle_status = 'active' AND m.id IN (${placeholders})`,
-    ).bind(...ids).all<{ model_id: string }>();
-    rows = result.results ?? [];
-  } else {
-    const result = await env.DB.prepare(
-      `SELECT m.id AS model_id FROM models m
-       WHERE m.is_active = 1 AND m.lifecycle_status = 'active'`,
-    ).all<{ model_id: string }>();
-    rows = result.results ?? [];
-  }
+  const filter = modelIds?.length ? " AND m.id IN (" + Array.from(new Set(modelIds)).slice(0,100).map(()=>"?").join(",") + ")" : "";
+  const ids = modelIds?.length ? Array.from(new Set(modelIds)).slice(0,100) : [];
+  const result = await env.DB.prepare(
+    `SELECT m.id AS model_id,COALESCE(p.style,'basic') AS style,COALESCE(p.language,'ru') AS language
+     FROM models m LEFT JOIN composite_topic_publications p ON p.model_id=m.id
+     WHERE m.is_active=1 AND m.lifecycle_status='active'${filter}`,
+  ).bind(...ids).all<{model_id:string;style:"basic"|"fashion";language:"ru"|"en"}>();
+  const rows=result.results??[];
   for (const row of rows) {
     await env.DB.prepare(
-      `INSERT INTO composite_refresh_jobs(campaign_id,model_id,status,attempts,last_error,updated_at)
-       VALUES(?,?,'pending',0,NULL,CURRENT_TIMESTAMP)
-       ON CONFLICT(campaign_id,model_id) DO UPDATE SET status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP`,
-    ).bind(campaignId, row.model_id).run();
+      `INSERT INTO composite_refresh_jobs(campaign_id,model_id,style,language,status,attempts,last_error,updated_at)
+       VALUES(?,?,?,?,'pending',0,NULL,CURRENT_TIMESTAMP)
+       ON CONFLICT(campaign_id,model_id,style,language) DO UPDATE SET status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP`,
+    ).bind(campaignId,row.model_id,row.style,row.language).run();
   }
   await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'composite.refresh.queued', ?)")
-    .bind(randomId(), actorId, JSON.stringify({ campaign_id: campaignId, manual, model_ids: rows.map((row) => row.model_id) })).run();
-  return { campaignId, queued: rows.length };
+    .bind(randomId(),actorId,JSON.stringify({campaign_id:campaignId,manual,model_ids:Array.from(new Set(rows.map(row=>row.model_id))),variants:rows.map(row=>({model_id:row.model_id,style:row.style,language:row.language}))})).run();
+  return {campaignId,queued:rows.length};
 }
 async function publishCompositeModel(env:Env,campaignId:string|null,modelId:string,onStage?:(stage:string)=>Promise<void>,operationId?:string,style:"basic"|"fashion"="basic",language:"ru"|"en"="ru"):Promise<void>{
   const stage = async (value: string) => {
@@ -2692,12 +2693,12 @@ async function publishCompositeModel(env:Env,campaignId:string|null,modelId:stri
   let old: { chat_id: string; message_id: number } | null = null;
   try {
 
-    old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
-    .bind(modelId).first<{ chat_id: string; message_id: number }>();
+    old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=? AND style=? AND language=?")
+    .bind(modelId,style,language).first<{ chat_id: string; message_id: number }>();
     await env.DB.prepare(
       `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at,photo_file_ids_json,model_snapshot_json,style,language)
        VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,?,?,?,?)
-       ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
+       ON CONFLICT(model_id,style,language) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
          message_id=excluded.message_id,campaign_id=excluded.campaign_id,published_at=CURRENT_TIMESTAMP,
          photo_file_ids_json=excluded.photo_file_ids_json,model_snapshot_json=excluded.model_snapshot_json,
          style=excluded.style,language=excluded.language`,
@@ -2727,27 +2728,26 @@ async function processCompositeRefreshJobs(env: Env): Promise<void> {
   // A job that has made no progress for 10 minutes is failed explicitly, not silently requeued forever.
   await env.DB.prepare("UPDATE composite_refresh_jobs SET status='failed',last_error=CASE WHEN last_error IS NULL OR last_error='' THEN 'Тайм-аут: задание не завершилось за 10 минут.' ELSE 'Тайм-аут после этапа: ' || last_error END,updated_at=CURRENT_TIMESTAMP WHERE status='processing' AND updated_at < datetime('now','-10 minutes')").run();
   const jobs = await env.DB.prepare(
-    `SELECT campaign_id,model_id FROM composite_refresh_jobs
-     WHERE status='pending' ORDER BY created_at LIMIT 2`,
-  ).all<{ campaign_id: string; model_id: string }>();
+    `SELECT campaign_id,model_id,style,language FROM composite_refresh_jobs
+     WHERE status='pending' ORDER BY created_at LIMIT 8`,
+  ).all<{ campaign_id: string; model_id: string; style:"basic"|"fashion"; language:"ru"|"en" }>();
   for (const job of jobs.results ?? []) {
     const claim = await env.DB.prepare(
-      "UPDATE composite_refresh_jobs SET status='processing',attempts=attempts+1,last_error='Запуск задания',updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND status='pending'",
-    ).bind(job.campaign_id, job.model_id).run();
+      "UPDATE composite_refresh_jobs SET status='processing',attempts=attempts+1,last_error='Запуск задания',updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND style=? AND language=? AND status='pending'",
+    ).bind(job.campaign_id, job.model_id, job.style, job.language).run();
     if (!claim.meta.changes) continue;
     const onStage = async (stage: string) => {
-      await env.DB.prepare("UPDATE composite_refresh_jobs SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND status='processing'")
-        .bind(stage, job.campaign_id, job.model_id).run();
+      await env.DB.prepare("UPDATE composite_refresh_jobs SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND style=? AND language=? AND status='processing'")
+        .bind(stage, job.campaign_id, job.model_id, job.style, job.language).run();
     };
     try {
-      const previous=await env.DB.prepare("SELECT style,language FROM composite_topic_publications WHERE model_id=?").bind(job.model_id).first<{style:"basic"|"fashion";language:"ru"|"en"}>();
-      await publishCompositeModel(env, job.campaign_id, job.model_id, onStage, undefined, previous?.style??"basic", previous?.language??"ru");
-      await env.DB.prepare("UPDATE composite_refresh_jobs SET status='published',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=?")
-        .bind(job.campaign_id, job.model_id).run();
+      await publishCompositeModel(env, job.campaign_id, job.model_id, onStage, undefined, job.style, job.language);
+      await env.DB.prepare("UPDATE composite_refresh_jobs SET status='published',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND style=? AND language=?")
+        .bind(job.campaign_id, job.model_id, job.style, job.language).run();
     } catch (error) {
       const details = compositeErrorText(error).slice(0, 1500);
-      await env.DB.prepare("UPDATE composite_refresh_jobs SET status='failed',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=?")
-        .bind(details, job.campaign_id, job.model_id).run();
+      await env.DB.prepare("UPDATE composite_refresh_jobs SET status='failed',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND style=? AND language=?")
+        .bind(details, job.campaign_id, job.model_id, job.style, job.language).run();
       console.error("Composite refresh job failed", { campaignId: job.campaign_id, modelId: job.model_id, error: details });
     }
   }
