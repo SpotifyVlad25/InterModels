@@ -885,8 +885,10 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
       console.info("Composite rasterization completed", { modelId: model.id, elapsedMs: Date.now() - renderStartedAt });
       const png = rendered.asPng();
       console.info("Composite PNG encoded", { modelId: model.id, pngBytes: png.byteLength });
+      // @resvg/resvg-js uses the native Node binding here; unlike the WASM
+      // renderer it does not expose renderer.free(). Let Node reclaim it via GC.
       return png;
-    } finally { renderer.free(); }
+    }
   } catch (error) {
     const details = compositeErrorText(error);
     console.error("Composite PNG render stage failed", { modelId: model.id, renderStage: stage, error: details });
