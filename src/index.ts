@@ -2060,12 +2060,19 @@ async function queueCompositeRefresh(env: Env, modelIds: string[] | null, actorI
     .bind(randomId(), actorId, JSON.stringify({ campaign_id: campaignId, manual, model_ids: rows.map((row) => row.model_id) })).run();
   return { campaignId, queued: rows.length };
 }
-async function publishCompositeModel(env: Env, campaignId: string, modelId: string, onStage?: (stage: string) => Promise<void>): Promise<void> {
-  await onStage?.("Проверка темы публикации");
+async function publishCompositeModel(
+  env: Env, campaignId: string | null, modelId: string,
+  onStage?: (stage: string) => Promise<void>, operationId?: string,
+): Promise<void> {
+  const stage = async (value: string) => {
+    await assertSecretaryOperationActive(env, operationId);
+    await onStage?.(value);
+  };
+  await stage("Проверка темы публикации");
   const topic = await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id = 1")
     .first<{ chat_id: string; thread_id: number }>();
   if (!topic) throw new Error("Тема «КОМПОЗИТКИ» не подключена.");
-  await onStage?.("Загрузка анкеты модели");
+  await stage("Загрузка анкеты модели");
   const model = await env.DB.prepare(
     `SELECT m.id,m.first_name,m.last_name,p.height_cm,p.bust_cm,p.waist_cm,p.hips_cm,
       p.clothing_size,p.shoe_size,p.hair_color,p.eye_color
@@ -2073,19 +2080,49 @@ async function publishCompositeModel(env: Env, campaignId: string, modelId: stri
      WHERE m.id=? AND m.is_active=1 AND m.lifecycle_status='active'`,
   ).bind(modelId).first<SecretaryModelRow>();
   if (!model) throw new Error("Модель не найдена в активной базе.");
-  await onStage?.("Проверка фотографий модели");
+  await stage("Проверка фотографий модели");
   const result = await env.DB.prepare("SELECT position,telegram_file_id FROM model_telegram_photos WHERE model_id=? ORDER BY position")
     .bind(modelId).all<{ position: number; telegram_file_id: string }>();
   const photos = result.results ?? [];
   if (photos.length !== 4 || photos.some((photo, index) => photo.position !== index + 1)) {
     throw new Error("Для модели не загружены все четыре фотографии.");
   }
-  const png = await renderCompositePng(env, model, photos.map((photo) => photo.telegram_file_id), onStage);
-  await onStage?.("Отправка PNG в Telegram");
+  const png = await renderCompositePng(env, model, photos.map((photo) => photo.telegram_file_id), stage);
+  await stage("Отправка PNG в Telegram");
   const messageId = await sendCompositePng(env, Number(topic.chat_id), topic.thread_id, png, model.first_name + " " + model.last_name + " · InterModels");
   if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("Telegram не вернул ID новой композитки.");
+
+  let publicationClaimed = false;
+  if (operationId) {
+    const recorded = await recordSecretaryOperationResult(env, operationId, Number(topic.chat_id), messageId);
+    if (!recorded || !(await claimSecretaryOperationPublication(env, operationId))) {
+      await deleteTelegramMessage(env, topic.chat_id, messageId, "cancelled batch composite before publication");
+      throw new Error("SECRETARY_OPERATION_CANCELLED");
+    }
+    publicationClaimed = true;
+  }
+
   const old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
     .bind(modelId).first<{ chat_id: string; message_id: number }>();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at)
+       VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+       ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
+         message_id=excluded.message_id,campaign_id=excluded.campaign_id,published_at=CURRENT_TIMESTAMP`,
+    ).bind(modelId, topic.chat_id, topic.thread_id, messageId, campaignId).run();
+    if (publicationClaimed) {
+      await env.DB.prepare("UPDATE secretary_operations SET status='running',result_chat_id=NULL,result_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='publishing'")
+        .bind(operationId).run();
+    }
+  } catch (error) {
+    if (publicationClaimed) {
+      await env.DB.prepare("UPDATE secretary_operations SET status='running',result_chat_id=NULL,result_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='publishing'")
+        .bind(operationId).run();
+    }
+    await deleteTelegramMessage(env, topic.chat_id, messageId, "failed composite publication database commit");
+    throw error;
+  }
   if (old) {
     try {
       await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: old.chat_id, message_id: old.message_id });
@@ -2093,12 +2130,6 @@ async function publishCompositeModel(env: Env, campaignId: string, modelId: stri
       console.error("Old composite publication could not be deleted after new publication", { modelId, oldMessageId: old.message_id, error: compositeErrorText(error) });
     }
   }
-  await env.DB.prepare(
-    `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at)
-     VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
-     ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
-       message_id=excluded.message_id,campaign_id=excluded.campaign_id,published_at=CURRENT_TIMESTAMP`,
-  ).bind(modelId, topic.chat_id, topic.thread_id, messageId, campaignId).run();
 }
 async function processCompositeRefreshJobs(env: Env): Promise<void> {
   // A job that has made no progress for 10 minutes is failed explicitly, not silently requeued forever.
