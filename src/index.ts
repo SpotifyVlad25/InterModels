@@ -1744,6 +1744,10 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     return;
   }
   if (data === "photo:create") {
+    if (!(await secretaryAllowed(env, String(callback.from.id)))) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Недостаточно прав для загрузки фотографий.", show_alert: true });
+      return;
+    }
     const msg = callback.message;
     if (!msg || msg.chat.type !== "supergroup" || !msg.message_thread_id) {
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Кнопка работает только в теме «MODEL BANK».", show_alert: true });
