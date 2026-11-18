@@ -824,6 +824,10 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
       await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Этот альбом не совпадает с выбранной в MODEL BANK моделью. Начните загрузку заново."});
       return;
     }
+    if(uploadIntent?.style && captionStyle && uploadIntent.style!==captionStyle){
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Стиль в подписи не совпадает с выбранным стилем загрузки."});
+      return;
+    }
   } else {
     const existing = await env.DB.prepare(
       "SELECT model_id FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND model_id IS NOT NULL LIMIT 1",
@@ -1890,20 +1894,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     if(!pending){await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Загрузка уже обработана или истекла.",show_alert:true});return;}
     const style=photoStyleMatch[1] as "basic"|"fashion";
     await env.DB.prepare("UPDATE secretary_photo_replacement_pending SET style=? WHERE chat_id=? AND thread_id=? AND user_id=?").bind(style,String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
-    const existing=await env.DB.prepare("SELECT COUNT(*) AS count FROM model_telegram_photo_sets WHERE model_id=? AND style=?").bind(pending.model_id,style).first<{count:number}>();
     await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:style==="basic"?"Выбран Basic.":"Выбран Fashion."});
-    if((existing?.count??0)>0){
-      await telegram(env.SECRETARY_BOT_TOKEN,"deleteMessage",{chat_id:msg.chat.id,message_id:msg.message_id});
-      const old=await env.DB.prepare("SELECT telegram_file_id FROM model_telegram_photo_sets WHERE model_id=? AND style=? ORDER BY position").bind(pending.model_id,style).all<{telegram_file_id:string}>();
-      if((old.results?.length??0)===7){
-        const album=await telegram(env.SECRETARY_BOT_TOKEN,"sendMediaGroup",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,media:old.results!.map(p=>({type:"photo",media:p.telegram_file_id}))});
-        const ids=(album.result??[]).map((item:any)=>item.message_id).filter((id:any)=>Number.isSafeInteger(id));
-        if(ids.length)await trackSecretaryPhotoUploadMessages(env,msg.chat.id,msg.message_thread_id,String(callback.from.id),{botIds:ids});
-      }
-      const prompt=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:"Набор "+(style==="basic"?"Basic":"Fashion")+" для этой анкеты уже существует. Заменить его новым комплектом?",reply_markup:{inline_keyboard:[[{text:"Да, заменить",callback_data:"photo_replace:yes"},{text:"Нет, оставить",callback_data:"photo_replace:no"}]]}});
-      if(prompt.result?.message_id)await trackSecretaryPhotoUploadMessages(env,msg.chat.id,msg.message_thread_id,String(callback.from.id),{botIds:[prompt.result.message_id]});
-      return;
-    }
     const photos=JSON.parse(pending.photos_json) as Array<{file_id:string;file_unique_id:string}>;
     await saveSecretaryPhotoSet(env,pending.model_id,photos,String(callback.from.id),msg.chat.id,msg.message_thread_id,style);
     await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
