@@ -647,7 +647,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
     return value ? `<text x="${mainW + rightW / 2}" y="${y}" text-anchor="middle" class="detail" font-size="${fontSize}">${escapeXml(value)}</text>` : "";
   };
   const contactX = mainW + 64;
-  const logoCenterX = mainW + rightW * 0.4 + rightW * 0.3;
+  const websiteCenterX = mainW + rightW / 2;
+  const logoRightX = canvasW - 64;
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
   <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
   ${mainPhoto}
@@ -656,10 +657,10 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   ${lineText(firstRow, detailsTop + 105)}
   ${lineText(secondRow, detailsTop + 205)}
   <line x1="${mainW}" y1="${footerTop}" x2="${canvasW}" y2="${footerTop}" class="separator"/>
-  <text x="${contactX}" y="${footerTop + 48}" class="phone">+7 902 632-32-72</text>
-  <text x="${contactX}" y="${footerTop + 91}" class="website">inter-models.ru</text>
-  <text x="${logoCenterX}" y="${footerTop + 62}" text-anchor="middle" class="brand">INTERMODELS</text>
-  <text x="${logoCenterX}" y="${footerTop + 99}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
+  <text x="${contactX}" y="${footerTop + 76}" class="phone">+7 902 632-32-72</text>
+  <text x="${websiteCenterX}" y="${footerTop + 76}" text-anchor="middle" class="website">inter-models.ru</text>
+  <text x="${logoRightX}" y="${footerTop + 62}" text-anchor="end" class="brand">INTERMODELS</text>
+  <text x="${logoRightX}" y="${footerTop + 99}" text-anchor="end" class="tagline">MODEL AGENCY</text>
   <style>
     text{font-family:"DejaVu Sans",Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
