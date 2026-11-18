@@ -877,8 +877,7 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
     }
     await ensureResvg();
     const renderer = new Resvg(svg, { font: { fontBuffers, defaultFontFamily: "Roboto", loadSystemFonts: false } });
-    try {
-      stage = "rasterize_png";
+    stage = "rasterize_png";
       await onStage?.("Рендеринг PNG");
       const renderStartedAt = Date.now();
       const rendered = renderer.render();
@@ -887,8 +886,7 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
       console.info("Composite PNG encoded", { modelId: model.id, pngBytes: png.byteLength });
       // @resvg/resvg-js uses the native Node binding here; unlike the WASM
       // renderer it does not expose renderer.free(). Let Node reclaim it via GC.
-      return png;
-    }
+    return png;
   } catch (error) {
     const details = compositeErrorText(error);
     console.error("Composite PNG render stage failed", { modelId: model.id, renderStage: stage, error: details });
