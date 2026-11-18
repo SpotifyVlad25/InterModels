@@ -480,31 +480,88 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
     if (!isGroup) await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: `Доступ пока не подключён. Ваш Telegram ID: ${senderId}. Передайте его администратору InterModels для активации.` });
     return;
   }
+  const replyMarkup = { keyboard: [[{ text: "➕ Добавить модель" }]], resize_keyboard: true, is_persistent: true };
+  const sendDirectorMenu = async (text: string) => telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
+    chat_id: message.chat.id,
+    ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
+    text,
+    reply_markup: replyMarkup,
+  });
   if (message.text?.startsWith("/start")) {
-    if (isDirector) await saveTopic(env, "director", message);
-    // Restore the authenticated Director Mini App entry point in the private chat menu.
-    if (isDirector && message.chat.type === "private") {
+    await saveTopic(env, "director", message);
+    if (message.chat.type === "private") {
       await telegram(env.DIRECTOR_BOT_TOKEN, "setChatMenuButton", {
         chat_id: message.chat.id,
-        menu_button: {
-          type: "web_app",
-          text: "Кабинет",
-          web_app: { url: "https://intermodels.spotify-vlad25.workers.dev/app" },
-        },
+        menu_button: { type: "web_app", text: "Кабинет", web_app: { url: "https://intermodels.spotify-vlad25.workers.dev/app" } },
       });
     }
+    await sendDirectorMenu("InterModels Director подключён. У вас полный доступ.\n\nЧтобы добавить одну или несколько моделей в базу, нажмите «➕ Добавить модель».");
+    return;
+  }
+  if (message.text?.startsWith("/help")) {
+    await sendDirectorMenu("Команды:\n/start — подключить бота\n/help — помощь\n\n➕ Добавить модель — создать записи в базе по имени и фамилии.");
+    return;
+  }
+  if (message.text === "➕ Добавить модель" || message.text === "Добавить модель") {
+    await env.DB.prepare(
+      "INSERT INTO bot_sessions (telegram_user_id,state,data_json,updated_at) VALUES (?,'director_add_model','{}',CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state='director_add_model',data_json='{}',updated_at=CURRENT_TIMESTAMP",
+    ).bind(senderId).run();
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
       ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
-      text: "InterModels Director подключён. У вас полный доступ.",
+      text: "Отправьте имя и фамилию одной модели.\n\nМожно добавить сразу несколько: каждую пару «имя фамилия» укажите с новой строки.",
     });
-  } else if (message.text?.startsWith("/help")) {
+    return;
+  }
+  const directorSession = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id=?")
+    .bind(senderId).first<{state:string}>();
+  if (directorSession?.state !== "director_add_model" || !message.text) return;
+  const lines = message.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) {
+    await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: "Не вижу имён. Отправьте имя и фамилию, по одной модели на строку." });
+    return;
+  }
+  const invalid: string[] = [];
+  const entries: Array<{firstName:string;lastName:string;label:string}> = [];
+  for (const line of lines) {
+    const parts = line.split(/\s+/).filter(Boolean);
+    if (parts.length < 2 || normalizeName(line).length < 3) { invalid.push(line); continue; }
+    entries.push({ firstName: parts[0], lastName: parts.slice(1).join(" "), label: line });
+  }
+  if (invalid.length) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
-      ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
-      text: "Команды:\n/start — подключить бота\n/help — помощь\n\nУ вас полный доступ к управлению агентством.",
+      text: "Не удалось распознать имя и фамилию в строках:\n" + invalid.map((line) => "• " + line).join("\n") + "\n\nИсправьте эти строки и отправьте их ещё раз. Остальные записи пока не создавались.",
     });
-  }}
+    return;
+  }
+  const existingResult = await env.DB.prepare("SELECT first_name,last_name FROM models").all<{first_name:string;last_name:string}>();
+  const existing = new Set((existingResult.results ?? []).map((row) => normalizeName(row.first_name + " " + row.last_name)));
+  const created: string[] = [], duplicates: string[] = [];
+  for (const entry of entries) {
+    const key = normalizeName(entry.firstName + " " + entry.lastName);
+    if (existing.has(key)) { duplicates.push(entry.label); continue; }
+    await env.DB.prepare(
+      "INSERT INTO models (id,first_name,last_name,is_active,lifecycle_status) VALUES (?,?,?,1,'active')",
+    ).bind(randomId(), entry.firstName, entry.lastName).run();
+    existing.add(key);
+    created.push(entry.label);
+  }
+  await env.DB.prepare("UPDATE bot_sessions SET state='director_idle',data_json='{}',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?")
+    .bind(senderId).run();
+  const linesOut = [
+    "Готово. Записи добавлены в базу InterModels.",
+    created.length ? "\nСоздано:\n" + created.map((name) => "• " + name).join("\n") : "",
+    duplicates.length ? "\nУже были в базе (повторно не создавал):\n" + duplicates.map((name) => "• " + name).join("\n") : "",
+    "\nТеперь модели могут открыть @InterModels_model_bot, отправить /start и зарегистрироваться по своему имени и фамилии. Подключение по-прежнему подтверждается директором.",
+  ].filter(Boolean).join("");
+  await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
+    chat_id: message.chat.id,
+    ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
+    text: linesOut,
+    reply_markup: replyMarkup,
+  });
+}
 
 
 async function secretaryAllowed(env: Env, telegramId: string): Promise<boolean> {
@@ -628,46 +685,55 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   const firstRow = values.slice(0, 4).map((value, index) => value ? labels[index] + " " + value : null).filter((value): value is string => Boolean(value));
   const secondRow = values.slice(4, 8).map((value, index) => value ? labels[index + 4] + " " + value : null).filter((value): value is string => Boolean(value));
 
-  // Right column: 4/6 photo gallery and 2/6 information, with the lower
-  // information bands sized 1:2:1 (name, measurements, contacts/brand).
-  const canvasW = 2400, canvasH = 1500;
-  const mainW = 1050, rightW = canvasW - mainW, galleryH = 1000;
-  const nameBandH = 125, detailsBandH = 250, footerH = 125;
+  // Fixed InterModels comp-card canvas. Photo frames are never cropped or
+  // distorted: SVG "meet" contains each full source image inside its cell.
+  const canvasW = 1938, canvasH = 1364;
+  const mainW = 909, rightW = 1029;
+  const galleryH = 1047, infoH = 317;
+  const cellW = 343, firstRowH = 523, secondRowH = 524;
+  const nameBandH = infoH / 4, detailsBandH = infoH / 2, footerH = infoH / 4;
   const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
-  const cellW = rightW / 3, cellH = galleryH / 2;
   const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
   const gallery = photos.slice(1).map((data, index) => {
-    const col = index % 3, row = Math.floor(index / 3);
-    return `<image href="${data}" x="${mainW + col * cellW}" y="${row * cellH}" width="${cellW}" height="${cellH}" preserveAspectRatio="none"/>`;
+    const row = Math.floor(index / 3);
+    const col = index % 3;
+    const x = mainW + col * cellW;
+    const y = row === 0 ? 0 : firstRowH;
+    const height = row === 0 ? firstRowH : secondRowH;
+    return `<image href="${data}" x="${x}" y="${y}" width="${cellW}" height="${height}" preserveAspectRatio="xMidYMid meet"/>`;
   }).join("");
-  const nameSize = rawName.length > 27 ? 58 : rawName.length > 20 ? 68 : 82;
+  const infoScale = infoH / 317;
+  const baseNameSize = rawName.length > 27 ? 58 : rawName.length > 20 ? 68 : 82;
+  const nameSize = baseNameSize * infoScale;
   const lineText = (items: string[], y: number) => {
     const value = items.join("  |  ");
-    const fontSize = value.length > 100 ? 27 : value.length > 78 ? 31 : 36;
+    const baseFontSize = value.length > 100 ? 27 : value.length > 78 ? 31 : 36;
+    const fontSize = baseFontSize * infoScale;
     return value ? `<text x="${mainW + rightW / 2}" y="${y}" text-anchor="middle" class="detail" font-size="${fontSize}">${escapeXml(value)}</text>` : "";
   };
-  const contactX = mainW + 64;
-  const logoCenterX = mainW + rightW * 0.4 + rightW * 0.3;
+  const contactX = mainW + 64 * infoScale;
+  const websiteCenterX = mainW + rightW / 2;
+  const logoRightX = canvasW - 64 * infoScale;
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
   <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
   ${mainPhoto}
   ${gallery}
-  <text x="${mainW + rightW / 2}" y="${galleryH + 82}" text-anchor="middle" class="name" font-size="${nameSize}">${escapeXml(rawName)}</text>
-  ${lineText(firstRow, detailsTop + 105)}
-  ${lineText(secondRow, detailsTop + 205)}
+  <text x="${mainW + rightW / 2}" y="${galleryH + nameBandH * 0.68}" text-anchor="middle" class="name" font-size="${nameSize}">${escapeXml(rawName)}</text>
+  ${lineText(firstRow, detailsTop + detailsBandH * 0.38)}
+  ${lineText(secondRow, detailsTop + detailsBandH * 0.78)}
   <line x1="${mainW}" y1="${footerTop}" x2="${canvasW}" y2="${footerTop}" class="separator"/>
-  <text x="${contactX}" y="${footerTop + 48}" class="phone">+7 902 632-32-72</text>
-  <text x="${contactX}" y="${footerTop + 91}" class="website">inter-models.ru</text>
-  <text x="${logoCenterX}" y="${footerTop + 62}" text-anchor="middle" class="brand">INTERMODELS</text>
-  <text x="${logoCenterX}" y="${footerTop + 99}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
+  <text x="${contactX}" y="${footerTop + footerH * 0.62}" class="phone">+7 902 632-32-72</text>
+  <text x="${websiteCenterX}" y="${footerTop + footerH * 0.62}" text-anchor="middle" class="website">inter-models.ru</text>
+  <text x="${logoRightX}" y="${footerTop + footerH * 0.48}" text-anchor="end" class="brand">INTERMODELS</text>
+  <text x="${logoRightX}" y="${footerTop + footerH * 0.79}" text-anchor="end" class="tagline">MODEL AGENCY</text>
   <style>
     text{font-family:"DejaVu Sans",Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
     .detail{font-weight:300;letter-spacing:.1px}
-    .phone{font-size:23px;font-weight:500;letter-spacing:.1px}
-    .website{font-size:22px;font-weight:400}
-    .brand{font-size:42px;font-weight:800;letter-spacing:3px}
-    .tagline{font-size:16px;font-weight:400;letter-spacing:4px}
+    .phone{font-size:${23 * infoScale}px;font-weight:500;letter-spacing:.1px}
+    .website{font-size:${22 * infoScale}px;font-weight:400}
+    .brand{font-size:${42 * infoScale}px;font-weight:800;letter-spacing:${3 * infoScale}px}
+    .tagline{font-size:${16 * infoScale}px;font-weight:400;letter-spacing:${4 * infoScale}px}
     .separator{stroke:#e5e5e5;stroke-width:2}
   </style></svg>`;
 }
@@ -1515,7 +1581,32 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     return;
   }
   if (isCompositeTopic) {
-    if (!(await secretaryAllowed(env, senderId))) {
+    const republishCommand=command.match(/^\/photo_republish(?:@\w+)?\s+(.+?)\s+(basic|fashion)$/i);
+  if(republishCommand){
+    if(!hasDirectorAccess(env,senderId)){
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Повторная публикация доступна только владельцу или директору."});
+      return;
+    }
+    const requestedName=republishCommand[1].trim();
+    const style=republishCommand[2].toLowerCase() as "basic"|"fashion";
+    const models=await getActiveModels(env);
+    const matches=models.filter(model=>normalizeName(model.first_name+" "+model.last_name)===normalizeName(requestedName));
+    if(matches.length!==1){
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:matches.length?"Найдено несколько анкет. Укажите полное имя и фамилию.":"Анкета «"+requestedName+"» не найдена."});
+      return;
+    }
+    const model=matches[0];
+    try{
+      const published=await publishSecretaryPhotoSetToDatabase(env,model.id,style,message.chat.id,message.message_thread_id);
+      if(!published)throw new Error("Тема "+style.toUpperCase()+" не настроена или совпадает с MODEL BANK.");
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Готово: "+model.first_name+" "+model.last_name+" · "+style.toUpperCase()+". В PHOTO DATABASE опубликованы все 7 фотографий из сохранённого комплекта."});
+    }catch(error){
+      console.error("Manual photo database republish failed",{modelId:model.id,style,error:compositeErrorText(error)});
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Не удалось опубликовать "+style.toUpperCase()+" для "+model.first_name+" "+model.last_name+": "+compositeErrorText(error).slice(0,350)+". Сохранённый комплект в MODEL BANK не изменён."});
+    }
+    return;
+  }
+  if (!(await secretaryAllowed(env, senderId))) {
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
         chat_id: message.chat.id,
         message_thread_id: message.message_thread_id,
@@ -2000,11 +2091,24 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:style==="basic"?"Выбран Basic.":"Выбран Fashion."});
     const photos=JSON.parse(pending.photos_json) as Array<{file_id:string;file_unique_id:string}>;
     await saveSecretaryPhotoSet(env,pending.model_id,photos,String(callback.from.id),msg.chat.id,msg.message_thread_id,style);
-    try{await publishSecretaryPhotoSetToDatabase(env,pending.model_id,style,msg.chat.id,msg.message_thread_id);}catch(error){console.error("Photo database mirror failed",{modelId:pending.model_id,style,error:compositeErrorText(error)});}
-    await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
+    let databasePublished=false;
+    let publicationError:string|null=null;
+    try{
+      databasePublished=await publishSecretaryPhotoSetToDatabase(env,pending.model_id,style,msg.chat.id,msg.message_thread_id);
+      if(!databasePublished)throw new Error("Тема PHOTO DATABASE не настроена или совпадает с MODEL BANK.");
+    }catch(error){
+      publicationError=compositeErrorText(error);
+      console.error("Photo database mirror failed",{modelId:pending.model_id,style,error:publicationError});
+    }
+    if(databasePublished){
+      await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
+    }
     const model=await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(pending.model_id).first<{first_name:string;last_name:string}>();
     await telegram(env.SECRETARY_BOT_TOKEN,"deleteMessage",{chat_id:msg.chat.id,message_id:msg.message_id});
-    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+" готова✅",reply_markup:{inline_keyboard:[[{text:"➕ Создать новую анкету",callback_data:"photo:create"}]]}});return;
+    const resultText=databasePublished
+      ? "Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+" готова✅ Фотографии сохранены и опубликованы в "+style.toUpperCase()+"."
+      : "Фотографии "+(model?.first_name??"")+" "+(model?.last_name??"")+" сохранены в MODEL BANK, но не опубликованы в "+style.toUpperCase()+". Повторную публикацию можно запустить командой /photo_republish "+(model?.first_name??"")+" "+(model?.last_name??"")+" "+style.toUpperCase()+". Ошибка: "+(publicationError??"неизвестная ошибка").slice(0,220);
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:resultText,reply_markup:{inline_keyboard:databasePublished?[[{text:"➕ Создать новую анкету",callback_data:"photo:create"}]]:[]}});return;
   }
   const compStyleMatch=data.match(/^comp_style:(basic|fashion)$/);
   if(compStyleMatch){
