@@ -863,6 +863,7 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
           authorization: "Bearer " + env.COMPOSITE_RENDERER_TOKEN,
         },
         body: JSON.stringify({ svg }),
+        signal: AbortSignal.timeout(90_000),
       });
       if (!response.ok) {
         const details = (await response.text()).slice(0, 1200);
@@ -1366,32 +1367,59 @@ async function generateCompositeSetInTopic(env:Env,message:TelegramMessage,rawNa
   const exact=candidates.filter(model=>normalizeName(model.first_name+" "+model.last_name)===normalized);
   if(exact.length!==1){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:exact.length?"Укажите имя и фамилию полностью, чтобы выбрать одну модель.":"Модель «"+rawName+"» не найдена."});return;}
   const model=exact[0];
-  for(const style of ["basic","fashion"] as const){
-    const rows=await env.DB.prepare("SELECT position FROM model_telegram_photo_sets WHERE model_id=? AND style=? ORDER BY position").bind(model.id,style).all<{position:number}>();
+  const variants=[
+    {style:"basic" as const,language:"ru" as const,label:"RU Basic"},
+    {style:"fashion" as const,language:"ru" as const,label:"RU Fashion"},
+    {style:"basic" as const,language:"en" as const,label:"EN Basic"},
+    {style:"fashion" as const,language:"en" as const,label:"EN Fashion"},
+  ];
+  for(const variant of variants){
+    const rows=await env.DB.prepare("SELECT position FROM model_telegram_photo_sets WHERE model_id=? AND style=? ORDER BY position").bind(model.id,variant.style).all<{position:number}>();
     const photos=rows.results??[];
     if(photos.length!==7||photos.some((photo,index)=>photo.position!==index+1)){
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Для полного сета у "+model.first_name+" "+model.last_name+" должен быть полный комплект из 7 фотографий Basic и Fashion. Не хватает: "+style.toUpperCase()+". Сет не запускался."});
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Для полного сета у "+model.first_name+" "+model.last_name+" должен быть полный комплект из 7 фотографий Basic и Fashion. Не хватает: "+variant.style.toUpperCase()+". Сет не запускался."});
       return;
     }
   }
-  const variants=[{style:"basic" as const,language:"ru" as const},{style:"fashion" as const,language:"ru" as const},{style:"basic" as const,language:"en" as const},{style:"fashion" as const,language:"en" as const}];
-  let completed=0;
-  await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Запускаю полный сет для "+model.first_name+" "+model.last_name+". Четыре композитки будут созданы последовательно, без потока."});
-  for(const variant of variants){
-    const ok=await generateCompositeInTopic(env,message,model.first_name+" "+model.last_name,variant.style,variant.language,false);
-    if(ok)completed++;
-  }
-  if(completed===4){
-    try{
-      await publishCompositariumAlbum(env,model.id);
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Готово: сет "+model.first_name+" "+model.last_name+" создан полностью (4/4). Альбом в КОМПОЗИТАРИИ обновлён."});
-    }catch(error){
-      console.error("Full Compositarium set publication failed",{modelId:model.id,error:compositeErrorText(error)});
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Все четыре композитки созданы в КОМПОЗИТКИ, но обновить альбом КОМПОЗИТАРИЯ не удалось. Проверьте права бота в теме."});
+
+  // A full set is queued and processed by Cron one variant at a time. Never render all four
+  // variants inside the Telegram webhook: the request can time out midway through the set.
+  const operationId=await startSecretaryOperation(env,"composite_batch",String(message.from!.id),message.chat.id,message.message_thread_id!);
+  await env.DB.prepare("UPDATE secretary_operations SET operation_type='set' WHERE id=?").bind(operationId).run();
+  const intro=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
+    chat_id:message.chat.id,message_thread_id:message.message_thread_id,
+    text:"СЕТ для "+model.first_name+" "+model.last_name+" принят в очередь. Порядок: RU Basic → RU Fashion → EN Basic → EN Fashion.",
+  });
+  await env.DB.prepare("UPDATE secretary_operations SET intro_message_id=? WHERE id=?").bind(intro.result?.message_id??null,operationId).run();
+
+  for(let index=0;index<variants.length;index++){
+    const variant=variants[index];
+    const itemId=randomId();
+    await env.DB.prepare(
+      "INSERT INTO secretary_composite_batch_items(id,operation_id,position,requested_name,model_id,status,last_error,style,language) VALUES(?,?,?,?,?,'pending',NULL,?,?)",
+    ).bind(itemId,operationId,index+1,variant.label,model.id,variant.style,variant.language).run();
+    const itemMessage=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
+      chat_id:message.chat.id,message_thread_id:message.message_thread_id,
+      text:"⏳ "+variant.label+" — В очереди",
+    });
+    if(itemMessage.result?.message_id){
+      await env.DB.prepare("UPDATE secretary_composite_batch_items SET status_message_id=? WHERE id=?").bind(itemMessage.result.message_id,itemId).run();
     }
-  }else{
-    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Сет завершён не полностью: "+completed+"/4. Предыдущий альбом КОМПОЗИТАРИЯ не изменён. Проверьте сообщения об ошибках и повторите СЕТ."});
   }
+
+  const status=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
+    chat_id:message.chat.id,message_thread_id:message.message_thread_id,
+    text:"СЕТ поставлен в очередь. Создано: 0/4.",
+    reply_markup:secretaryCancelKeyboard(operationId),
+  });
+  const queue=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
+    chat_id:message.chat.id,message_thread_id:message.message_thread_id,
+    text:"Порядок очереди: RU Basic → RU Fashion → EN Basic → EN Fashion.",
+  });
+  await setSecretaryOperationStatusMessage(env,operationId,status.result?.message_id);
+  await env.DB.prepare("UPDATE secretary_operations SET queue_message_id=? WHERE id=?").bind(queue.result?.message_id??null,operationId).run();
+  await updateSecretaryCompositeBatchStatus(env,operationId,"СЕТ подготовлен");
+  console.info("Secretary composite set queued",{operationId,modelId:model.id,variants:variants.map(v=>v.label)});
 }
 async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage, names: string[], inputMessageIds: number[] = [], style: "basic" | "fashion" = "basic", language: "ru" | "en" = "ru"): Promise<void> {
   const chatId = message.chat.id;
@@ -1510,8 +1538,8 @@ async function updateSecretaryCompositeBatchStatus(env: Env, operationId: string
 }
 
 async function finalizeSecretaryCompositeBatchOperation(env: Env, operationId: string): Promise<void> {
-  const operation = await env.DB.prepare("SELECT status,chat_id,status_message_id,queue_message_id FROM secretary_operations WHERE id=? AND kind='composite_batch'")
-    .bind(operationId).first<{status:string;chat_id:string;status_message_id:number|null;queue_message_id:number|null}>();
+  const operation = await env.DB.prepare("SELECT status,chat_id,status_message_id,queue_message_id,operation_type FROM secretary_operations WHERE id=? AND kind='composite_batch'")
+    .bind(operationId).first<{status:string;chat_id:string;status_message_id:number|null;queue_message_id:number|null;operation_type:"batch"|"set"}>();
   if (operation?.status !== "running") return;
   const remaining = await env.DB.prepare(
     "SELECT COUNT(*) AS count FROM secretary_composite_batch_items WHERE operation_id=? AND status IN ('pending','processing')",
@@ -1524,12 +1552,29 @@ async function finalizeSecretaryCompositeBatchOperation(env: Env, operationId: s
     "SELECT requested_name,last_error FROM secretary_composite_batch_items WHERE operation_id=? AND status='failed' ORDER BY position",
   ).bind(operationId).all<{requested_name:string;last_error:string|null}>();
   const failureDetails = (failedRows.results ?? []).map((row) => "• " + row.requested_name + " — " + (row.last_error ?? "ошибка рендеринга")).join("\n").slice(0, 2800);
+  let archiveNote="";
+  if(operation.operation_type==="set"&&(stats?.total??0)===4&&(stats?.published??0)===4&&(stats?.failed??0)===0){
+    try{
+      const model=await env.DB.prepare("SELECT model_id FROM secretary_composite_batch_items WHERE operation_id=? ORDER BY position LIMIT 1").bind(operationId).first<{model_id:string|null}>();
+      if(!model?.model_id)throw new Error("Model ID is missing for completed composite set");
+      await publishCompositariumAlbum(env,model.model_id);
+      archiveNote=" Альбом КОМПОЗИТАРИЯ обновлён.";
+    }catch(error){
+      archiveNote=" Все четыре композитки созданы, но обновить альбом КОМПОЗИТАРИЯ не удалось: "+compositeErrorText(error).slice(0,300);
+      console.error("Queued composite set archive publication failed",{operationId,error:compositeErrorText(error)});
+    }
+  }else if(operation.operation_type==="set"){
+    archiveNote=" Предыдущий альбом КОМПОЗИТАРИЯ оставлен без изменений.";
+  }
   await finishSecretaryOperation(env,operationId,"completed");
   if (operation.status_message_id) {
     try {
+      const finalText=operation.operation_type==="set"
+        ? `СЕТ завершён. Создано: ${stats?.published??0}/4. Ошибок: ${stats?.failed??0}.`+archiveNote
+        : `Поток завершён. Создано: ${stats?.published??0} из ${stats?.total??0}. Ошибок: ${stats?.failed??0}.`;
       await telegram(env.SECRETARY_BOT_TOKEN,"editMessageText",{
         chat_id:operation.chat_id,message_id:operation.status_message_id,
-        text:`Поток завершён. Создано: ${stats?.published??0} из ${stats?.total??0}. Ошибок: ${stats?.failed??0}.` + (failureDetails ? "\n\nОшибки записаны в журнал:\n" + failureDetails : ""),
+        text:finalText+(failureDetails ? "\n\nОшибки записаны в журнал:\n" + failureDetails : ""),
         reply_markup:{inline_keyboard:[]},
       });
     } catch(error) { console.warn("Unable to finalize composite batch status",compositeErrorText(error)); }
@@ -1569,13 +1614,13 @@ async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
   // A single global in-flight guard prevents overlapping Cron invocations from
   // starting another render while the previous one is still running.
   const job = await env.DB.prepare(
-    `SELECT j.id,j.operation_id,j.model_id,j.requested_name,j.style,j.language,j.status_message_id,o.chat_id
+    `SELECT j.id,j.operation_id,j.model_id,j.requested_name,j.style,j.language,j.status_message_id,o.chat_id,o.operation_type
      FROM secretary_composite_batch_items j
      JOIN secretary_operations o ON o.id=j.operation_id
      WHERE j.status='pending' AND o.status='running'
        AND NOT EXISTS (SELECT 1 FROM secretary_composite_batch_items active WHERE active.status='processing')
-     ORDER BY j.created_at,j.position LIMIT 1`,
-  ).first<{id:string;operation_id:string;model_id:string;requested_name:string;style:"basic"|"fashion";language:"ru"|"en";status_message_id:number|null;chat_id:string}>();
+     ORDER BY j.created_at,j.rowid LIMIT 1`,
+  ).first<{id:string;operation_id:string;model_id:string;requested_name:string;style:"basic"|"fashion";language:"ru"|"en";status_message_id:number|null;chat_id:string;operation_type:"batch"|"set"}>();
   if (!job) return;
   const claim = await env.DB.prepare(
     "UPDATE secretary_composite_batch_items SET status='processing',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending' AND NOT EXISTS (SELECT 1 FROM secretary_composite_batch_items WHERE status='processing') AND EXISTS (SELECT 1 FROM secretary_operations WHERE id=? AND status='running')",
@@ -1599,7 +1644,7 @@ async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
       await assertSecretaryOperationActive(env, job.operation_id);
       await editItem("⚙️ " + job.requested_name + " — " + stage);
       await updateSecretaryCompositeBatchStatus(env, job.operation_id, job.requested_name + " · " + stage);
-    }, job.operation_id, job.style, job.language);
+    }, job.operation_id, job.style, job.language, job.operation_type !== "set");
     await env.DB.prepare("UPDATE secretary_composite_batch_items SET status='published',last_error=NULL,status_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='processing'")
       .bind(job.id).run();
     if (job.status_message_id) {
@@ -2777,7 +2822,7 @@ async function queueCompositeRefresh(env: Env, modelIds: string[] | null, actorI
     .bind(randomId(),actorId,JSON.stringify({campaign_id:campaignId,manual,model_ids:Array.from(new Set(rows.map(row=>row.model_id))),variants:rows.map(row=>({model_id:row.model_id,style:row.style,language:row.language}))})).run();
   return {campaignId,queued:rows.length};
 }
-async function publishCompositeModel(env:Env,campaignId:string|null,modelId:string,onStage?:(stage:string)=>Promise<void>,operationId?:string,style:"basic"|"fashion"="basic",language:"ru"|"en"="ru"):Promise<void>{
+async function publishCompositeModel(env:Env,campaignId:string|null,modelId:string,onStage?:(stage:string)=>Promise<void>,operationId?:string,style:"basic"|"fashion"="basic",language:"ru"|"en"="ru",syncArchive=true):Promise<void>{
   const stage = async (value: string) => {
     await assertSecretaryOperationActive(env, operationId);
     await onStage?.(value);
@@ -2847,7 +2892,7 @@ async function publishCompositeModel(env:Env,campaignId:string|null,modelId:stri
       console.error("Old composite publication could not be deleted after new publication", { modelId, oldMessageId: old.message_id, error: compositeErrorText(error) });
     }
   }
-  await publishCompositariumAlbum(env,modelId);
+  if(syncArchive)await publishCompositariumAlbum(env,modelId);
 }
 async function processCompositeRefreshJobs(env: Env): Promise<void> {
   // A job that has made no progress for 10 minutes is failed explicitly, not silently requeued forever.
