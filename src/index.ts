@@ -560,9 +560,10 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
   const canvasW = 1600, canvasH = 2844, half = 800;
   const leftPhotos = [photos[1], photos[2], photos[3]].map((data) => ({ data, ...imageDimensions(data) }));
   const ratioSum = leftPhotos.reduce((sum, photo) => sum + photo.height / photo.width, 0);
-  const leftImageWidth = canvasH / ratioSum;
-  if (!Number.isFinite(leftImageWidth) || leftImageWidth <= 0 || leftImageWidth > half) throw new Error("The three original photos cannot fit the left column at their natural proportions");
-  let leftY = 0;
+  const leftImageWidth = Math.min(half, canvasH / ratioSum);
+  if (!Number.isFinite(leftImageWidth) || leftImageWidth <= 0) throw new Error("Invalid original photo dimensions");
+  const totalLeftHeight = leftImageWidth * ratioSum;
+  let leftY = (canvasH - totalLeftHeight) / 2;
   const leftImages = leftPhotos.map((photo) => {
     const h = leftImageWidth * photo.height / photo.width;
     const x = (half - leftImageWidth) / 2;
