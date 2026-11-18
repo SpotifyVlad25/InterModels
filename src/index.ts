@@ -628,46 +628,63 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   const firstRow = values.slice(0, 4).map((value, index) => value ? labels[index] + " " + value : null).filter((value): value is string => Boolean(value));
   const secondRow = values.slice(4, 8).map((value, index) => value ? labels[index + 4] + " " + value : null).filter((value): value is string => Boolean(value));
 
-  // Right column: 4/6 photo gallery and 2/6 information, with the lower
-  // information bands sized 1:2:1 (name, measurements, contacts/brand).
-  const canvasW = 2400, canvasH = 1500;
-  const mainW = 1050, rightW = canvasW - mainW, galleryH = 1000;
-  const nameBandH = 125, detailsBandH = 250, footerH = 125;
+  // Test layout: equal left/right columns; the right side is split 75/25
+  // between a seamless 3x2 photo gallery and the model information block.
+  const canvasW = 2560, canvasH = 1706;
+  const dimensions = photos.map(imageDimensions);
+  const photoAspect = dimensions[0].width / dimensions[0].height;
+  if (!Number.isFinite(photoAspect) || photoAspect <= 0) throw new Error("Invalid source photo aspect ratio");
+  for (let index = 1; index < dimensions.length; index++) {
+    const aspect = dimensions[index].width / dimensions[index].height;
+    if (!Number.isFinite(aspect) || Math.abs(aspect / photoAspect - 1) > 0.01) {
+      throw new Error("All seven composite photos must have the same aspect ratio (within 1%)");
+    }
+  }
+  const mainW = canvasW / 2;
+  const rightW = canvasW - mainW;
+  const cellW = rightW / 3;
+  const galleryH = canvasH * 0.75;
+  const cellH = galleryH / 2;
+  const infoH = canvasH - galleryH;
+  const nameBandH = infoH / 4, detailsBandH = infoH / 2, footerH = infoH / 4;
   const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
-  const cellW = rightW / 3, cellH = galleryH / 2;
-  const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
+  const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="none"/>`;
   const gallery = photos.slice(1).map((data, index) => {
     const col = index % 3, row = Math.floor(index / 3);
     return `<image href="${data}" x="${mainW + col * cellW}" y="${row * cellH}" width="${cellW}" height="${cellH}" preserveAspectRatio="none"/>`;
   }).join("");
-  const nameSize = rawName.length > 27 ? 58 : rawName.length > 20 ? 68 : 82;
+  const infoScale = infoH / 500;
+  const baseNameSize = rawName.length > 27 ? 58 : rawName.length > 20 ? 68 : 82;
+  const nameSize = baseNameSize * infoScale;
   const lineText = (items: string[], y: number) => {
     const value = items.join("  |  ");
-    const fontSize = value.length > 100 ? 27 : value.length > 78 ? 31 : 36;
+    const baseFontSize = value.length > 100 ? 27 : value.length > 78 ? 31 : 36;
+    const fontSize = baseFontSize * infoScale;
     return value ? `<text x="${mainW + rightW / 2}" y="${y}" text-anchor="middle" class="detail" font-size="${fontSize}">${escapeXml(value)}</text>` : "";
   };
-  const contactX = mainW + 64;
-  const logoCenterX = mainW + rightW * 0.4 + rightW * 0.3;
+  const contactX = mainW + 64 * infoScale;
+  const websiteCenterX = mainW + rightW / 2;
+  const logoRightX = canvasW - 64 * infoScale;
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
   <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
   ${mainPhoto}
   ${gallery}
-  <text x="${mainW + rightW / 2}" y="${galleryH + 82}" text-anchor="middle" class="name" font-size="${nameSize}">${escapeXml(rawName)}</text>
-  ${lineText(firstRow, detailsTop + 105)}
-  ${lineText(secondRow, detailsTop + 205)}
+  <text x="${mainW + rightW / 2}" y="${galleryH + nameBandH * 0.68}" text-anchor="middle" class="name" font-size="${nameSize}">${escapeXml(rawName)}</text>
+  ${lineText(firstRow, detailsTop + detailsBandH * 0.38)}
+  ${lineText(secondRow, detailsTop + detailsBandH * 0.78)}
   <line x1="${mainW}" y1="${footerTop}" x2="${canvasW}" y2="${footerTop}" class="separator"/>
-  <text x="${contactX}" y="${footerTop + 48}" class="phone">+7 902 632-32-72</text>
-  <text x="${contactX}" y="${footerTop + 91}" class="website">inter-models.ru</text>
-  <text x="${logoCenterX}" y="${footerTop + 62}" text-anchor="middle" class="brand">INTERMODELS</text>
-  <text x="${logoCenterX}" y="${footerTop + 99}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
+  <text x="${contactX}" y="${footerTop + footerH * 0.62}" class="phone">+7 902 632-32-72</text>
+  <text x="${websiteCenterX}" y="${footerTop + footerH * 0.62}" text-anchor="middle" class="website">inter-models.ru</text>
+  <text x="${logoRightX}" y="${footerTop + footerH * 0.48}" text-anchor="end" class="brand">INTERMODELS</text>
+  <text x="${logoRightX}" y="${footerTop + footerH * 0.79}" text-anchor="end" class="tagline">MODEL AGENCY</text>
   <style>
     text{font-family:"DejaVu Sans",Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
     .detail{font-weight:300;letter-spacing:.1px}
-    .phone{font-size:23px;font-weight:500;letter-spacing:.1px}
-    .website{font-size:22px;font-weight:400}
-    .brand{font-size:42px;font-weight:800;letter-spacing:3px}
-    .tagline{font-size:16px;font-weight:400;letter-spacing:4px}
+    .phone{font-size:${23 * infoScale}px;font-weight:500;letter-spacing:.1px}
+    .website{font-size:${22 * infoScale}px;font-weight:400}
+    .brand{font-size:${42 * infoScale}px;font-weight:800;letter-spacing:${3 * infoScale}px}
+    .tagline{font-size:${16 * infoScale}px;font-weight:400;letter-spacing:${4 * infoScale}px}
     .separator{stroke:#e5e5e5;stroke-width:2}
   </style></svg>`;
 }
