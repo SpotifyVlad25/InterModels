@@ -18,6 +18,8 @@ interface Env {
   MODEL_WEBHOOK_SECRET: string;
   DIRECTOR_WEBHOOK_SECRET: string;
   SECRETARY_WEBHOOK_SECRET: string;
+  COMPOSITE_RENDERER_URL?: string;
+  COMPOSITE_RENDERER_TOKEN?: string;
 }
 interface TelegramUser { id: number; first_name?: string; last_name?: string; username?: string; }
 interface TelegramMessage {
@@ -691,6 +693,31 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
     }
     stage = "create_renderer";
     await onStage?.("Создание рендерера Resvg");
+    if (env.COMPOSITE_RENDERER_URL || env.COMPOSITE_RENDERER_TOKEN) {
+      if (!env.COMPOSITE_RENDERER_URL || !env.COMPOSITE_RENDERER_TOKEN) {
+        throw new Error("External composite renderer is partially configured; both URL and token are required");
+      }
+      stage = "external_render";
+      await onStage?.("Рендеринг на выделенном сервере");
+      const endpoint = env.COMPOSITE_RENDERER_URL.replace(/\\/+$/, "") + "/render";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer " + env.COMPOSITE_RENDERER_TOKEN,
+        },
+        body: JSON.stringify({ svg, fonts: fontBuffers.map((font) => bytesToBase64(font)) }),
+      });
+      if (!response.ok) {
+        const details = (await response.text()).slice(0, 1200);
+        throw new Error("External renderer returned HTTP " + response.status + ": " + details);
+      }
+      const mime = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+      if (mime !== "image/png") throw new Error("External renderer returned unsupported content type: " + (mime || "unknown"));
+      const png = new Uint8Array(await response.arrayBuffer());
+      if (!png.length || png.length > 20 * 1024 * 1024) throw new Error("External renderer PNG size is invalid");
+      return png;
+    }
     const renderer = new Resvg(svg, { font: { fontBuffers, defaultFontFamily: "Roboto", loadSystemFonts: false } });
     try {
       stage = "rasterize_png";
