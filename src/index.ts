@@ -1076,10 +1076,6 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     }
     const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
       .bind(model.id).first<{ chat_id: string; message_id: number }>();
-    if (oldPublication) {
-      try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: oldPublication.chat_id, message_id: oldPublication.message_id }); }
-      catch (deleteError) { console.error("Previous composite could not be deleted", { modelId: model.id, error: compositeErrorText(deleteError) }); }
-    }
     await env.DB.prepare(
       `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at)
        VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP)
@@ -1087,6 +1083,10 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
          message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP`,
     ).bind(model.id, String(message.chat.id), message.message_thread_id!, newMessageId).run();
     publicationCommitted = true;
+    if (oldPublication) {
+      try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: oldPublication.chat_id, message_id: oldPublication.message_id }); }
+      catch (deleteError) { console.error("Previous composite could not be deleted", { modelId: model.id, error: compositeErrorText(deleteError) }); }
+    }
     await env.DB.prepare("UPDATE secretary_operations SET result_chat_id=NULL,result_message_id=NULL WHERE id=?")
       .bind(operationId).run();
     await finishSecretaryOperation(env, operationId, "completed");
@@ -1178,16 +1178,16 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
       }
       const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
         .bind(model.id).first<{chat_id:string;message_id:number}>();
-      if (oldPublication) {
-        try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: oldPublication.chat_id, message_id: oldPublication.message_id }); }
-        catch (error) { console.error("Previous composite could not be deleted", { modelId: model.id, error: compositeErrorText(error) }); }
-      }
       await env.DB.prepare(
         `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at)
          VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP)
          ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
            message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP`,
       ).bind(model.id, String(chatId), threadId, newMessageId).run();
+      if (oldPublication) {
+        try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: oldPublication.chat_id, message_id: oldPublication.message_id }); }
+        catch (error) { console.error("Previous composite could not be deleted", { modelId: model.id, error: compositeErrorText(error) }); }
+      }
       await env.DB.prepare("UPDATE secretary_operations SET result_chat_id=NULL,result_message_id=NULL WHERE id=?")
         .bind(operationId).run();
       if (statusMessageId) await deleteTelegramMessage(env, chatId, statusMessageId, "completed batch item status");
