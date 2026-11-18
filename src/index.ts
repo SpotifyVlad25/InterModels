@@ -1236,7 +1236,38 @@ async function updateSecretaryCompositeBatchStatus(env: Env, operationId: string
   }
 }
 
+async function finalizeSecretaryCompositeBatchOperation(env: Env, operationId: string): Promise<void> {
+  const operation = await env.DB.prepare("SELECT status,chat_id,status_message_id FROM secretary_operations WHERE id=? AND kind='composite_batch'")
+    .bind(operationId).first<{status:string;chat_id:string;status_message_id:number|null}>();
+  if (operation?.status !== "running") return;
+  const remaining = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM secretary_composite_batch_items WHERE operation_id=? AND status IN ('pending','processing')",
+  ).bind(operationId).first<{count:number}>();
+  if ((remaining?.count ?? 0) > 0) return;
+  const stats = await env.DB.prepare(
+    "SELECT COUNT(*) AS total,SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) AS published,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed FROM secretary_composite_batch_items WHERE operation_id=?",
+  ).bind(operationId).first<{total:number;published:number|null;failed:number|null}>();
+  await finishSecretaryOperation(env,operationId,"completed");
+  if (operation.status_message_id) {
+    try {
+      await telegram(env.SECRETARY_BOT_TOKEN,"editMessageText",{
+        chat_id:operation.chat_id,message_id:operation.status_message_id,
+        text:`Партия завершена. Создано: ${stats?.published??0} из ${stats?.total??0}. Ошибок: ${stats?.failed??0}.`,
+        reply_markup:{inline_keyboard:[]},
+      });
+    } catch(error) { console.warn("Unable to finalize composite batch status",compositeErrorText(error)); }
+  }
+}
+
 async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE secretary_composite_batch_items SET status='failed',last_error='Задание зависло при обработке более 10 минут.',updated_at=CURRENT_TIMESTAMP WHERE status='processing' AND updated_at < datetime('now','-10 minutes')",
+  ).run();
+  const running = await env.DB.prepare(
+    "SELECT id FROM secretary_operations WHERE kind='composite_batch' AND status='running'",
+  ).all<{id:string}>();
+  for (const operation of running.results ?? []) await finalizeSecretaryCompositeBatchOperation(env,operation.id);
+
   for (let processed = 0; processed < 2; processed++) {
     const job = await env.DB.prepare(
       `SELECT j.id,j.operation_id,j.model_id,j.requested_name
@@ -1265,28 +1296,8 @@ async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
         .bind(cancelled?"cancelled":"failed",cancelled?null:details.slice(0,1500),job.id).run();
       if(!cancelled) console.error("Secretary composite batch item failed",{operationId:job.operation_id,jobId:job.id,modelId:job.model_id,error:details});
     }
-    const remaining=await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM secretary_composite_batch_items WHERE operation_id=? AND status IN ('pending','processing')",
-    ).bind(job.operation_id).first<{count:number}>();
-    if((remaining?.count??0)===0){
-      const operation=await env.DB.prepare("SELECT status,chat_id,status_message_id FROM secretary_operations WHERE id=?")
-        .bind(job.operation_id).first<{status:string;chat_id:string;status_message_id:number|null}>();
-      if(operation?.status==="running"){
-        const stats=await env.DB.prepare(
-          "SELECT COUNT(*) AS total,SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) AS published,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed FROM secretary_composite_batch_items WHERE operation_id=?",
-        ).bind(job.operation_id).first<{total:number;published:number|null;failed:number|null}>();
-        await finishSecretaryOperation(env,job.operation_id,"completed");
-        if(operation.status_message_id){
-          try{await telegram(env.SECRETARY_BOT_TOKEN,"editMessageText",{
-            chat_id:operation.chat_id,message_id:operation.status_message_id,
-            text:`Партия завершена. Создано: ${stats?.published??0} из ${stats?.total??0}. Ошибок: ${stats?.failed??0}.`,
-            reply_markup:{inline_keyboard:[]},
-          });}catch(error){console.warn("Unable to finalize composite batch status",compositeErrorText(error));}
-        }
-      }
-    } else {
-      await updateSecretaryCompositeBatchStatus(env,job.operation_id);
-    }
+    await finalizeSecretaryCompositeBatchOperation(env,job.operation_id);
+    await updateSecretaryCompositeBatchStatus(env,job.operation_id);
   }
 }
 
