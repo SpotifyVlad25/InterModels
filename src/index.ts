@@ -1763,28 +1763,23 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     const optionPending=await env.DB.prepare("SELECT stage,mode,style,language,names_text,command_message_id,prompt_message_id FROM secretary_composite_request_pending WHERE chat_id=? AND thread_id=? AND user_id=? AND created_at>=datetime('now','-30 minutes')").bind(String(message.chat.id),message.message_thread_id,senderId).first<{stage:string;mode:"single"|"batch";style:"basic"|"fashion"|null;language:"ru"|"en"|null;names_text:string|null;command_message_id:number|null;prompt_message_id:number|null}>();
     if(optionPending?.stage==="names"&&command&&!command.startsWith("/")){
       const names=command.split(/\r?\n/).map(name=>name.trim()).filter(Boolean);
-      const validCount=optionPending.mode==="single"?names.length===1:names.length>=1&&names.length<=20;
-      if(!validCount||names.some(name=>name.length>100)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:optionPending.mode==="single"?"Отправьте ФИО только одной модели. Для списка используйте /comps.":"Отправьте от 1 до 20 фамилий или ФИО — по одной модели на строку."});return;}
+      if(names.length!==1||names.some(name=>name.length>100)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"⚠️ За один запрос можно создать композитку только для одной модели. Отправьте одну фамилию или ФИО."});return;}
       await env.DB.prepare("DELETE FROM secretary_composite_request_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(message.chat.id),message.message_thread_id,senderId).run();
-      const ids=[optionPending.command_message_id,optionPending.prompt_message_id,message.message_id].filter((id):id is number=>typeof id==="number");
-      if(optionPending.mode==="single") await generateCompositeInTopic(env,message,names[0],optionPending.style??"basic",optionPending.language??"ru");
-      else await generateCompositeBatchInTopic(env,message,names,ids,optionPending.style??"basic",optionPending.language??"ru");
+      await generateCompositeInTopic(env,message,names[0],optionPending.style??"basic",optionPending.language??"ru");
       return;
     }
     const generationCommand=command.match(/^\/(comp|comps)(?:@\w+)?(?:\s+([\s\S]+))?$/i);
     if(generationCommand){
-      const mode=generationCommand[1].toLowerCase()==="comp"?"single":"batch";
       const rawNames=(generationCommand[2]??"").trim();
       const names=rawNames?rawNames.split(/\r?\n/).map(name=>name.trim()).filter(Boolean):[];
-      const validCount=mode==="single"?names.length<=1:names.length<=20;
-      if(!validCount||names.some(name=>name.length>100)){
-        await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:mode==="single"?"Команда /comp принимает только одну модель. Для списка используйте /comps.":"Для /comps отправьте не более 20 моделей — по одной на строку."});return;
+      if(generationCommand[1].toLowerCase()==="comps"||names.length>1||names.some(name=>name.length>100)){
+        await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"⚠️ За один запрос можно создать композитку только для одной модели. Используйте /comp и укажите одну фамилию или ФИО."});return;
       }
       if(rawNames){
         await handleSecretaryGroupMessage(env,{...message,text:rawNames});
         return;
       }
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:mode==="single"?"Отправьте ФИО одной модели.":"Отправьте от 1 до 20 моделей — по одной на строку."});return;
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Отправьте фамилию или ФИО одной модели."});return;
     }
     if(/^\/comp_help(?:@\w+)?$/i.test(command)){
       await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Напишите фамилию или ФИО модели в теме «КОМПОЗИТКИ» либо нажмите «➕ Композитка». Затем выберите стиль и язык." ,reply_markup:{inline_keyboard:[[{text:"➕ Композитка",callback_data:"composite:create"}]]}});return;
@@ -1792,8 +1787,8 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     if(command && !command.startsWith("/")){
       const lines=command.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
       const names=lines.map(line=>line.replace(/^(basic|fashion)\s+/i,"").replace(/\s+(basic|fashion)$/i,"").trim());
-      if(!names.length||names.length>20||names.some(name=>!name||name.length>100)){
-        await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Отправьте от 1 до 20 моделей — по одной на строку."});return;
+      if(names.length!==1||names.some(name=>!name||name.length>100)){
+        await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"⚠️ За один запрос можно создать композитку только для одной модели. Отправьте одну фамилию или ФИО."});return;
       }
       const modelStyles:Array<"basic"|"fashion">=[];
       let hasStyleChoice=false;
@@ -2278,17 +2273,15 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:language==="ru"?"Русский выбран.":"English selected."});
     if(pending.names_text){
       const names=pending.names_text.split("\n").map(name=>name.trim()).filter(Boolean);
-      if(!names.length||(pending.mode==="single"?names.length!==1:names.length>20)||names.some(name=>name.length>100)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:pending.mode==="single"?"Команда /comp принимает только одну модель. Для списка используйте /comps.":"В списке должно быть от 1 до 20 моделей."});return;}
+      if(names.length!==1||names.some(name=>name.length>100)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:"⚠️ За один запрос можно создать композитку только для одной модели. Отправьте одну фамилию или ФИО."});return;}
       await env.DB.prepare("DELETE FROM secretary_composite_request_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
       await telegram(env.SECRETARY_BOT_TOKEN,"deleteMessage",{chat_id:msg.chat.id,message_id:msg.message_id});
       if(pending.prompt_message_id&&pending.prompt_message_id!==msg.message_id)await deleteTelegramMessage(env,msg.chat.id,pending.prompt_message_id,"composite options prompt");
       const sourceMessage={...msg,from:callback.from};const ids=[pending.command_message_id].filter((id):id is number=>typeof id==="number");
-      if(pending.mode==="single"){
-        if(pending.command_message_id)await deleteTelegramMessage(env,msg.chat.id,pending.command_message_id,"composite source name");
-        await generateCompositeInTopic(env,sourceMessage,names[0],pending.style,language);
-      }else await generateCompositeBatchInTopic(env,sourceMessage,names,ids,pending.style,language);
+      if(pending.command_message_id)await deleteTelegramMessage(env,msg.chat.id,pending.command_message_id,"composite source name");
+      await generateCompositeInTopic(env,sourceMessage,names[0],pending.style,language);
     }else{
-      await telegram(env.SECRETARY_BOT_TOKEN,"editMessageText",{chat_id:msg.chat.id,message_id:msg.message_id,text:"Выбрано: "+(pending.style==="basic"?"Basic":"Fashion")+" · "+(language==="ru"?"Русский":"English")+". "+(pending.mode==="single"?"Отправьте ФИО одной модели.":"Отправьте от 1 до 20 моделей — по одной на строку."),reply_markup:{inline_keyboard:[]}});
+      await telegram(env.SECRETARY_BOT_TOKEN,"editMessageText",{chat_id:msg.chat.id,message_id:msg.message_id,text:"Выбрано: "+(pending.style==="basic"?"Basic":"Fashion")+" · "+(language==="ru"?"Русский":"English")+". Отправьте фамилию или ФИО одной модели.",reply_markup:{inline_keyboard:[]}});
       await env.DB.prepare("UPDATE secretary_composite_request_pending SET prompt_message_id=? WHERE chat_id=? AND thread_id=? AND user_id=?").bind(msg.message_id,String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
     }
     return;
