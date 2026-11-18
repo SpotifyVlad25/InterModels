@@ -16,6 +16,8 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run typecheck
+      - name: Verify standalone renderer syntax
+        run: node --check renderer/server.mjs
       - name: Verify D1 migrations locally
         run: npx wrangler d1 migrations apply intermodels-db --local
       - name: Verify Worker bundle
