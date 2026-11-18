@@ -604,20 +604,22 @@ function imageDimensions(data: string): { width: number; height: number } {
   }
   throw new Error("Unable to read original photo dimensions");
 }
-function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
+function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru" | "en" = "ru"): string {
   if (photos.length !== 7) throw new Error("A composite requires exactly seven original photos");
   const rawName = ((model.first_name || "").trim() + " " + (model.last_name || "").trim()).trim().toUpperCase();
   const name = escapeXml(rawName);
   const nameSize = rawName.length > 24 ? 54 : rawName.length > 18 ? 66 : 78;
+  const labels = language === "en" ? ["HEIGHT","BUST","WAIST","HIPS","HAIR","EYES","CLOTHING","SHOES"] : ["РОСТ","ГРУДЬ","ТАЛИЯ","БЁДРА","ВОЛОСЫ","ГЛАЗА","ОДЕЖДА","ОБУВЬ"];
+  const unit = language === "en" ? " CM" : " СМ";
   const details = [
-    model.height_cm != null ? "РОСТ  " + model.height_cm + " СМ" : null,
-    model.bust_cm != null ? "ГРУДЬ  " + model.bust_cm + " СМ" : null,
-    model.waist_cm != null ? "ТАЛИЯ  " + model.waist_cm + " СМ" : null,
-    model.hips_cm != null ? "БЁДРА  " + model.hips_cm + " СМ" : null,
-    model.hair_color ? "ВОЛОСЫ  " + model.hair_color : null,
-    model.eye_color ? "ГЛАЗА  " + model.eye_color : null,
-    model.clothing_size ? "ОДЕЖДА  " + model.clothing_size : null,
-    model.shoe_size ? "ОБУВЬ  " + model.shoe_size : null,
+    model.height_cm != null ? labels[0] + "  " + model.height_cm + unit : null,
+    model.bust_cm != null ? labels[1] + "  " + model.bust_cm + unit : null,
+    model.waist_cm != null ? labels[2] + "  " + model.waist_cm + unit : null,
+    model.hips_cm != null ? labels[3] + "  " + model.hips_cm + unit : null,
+    model.hair_color ? labels[4] + "  " + model.hair_color : null,
+    model.eye_color ? labels[5] + "  " + model.eye_color : null,
+    model.clothing_size ? labels[6] + "  " + model.clothing_size : null,
+    model.shoe_size ? labels[7] + "  " + model.shoe_size : null,
   ].filter((value): value is string => Boolean(value));
 
   // Landscape comp card: one full-height hero image, six flush gallery cells,
@@ -685,7 +687,7 @@ async function compositeFontBuffer(value: unknown): Promise<Uint8Array> {
   }
   throw new Error("Unsupported font asset type: " + Object.prototype.toString.call(value));
 }
-async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: string[], onStage?: (stage: string) => Promise<void>): Promise<Uint8Array> {
+async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: string[], onStage?: (stage: string) => Promise<void>, language: "ru" | "en" = "ru"): Promise<Uint8Array> {
   let stage = "init_wasm";
   try {
     await onStage?.("Подготовка графического движка");
@@ -697,7 +699,7 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
     console.info("Composite source photos downloaded", { modelId: model.id, photoBytes, totalPhotoBytes: photoBytes.reduce((sum, size) => sum + size, 0), elapsedMs: Date.now() - photoStartedAt });
     stage = "build_svg";
     await onStage?.("Сборка макета");
-    const svg = compositeSvg(model, photos);
+    const svg = compositeSvg(model, photos, language);
     console.info("Composite SVG assembled", { modelId: model.id, svgCharacters: svg.length });
     stage = "prepare_fonts";
     await onStage?.("Подготовка шрифтов");
@@ -751,34 +753,19 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
   }
 }
 
-async function saveSecretaryPhotoSet(
-  env: Env, modelId: string, photos: Array<{file_id:string;file_unique_id:string}>,
-  senderId: string, chatId: number, threadId: number, operationId?: string,
-): Promise<void> {
-  await assertSecretaryOperationActive(env, operationId);
-  if (photos.length !== 7) throw new Error("Для сохранения нужны ровно семь фотографий.");
-  const statements = operationId
-    ? [
-        env.DB.prepare("DELETE FROM model_telegram_photos WHERE model_id=? AND EXISTS (SELECT 1 FROM secretary_operations WHERE id=? AND status='running')")
-          .bind(modelId, operationId),
-        ...photos.map((photo, index) => env.DB.prepare(
-          "INSERT INTO model_telegram_photos (model_id,position,telegram_file_id,telegram_file_unique_id,uploaded_by,source_chat_id,source_thread_id) SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM secretary_operations WHERE id=? AND status='running')",
-        ).bind(modelId, index + 1, photo.file_id, photo.file_unique_id, senderId, String(chatId), threadId, operationId)),
-        env.DB.prepare("UPDATE secretary_operations SET status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'")
-          .bind(operationId),
-      ]
-    : [
-        env.DB.prepare("DELETE FROM model_telegram_photos WHERE model_id = ?").bind(modelId),
-        ...photos.map((photo, index) => env.DB.prepare(
-          "INSERT INTO model_telegram_photos (model_id, position, telegram_file_id, telegram_file_unique_id, uploaded_by, source_chat_id, source_thread_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ).bind(modelId, index + 1, photo.file_id, photo.file_unique_id, senderId, String(chatId), threadId)),
-      ];
+async function saveSecretaryPhotoSet(env: Env, modelId: string, photos: Array<{file_id:string;file_unique_id:string}>, senderId: string, chatId: number, threadId: number, style: "basic" | "fashion", operationId?: string): Promise<void> {
+  await assertSecretaryOperationActive(env,operationId);
+  if(photos.length!==7)throw new Error("Для сохранения нужны ровно семь фотографий.");
+  const statements=operationId?[
+    env.DB.prepare("DELETE FROM model_telegram_photo_sets WHERE model_id=? AND style=? AND EXISTS (SELECT 1 FROM secretary_operations WHERE id=? AND status='running')").bind(modelId,style,operationId),
+    ...photos.map((p,i)=>env.DB.prepare("INSERT INTO model_telegram_photo_sets(model_id,style,position,telegram_file_id,telegram_file_unique_id,uploaded_by,source_chat_id,source_thread_id) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM secretary_operations WHERE id=? AND status='running')").bind(modelId,style,i+1,p.file_id,p.file_unique_id,senderId,String(chatId),threadId,operationId)),
+    env.DB.prepare("UPDATE secretary_operations SET status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'").bind(operationId),
+  ]:[
+    env.DB.prepare("DELETE FROM model_telegram_photo_sets WHERE model_id=? AND style=?").bind(modelId,style),
+    ...photos.map((p,i)=>env.DB.prepare("INSERT INTO model_telegram_photo_sets(model_id,style,position,telegram_file_id,telegram_file_unique_id,uploaded_by,source_chat_id,source_thread_id) VALUES(?,?,?,?,?,?,?,?)").bind(modelId,style,i+1,p.file_id,p.file_unique_id,senderId,String(chatId),threadId)),
+  ];
   await env.DB.batch(statements);
-  if (operationId) {
-    const state = await env.DB.prepare("SELECT status FROM secretary_operations WHERE id=?")
-      .bind(operationId).first<{status:string}>();
-    if (state?.status !== "completed") throw new Error("SECRETARY_OPERATION_CANCELLED");
-  }
+  if(operationId){const state=await env.DB.prepare("SELECT status FROM secretary_operations WHERE id=?").bind(operationId).first<{status:string}>();if(state?.status!=="completed")throw new Error("SECRETARY_OPERATION_CANCELLED");}
 }
 async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, senderId: string): Promise<void> {
   const albumId = message.media_group_id!;
@@ -961,81 +948,16 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
       console.error("Failed to update photo album progress message", error);
     }
   }
-  const newPhotos = items.map(({file_id,file_unique_id}) => ({file_id,file_unique_id}));
-  const previous = await env.DB.prepare(
-    "SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position",
-  ).bind(resolvedModelId).all<{position:number;telegram_file_id:string}>();
-  const oldPhotos = previous.results ?? [];
-  if (oldPhotos.length > 0) {
-    await finishSecretaryOperation(env, albumOperation.id, "completed");
-    await env.DB.prepare(
-      "INSERT INTO secretary_photo_replacement_pending (chat_id, thread_id, user_id, model_id, photos_json) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, thread_id, user_id) DO UPDATE SET model_id=excluded.model_id, photos_json=excluded.photos_json, created_at=CURRENT_TIMESTAMP",
-    ).bind(String(message.chat.id), threadId, senderId, resolvedModelId, JSON.stringify(newPhotos)).run();
-    const oldAlbum = await telegram(env.SECRETARY_BOT_TOKEN, "sendMediaGroup", {
-      chat_id: message.chat.id, message_thread_id: threadId,
-      media: oldPhotos.map((p) => ({ type: "photo", media: p.telegram_file_id })),
-    });
-    const oldAlbumIds = (oldAlbum.result ?? []).map((item: any) => item.message_id).filter((id: any) => Number.isSafeInteger(id));
-    if (oldAlbumIds.length) await trackSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,{botIds:oldAlbumIds});
-    const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
-    const replacePrompt = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
-      chat_id: message.chat.id, message_thread_id: threadId,
-      text: "⚠️ Такая модель уже есть: " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + ". Выше — ранее сохранённые фотографии. Хотите заменить их новыми?",
-      reply_markup: { inline_keyboard: [[
-        { text: "Да, заменить", callback_data: "photo_replace:yes" },
-        { text: "Нет, оставить", callback_data: "photo_replace:no" },
-      ]] },
-    });
-    if (replacePrompt.result?.message_id) await trackSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,{botIds:[replacePrompt.result.message_id]});
-    await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
-      .bind(String(message.chat.id), threadId, senderId, albumId).run();
-    if (progressMessageId) {
-      try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: message.chat.id, message_id: progressMessageId }); } catch {}
-    }
-    await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
-      .bind(String(message.chat.id), threadId, senderId, albumId).run();
-    return;
-  }
-  const operationId = albumOperation.id;
-  await assertSecretaryOperationActive(env, operationId);
-  let uploadStatusId = progressMessageId;
-  if (!uploadStatusId) {
-    const uploadStatus = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
-      chat_id: message.chat.id, message_thread_id: threadId,
-      text: "Сохраняю 7 фотографий в MODEL BANK…",
-      reply_markup: secretaryCancelKeyboard(operationId),
-    });
-    uploadStatusId = uploadStatus.result?.message_id;
-  }
-  try {
-    await saveSecretaryPhotoSet(env, resolvedModelId, newPhotos, senderId, message.chat.id, threadId, operationId);
-    await finishSecretaryOperation(env, operationId, "completed");
-  } catch (error) {
-    const cancelled = error instanceof Error && error.message === "SECRETARY_OPERATION_CANCELLED";
-    await finishSecretaryOperation(env, operationId, cancelled ? "cancelled" : "failed");
-    if (uploadStatusId) {
-      try { await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
-        chat_id: message.chat.id, message_id: uploadStatusId,
-        text: cancelled ? "Операция отменена. Фотографии не изменены." : "Не удалось сохранить фотографии.",
-        reply_markup: { inline_keyboard: [] },
-      }); } catch {}
-    }
-    if (cancelled) return;
-    await env.DB.prepare("UPDATE secretary_photo_album_items SET processed_at = NULL WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
-      .bind(String(message.chat.id), threadId, senderId, albumId).run();
-    throw error;
-  }
-  await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
-    .bind(String(message.chat.id), threadId, senderId, albumId).run();
-  await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
-    .bind(String(message.chat.id), threadId, senderId, albumId).run();
-  await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,uploadStatusId ? [uploadStatusId] : []);
-  const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
-  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
-    chat_id: message.chat.id, message_thread_id: threadId,
-    text: "Анкета " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " готова✅",
-    reply_markup: { inline_keyboard: [[{ text: "➕ Создать новую анкету", callback_data: "photo:create" }]] },
-  });
+  const newPhotos=items.map(({file_id,file_unique_id})=>({file_id,file_unique_id}));
+  await finishSecretaryOperation(env,albumOperation.id,"completed");
+  await env.DB.prepare("INSERT INTO secretary_photo_replacement_pending(chat_id,thread_id,user_id,model_id,photos_json,style) VALUES(?,?,?,?,?,'basic') ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET model_id=excluded.model_id,photos_json=excluded.photos_json,style='basic',created_at=CURRENT_TIMESTAMP")
+    .bind(String(message.chat.id),threadId,senderId,resolvedModelId,JSON.stringify(newPhotos)).run();
+  await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?").bind(String(message.chat.id),threadId,senderId,albumId).run();
+  await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?").bind(String(message.chat.id),threadId,senderId,albumId).run();
+  await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,progressMessageId?[progressMessageId]:[]);
+  const model=await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
+  await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+". Выберите набор фотографий:",
+    reply_markup:{inline_keyboard:[[{text:"Basic",callback_data:"photo_style:basic"},{text:"Fashion",callback_data:"photo_style:fashion"}]]}});
 }
 async function sendCompositePng(env: Env, chatId: number, threadId: number, png: Uint8Array, caption: string, modelId: string): Promise<number> {
   const endpoint = `https://api.telegram.org/bot${env.SECRETARY_BOT_TOKEN}/sendPhoto`;
@@ -1587,13 +1509,17 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   await env.DB.prepare("UPDATE secretary_photo_batches SET next_position = ?, photos_json = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND thread_id = ? AND uploader_id = ?")
     .bind(next, JSON.stringify(stagedPhotos), String(message.chat.id), message.message_thread_id, senderId).run();
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(batch.model_id).first<{first_name:string;last_name:string}>();
-  if (next === 8) await saveSecretaryPhotoSet(env, batch.model_id, stagedPhotos, senderId, message.chat.id, message.message_thread_id);
-  if (next === 8) await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,message.message_thread_id,senderId);
-  const uploadReply = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id,
-    text: next === 8 ? "Анкета " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " готова✅" : "Фото " + batch.next_position + " из 7 принято. Осталось " + (7 - batch.next_position) + ".",
-    ...(next === 8 ? { reply_markup: { inline_keyboard: [[{ text: "➕ Создать новую анкету", callback_data: "photo:create" }]] } } : {}),
-  });
-  if (next !== 8 && uploadReply.result?.message_id) await trackSecretaryPhotoUploadMessages(env,message.chat.id,message.message_thread_id,senderId,{botIds:[uploadReply.result.message_id]});
+  if(next===8){
+    await env.DB.prepare("INSERT INTO secretary_photo_replacement_pending(chat_id,thread_id,user_id,model_id,photos_json,style) VALUES(?,?,?,?,?,'basic') ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET model_id=excluded.model_id,photos_json=excluded.photos_json,style='basic',created_at=CURRENT_TIMESTAMP")
+      .bind(String(message.chat.id),message.message_thread_id,senderId,batch.model_id,JSON.stringify(stagedPhotos)).run();
+    await env.DB.prepare("DELETE FROM secretary_photo_batches WHERE chat_id=? AND thread_id=? AND uploader_id=?").bind(String(message.chat.id),message.message_thread_id,senderId).run();
+    await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,message.message_thread_id,senderId);
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+". Выберите набор фотографий:",
+      reply_markup:{inline_keyboard:[[{text:"Basic",callback_data:"photo_style:basic"},{text:"Fashion",callback_data:"photo_style:fashion"}]]}});
+  }else{
+    const uploadReply=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Фото "+batch.next_position+" из 7 принято. Осталось "+(7-batch.next_position)+"."});
+    if(uploadReply.result?.message_id)await trackSecretaryPhotoUploadMessages(env,message.chat.id,message.message_thread_id,senderId,{botIds:[uploadReply.result.message_id]});
+  }
 }
 async function sendSecretaryCompositeSources(env: Env, chatId: number, model: SecretaryModelRow): Promise<void> {
   const result = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position").bind(model.id).all<{position:number;telegram_file_id:string}>();
