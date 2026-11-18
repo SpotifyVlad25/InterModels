@@ -376,10 +376,15 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
     ).bind(campaignId).all<{model_id:string}>();
     let queued = 0;
     for (const row of updated.results ?? []) {
-      const inserted = await env.DB.prepare(
-        "INSERT OR IGNORE INTO composite_refresh_jobs(campaign_id,model_id,status,attempts,last_error,updated_at) VALUES(?,?,'pending',0,NULL,CURRENT_TIMESTAMP)",
-      ).bind(campaignId, row.model_id).run();
-      queued += inserted.meta?.changes ?? 0;
+      const variants = await env.DB.prepare("SELECT style,language FROM composite_topic_publications WHERE model_id=?")
+        .bind(row.model_id).all<{style:"basic"|"fashion";language:"ru"|"en"}>();
+      const targets = variants.results?.length ? variants.results : [{style:"basic" as const,language:"ru" as const}];
+      for (const variant of targets) {
+        const inserted = await env.DB.prepare(
+          "INSERT OR IGNORE INTO composite_refresh_jobs(campaign_id,model_id,style,language,status,attempts,last_error,updated_at) VALUES(?,?,?,?,'pending',0,NULL,CURRENT_TIMESTAMP)",
+        ).bind(campaignId,row.model_id,variant.style,variant.language).run();
+        queued += inserted.meta?.changes ?? 0;
+      }
     }
     await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'composite.refresh.campaign_queued', ?)")
       .bind(randomId(), actorId, JSON.stringify({campaign_id:campaignId,updated_models:updated.results?.length ?? 0,queued})).run();
@@ -1244,7 +1249,7 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
       newMessageId = undefined;
       throw new Error("SECRETARY_OPERATION_CANCELLED");
     }
-    const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=? AND style=? AND language=? AND style=? AND language=?")
+    const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=? AND style=? AND language=?")
       .bind(model.id,style,language).first<{ chat_id: string; message_id: number }>();
     await env.DB.prepare(
       `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at,photo_file_ids_json,model_snapshot_json,style,language)
@@ -2570,16 +2575,20 @@ async function handleDirectorApi(request: Request, env: Env, url: URL): Promise<
       const modelId = String(body.retry_model_id);
       if (!/^[a-zA-Z0-9_-]{1,50}$/.test(modelId)) return json({ error: "Некорректный ID модели." }, 400);
       const failed = await env.DB.prepare(
-        "SELECT campaign_id FROM composite_refresh_jobs WHERE model_id=? AND status='failed' ORDER BY updated_at DESC LIMIT 1",
-      ).bind(modelId).first<{campaign_id:string}>();
-      if (!failed) return json({ error: "Не найдено неудачное задание для этой модели. Повтор не поставлен." }, 409);
-      const updated = await env.DB.prepare(
-        "UPDATE composite_refresh_jobs SET status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND status='failed'",
-      ).bind(failed.campaign_id, modelId).run();
-      if (!updated.meta.changes) return json({ error: "Статус задания изменился. Обновите список." }, 409);
+        "SELECT campaign_id,style,language FROM composite_refresh_jobs WHERE model_id=? AND status='failed' ORDER BY updated_at DESC",
+      ).bind(modelId).all<{campaign_id:string;style:"basic"|"fashion";language:"ru"|"en"}>();
+      if (!failed.results?.length) return json({ error: "Не найдено неудачных заданий для этой модели. Повтор не поставлен." }, 409);
+      let queued=0;
+      for (const job of failed.results) {
+        const updated = await env.DB.prepare(
+          "UPDATE composite_refresh_jobs SET status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE campaign_id=? AND model_id=? AND style=? AND language=? AND status='failed'",
+        ).bind(job.campaign_id,modelId,job.style,job.language).run();
+        queued += updated.meta?.changes ?? 0;
+      }
+      if (!queued) return json({ error: "Статусы заданий изменились. Обновите список." }, 409);
       await env.DB.prepare("INSERT INTO agency_audit_log(id,actor_telegram_id,action,details_json) VALUES(?,?, 'composite.refresh.retry', ?)")
-        .bind(randomId(), actor.id, JSON.stringify({ campaign_id: failed.campaign_id, model_id: modelId })).run();
-      return json({ ok: true, queued: 1, retry: true });
+        .bind(randomId(),actor.id,JSON.stringify({model_id:modelId,queued})).run();
+      return json({ok:true,queued,retry:true});
     }
     if (body?.model_ids !== undefined && (!Array.isArray(body.model_ids) || body.model_ids.length > 100 || body.model_ids.some((id: unknown) => typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,50}$/.test(id)))) {
       return json({ error: "Некорректный список моделей." }, 400);
@@ -2684,12 +2693,12 @@ async function publishCompositeModel(env:Env,campaignId:string|null,modelId:stri
   let old: { chat_id: string; message_id: number } | null = null;
   try {
 
-    old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
+    old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=? AND style=? AND language=?")
     .bind(modelId,style,language).first<{ chat_id: string; message_id: number }>();
     await env.DB.prepare(
       `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at,photo_file_ids_json,model_snapshot_json,style,language)
        VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,?,?,?,?)
-       ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
+       ON CONFLICT(model_id,style,language) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
          message_id=excluded.message_id,campaign_id=excluded.campaign_id,published_at=CURRENT_TIMESTAMP,
          photo_file_ids_json=excluded.photo_file_ids_json,model_snapshot_json=excluded.model_snapshot_json,
          style=excluded.style,language=excluded.language`,
