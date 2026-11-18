@@ -569,74 +569,53 @@ function imageDimensions(data: string): { width: number; height: number } {
   throw new Error("Unable to read original photo dimensions");
 }
 function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
-  if (photos.length !== 4) throw new Error("A composite requires exactly four original photos");
-  const firstName = (model.first_name || "").trim();
-  const surnameInitial = (model.last_name || "").trim().charAt(0);
-  const rawName = (firstName + (surnameInitial ? " " + surnameInitial + "." : "")).toUpperCase();
+  if (photos.length !== 7) throw new Error("A composite requires exactly seven original photos");
+  const rawName = ((model.first_name || "").trim() + " " + (model.last_name || "").trim()).trim().toUpperCase();
   const name = escapeXml(rawName);
-  const nameSize = rawName.length > 18 ? 48 : rawName.length > 16 ? 54 : rawName.length > 13 ? 60 : 68;
-  const leftValues = [
+  const nameSize = rawName.length > 24 ? 72 : rawName.length > 18 ? 88 : 104;
+  const details = [
     model.height_cm != null ? "РОСТ  " + model.height_cm + " СМ" : null,
     model.bust_cm != null ? "ГРУДЬ  " + model.bust_cm + " СМ" : null,
     model.waist_cm != null ? "ТАЛИЯ  " + model.waist_cm + " СМ" : null,
     model.hips_cm != null ? "БЁДРА  " + model.hips_cm + " СМ" : null,
-  ];
-  const rightValues = [
     model.hair_color ? "ВОЛОСЫ  " + model.hair_color : null,
     model.eye_color ? "ГЛАЗА  " + model.eye_color : null,
     model.clothing_size ? "ОДЕЖДА  " + model.clothing_size : null,
     model.shoe_size ? "ОБУВЬ  " + model.shoe_size : null,
-  ];
-  const canvasW = 1600, canvasH = 2844, half = 800;
-  const leftPhotos = [photos[1], photos[2], photos[3]].map((data) => ({ data, ...imageDimensions(data) }));
-  const ratioSum = leftPhotos.reduce((sum, photo) => sum + photo.height / photo.width, 0);
-  const leftImageWidth = Math.min(half, canvasH / ratioSum);
-  if (!Number.isFinite(leftImageWidth) || leftImageWidth <= 0) throw new Error("Invalid original photo dimensions");
-  const totalLeftHeight = leftImageWidth * ratioSum;
-  const rightWidth = canvasW - leftImageWidth;
-  const contentLeft = leftImageWidth + 50;
-  const contentCenter = leftImageWidth + rightWidth / 2;
-  const contentRight = canvasW - 50;
-  const renderDetails = (items: Array<string | null>, x: number) => items.map((v, i) => {
-    if (!v) return "";
-    const fontSize = v.length > 25 ? 23 : v.length > 20 ? 26 : 30;
-    return `<text x="${x}" y="${625 + i * 76}" class="detail" font-size="${fontSize}">${escapeXml(v)}</text>`;
+  ].filter((value): value is string => Boolean(value));
+
+  // Landscape comp card: one full-height hero image, six flush gallery cells,
+  // and an uninterrupted information area below the gallery.
+  const canvasW = 3200, canvasH = 2000;
+  const mainW = 1400, galleryW = canvasW - mainW, galleryH = 1200;
+  const cellW = galleryW / 3, cellH = galleryH / 2;
+  const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
+  const gallery = photos.slice(1).map((data, index) => {
+    const col = index % 3, row = Math.floor(index / 3);
+    const x = mainW + col * cellW, y = row * cellH;
+    return `<image href="${data}" x="${x}" y="${y}" width="${cellW}" height="${cellH}" preserveAspectRatio="xMidYMid meet"/>`;
   }).join("");
-  const details = renderDetails(leftValues, contentLeft + 25) + renderDetails(rightValues, contentCenter + 30);
-  let leftY = (canvasH - totalLeftHeight) / 2;
-  const leftImages = leftPhotos.map((photo) => {
-    const h = leftImageWidth * photo.height / photo.width;
-    const x = 0;
-    const element = `<image href="${photo.data}" x="${x.toFixed(2)}" y="${leftY.toFixed(2)}" width="${leftImageWidth.toFixed(2)}" height="${h.toFixed(2)}" preserveAspectRatio="none"/>`;
-    leftY += h;
-    return element;
-  }).join("");
-  const main = `<image href="${photos[0]}" x="${leftImageWidth.toFixed(2)}" y="900" width="${rightWidth.toFixed(2)}" height="1700" preserveAspectRatio="xMidYMid meet"/>`;
+
+  const infoX = mainW + 90;
+  const nameY = galleryH + 150;
+  const detailColumns = [details.slice(0, 4), details.slice(4, 8)];
+  const detailMarkup = detailColumns.map((items, column) => items.map((value, index) => {
+    const fontSize = value.length > 26 ? 34 : value.length > 20 ? 40 : 46;
+    return `<text x="${infoX + column * 820}" y="${galleryH + 310 + index * 92}" class="detail" font-size="${fontSize}">${escapeXml(value)}</text>`;
+  }).join("")).join("");
+
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
   <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
-  <rect x="0" y="0" width="${leftImageWidth.toFixed(2)}" height="${canvasH}" fill="#f3f3f3"/>
-  ${leftImages}
-  <line x1="${leftImageWidth.toFixed(2)}" y1="0" x2="${leftImageWidth.toFixed(2)}" y2="${canvasH}" stroke="#dedede" stroke-width="2"/>
-  <text x="${contentLeft}" y="115" class="brand">INTERMODELS</text>
-  <text x="${contentLeft}" y="170" class="agency">MODEL AGENCY</text>
-  <text x="${contentLeft}" y="235" class="contact">inter-models.ru</text>
-  <text x="${contentLeft}" y="280" class="contact">+7 902 632-32-72</text>
-  <line x1="${contentLeft}" y1="330" x2="${contentRight}" y2="330" stroke="#222" stroke-width="2"/>
-  <text x="${contentLeft}" y="485" class="section">ПАРАМЕТРЫ МОДЕЛИ</text>
-  <line x1="${contentCenter}" y1="540" x2="${contentCenter}" y2="850" stroke="#bdbdbd" stroke-width="2"/>
-  ${details}
-  ${main}
-  <text x="${contentCenter}" y="2665" text-anchor="middle" class="name" font-size="${nameSize}">${name}</text>
-  <text x="${contentCenter}" y="2735" text-anchor="middle" class="model">MODEL</text>
+  ${mainPhoto}
+  ${gallery}
+  <text x="${infoX}" y="${nameY}" class="name" font-size="${nameSize}">${name}</text>
+  ${detailMarkup}
+  <text x="${canvasW - 90}" y="${canvasH - 100}" text-anchor="end" class="brand">INTERMODELS</text>
   <style>
     text{font-family:Roboto,sans-serif;fill:#171717}
-    .brand{font-size:62px;font-weight:800;letter-spacing:5px}
-    .agency{font-size:28px;font-weight:500;letter-spacing:10px;fill:#666}
-    .contact{font-size:27px;font-weight:500;letter-spacing:1px;fill:#555}
-    .section{font-size:25px;font-weight:700;letter-spacing:4px;fill:#777}
-    .detail{font-size:30px;font-weight:600;letter-spacing:.3px}
-    .name{font-size:68px;font-weight:800;letter-spacing:.5px}
-    .model{font-size:30px;font-weight:500;letter-spacing:12px;fill:#777}
+    .name{font-weight:800;letter-spacing:1px}
+    .detail{font-weight:600;letter-spacing:.3px}
+    .brand{font-size:44px;font-weight:800;letter-spacing:5px;fill:#777}
   </style></svg>`;
 }
 function compositeErrorText(error: unknown): string {
@@ -675,7 +654,7 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
   try {
     await onStage?.("Подготовка графического движка");
     stage = "download_photos";
-    await onStage?.("Загрузка 4 фотографий");
+    await onStage?.("Загрузка 7 фотографий");
     const photoStartedAt = Date.now();
     const photos = await Promise.all(fileIds.map((id) => getSecretaryPhotoData(env, id)));
     const photoBytes = photos.map((photo) => Math.floor((photo.length * 3) / 4));
@@ -741,7 +720,7 @@ async function saveSecretaryPhotoSet(
   senderId: string, chatId: number, threadId: number, operationId?: string,
 ): Promise<void> {
   await assertSecretaryOperationActive(env, operationId);
-  if (photos.length !== 4) throw new Error("Для сохранения нужны ровно четыре фотографии.");
+  if (photos.length !== 7) throw new Error("Для сохранения нужны ровно семь фотографий.");
   const statements = operationId
     ? [
         env.DB.prepare("DELETE FROM model_telegram_photos WHERE model_id=? AND EXISTS (SELECT 1 FROM secretary_operations WHERE id=? AND status='running')")
@@ -847,10 +826,10 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   ).bind(String(message.chat.id), threadId, senderId, albumId)
     .all<{message_id:number;model_id:string|null;file_id:string;file_unique_id:string}>();
   const items = album.results ?? [];
-  if (items.length > 4) {
+  if (items.length > 7) {
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "В альбоме должно быть ровно 4 фотографии. Отправьте комплект заново." });
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "В альбоме должно быть ровно 7 фотографий. Отправьте комплект заново." });
     return;
   }
   const albumSourceKey = [String(message.chat.id), String(threadId), senderId, albumId].join("|");
@@ -864,7 +843,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
     return;
   }
-  if (items.length !== 4) {
+  if (items.length !== 7) {
     if (items.length > 0 && message.message_id === Math.max(...items.map((item) => item.message_id))) {
       await env.DB.prepare(
         `CREATE TABLE IF NOT EXISTS secretary_photo_album_status (
@@ -876,7 +855,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
       const status = await env.DB.prepare(
         "SELECT status_message_id FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?",
       ).bind(String(message.chat.id), threadId, senderId, albumId).first<{status_message_id:number|null}>();
-      const text = `Фото: ${items.length}/4`;
+      const text = `Фото: ${items.length}/7`;
       if (status?.status_message_id) {
         await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
           chat_id: message.chat.id, message_id: status.status_message_id, text,
@@ -937,7 +916,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     try {
       await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
         chat_id: message.chat.id, message_id: progressMessageId,
-        text: "Получены все 4 фотографии. Сохраняю комплект…",
+        text: "Получены все 7 фотографий. Сохраняю комплект…",
         reply_markup: secretaryCancelKeyboard(albumOperation.id),
       });
     } catch (error) {
@@ -949,7 +928,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     "SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position",
   ).bind(resolvedModelId).all<{position:number;telegram_file_id:string}>();
   const oldPhotos = previous.results ?? [];
-  if (oldPhotos.length === 4 && oldPhotos.every((p, i) => p.position === i + 1)) {
+  if (oldPhotos.length === 7 && oldPhotos.every((p, i) => p.position === i + 1)) {
     await finishSecretaryOperation(env, albumOperation.id, "completed");
     await env.DB.prepare(
       "INSERT INTO secretary_photo_replacement_pending (chat_id, thread_id, user_id, model_id, photos_json) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, thread_id, user_id) DO UPDATE SET model_id=excluded.model_id, photos_json=excluded.photos_json, created_at=CURRENT_TIMESTAMP",
@@ -982,7 +961,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   if (!uploadStatusId) {
     const uploadStatus = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id, message_thread_id: threadId,
-      text: "Сохраняю 4 фотографии в MODEL BANK…",
+      text: "Сохраняю 7 фотографий в MODEL BANK…",
       reply_markup: secretaryCancelKeyboard(operationId),
     });
     uploadStatusId = uploadStatus.result?.message_id;
@@ -1015,7 +994,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
   await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
     chat_id: message.chat.id, message_thread_id: threadId,
-    text: "Готово: альбом из 4 фотографий для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранён в правильном порядке.",
+    text: "Готово: альбом из 7 фотографий для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранён в правильном порядке.",
     reply_markup: { inline_keyboard: [[{ text: "➕ Создать фотоанкету", callback_data: "photo:create" }]] },
   });
 }
@@ -1074,8 +1053,8 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
   const model = matches[0];
   const photoResult = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position").bind(model.id).all<{position:number;telegram_file_id:string}>();
   const photos = photoResult.results ?? [];
-  if (photos.length !== 4 || photos.some((photo, i) => photo.position !== i + 1)) {
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Для этой модели ещё не загружены все четыре фотографии. Сначала добавьте их в тему «MODEL BANK»." }); return;
+  if (photos.length !== 7 || photos.some((photo, i) => photo.position !== i + 1)) {
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Для этой модели ещё не загружены все семь фотографий. Сначала добавьте их в тему «MODEL BANK»." }); return;
   }
   const operationId = await startSecretaryOperation(env, "composite", String(message.from!.id), message.chat.id, message.message_thread_id!);
   const status = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
@@ -1184,8 +1163,8 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
       const photoResult = await env.DB.prepare("SELECT position FROM model_telegram_photos WHERE model_id=? ORDER BY position")
         .bind(modelId).all<{position:number}>();
       const photos = photoResult.results ?? [];
-      if (photos.length !== 4 || photos.some((photo, i) => photo.position !== i + 1)) {
-        throw new Error("В MODEL BANK ещё нет полного комплекта из четырёх фотографий.");
+      if (photos.length !== 7 || photos.some((photo, i) => photo.position !== i + 1)) {
+        throw new Error("В MODEL BANK ещё нет полного комплекта из семи фотографий.");
       }
       queued++;
     } catch (error) {
@@ -1398,7 +1377,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       .bind(String(message.chat.id), message.message_thread_id, senderId).run();
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id, message_thread_id: message.message_thread_id,
-      text: "Режим добавления фотографий включён. Отправьте одним альбомом ровно 4 оригинальных фото. В подписи к первому фото укажите точное имя и фамилию модели, например: Анастасия Деревянкина. Модель должна уже существовать в основной базе. Фото сохранятся в её фототеку «MODEL BANK».",
+      text: "Режим добавления фотографий включён. Отправьте одним альбомом ровно 7 оригинальных фото. В подписи к первому фото укажите точное имя и фамилию модели, например: Анастасия Деревянкина. Модель должна уже существовать в основной базе. Фото сохранятся в её фототеку «MODEL BANK».",
     });
     return;
   }
@@ -1409,7 +1388,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_photo_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
       .bind(String(message.chat.id), message.message_thread_id, senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «MODEL BANK» подключена. Отправляйте альбом из 4 фотографий: подпись «Имя Фамилия» у первого снимка." });
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «MODEL BANK» подключена. Отправляйте альбом из 7 фотографий: подпись «Имя Фамилия» у первого снимка." });
     return;
   }
   const topic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_photo_topics WHERE id = 1").first<{chat_id:string;thread_id:number}>();
@@ -1455,12 +1434,12 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     const initialPhotos = [{ file_id: bestPhoto.file_id, file_unique_id: bestPhoto.file_unique_id }];
     await env.DB.prepare("INSERT INTO secretary_photo_batches (chat_id, thread_id, uploader_id, model_id, next_position, photos_json, updated_at) VALUES (?, ?, ?, ?, 2, ?, CURRENT_TIMESTAMP) ON CONFLICT(chat_id, thread_id, uploader_id) DO UPDATE SET model_id=excluded.model_id, next_position=2, photos_json=excluded.photos_json, updated_at=CURRENT_TIMESTAMP")
       .bind(String(message.chat.id), message.message_thread_id, senderId, model.id, JSON.stringify(initialPhotos)).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Принято: " + model.first_name + " " + model.last_name + ". Фото 1 из 4. Отправьте ещё три фото подряд." });
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Принято: " + model.first_name + " " + model.last_name + ". Фото 1 из 7. Отправьте ещё шесть фото подряд." });
     return;
   }
   const batch = await env.DB.prepare("SELECT model_id, next_position, photos_json FROM secretary_photo_batches WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND updated_at >= datetime('now', '-30 minutes')")
     .bind(String(message.chat.id), message.message_thread_id, senderId).first<{model_id:string;next_position:number;photos_json:string}>();
-  if (!batch || batch.next_position < 2 || batch.next_position > 4) {
+  if (!batch || batch.next_position < 2 || batch.next_position > 7) {
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Начните набор с первого фото и подписи «Имя Фамилия»." });
     return;
   }
@@ -1470,22 +1449,22 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   await env.DB.prepare("UPDATE secretary_photo_batches SET next_position = ?, photos_json = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND thread_id = ? AND uploader_id = ?")
     .bind(next, JSON.stringify(stagedPhotos), String(message.chat.id), message.message_thread_id, senderId).run();
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(batch.model_id).first<{first_name:string;last_name:string}>();
-  if (next === 5) await saveSecretaryPhotoSet(env, batch.model_id, stagedPhotos, senderId, message.chat.id, message.message_thread_id);
-  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: next === 5 ? "Готово: для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранены все 4 фотографии." : "Фото " + batch.next_position + " из 4 принято. Осталось " + (4 - batch.next_position) + ".",
-    ...(next === 5 ? { reply_markup: { inline_keyboard: [[{ text: "➕ Создать фотоанкету", callback_data: "photo:create" }]] } } : {}),
+  if (next === 8) await saveSecretaryPhotoSet(env, batch.model_id, stagedPhotos, senderId, message.chat.id, message.message_thread_id);
+  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: next === 8 ? "Готово: для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранены все 7 фотографий." : "Фото " + batch.next_position + " из 7 принято. Осталось " + (7 - batch.next_position) + ".",
+    ...(next === 8 ? { reply_markup: { inline_keyboard: [[{ text: "➕ Создать фотоанкету", callback_data: "photo:create" }]] } } : {}),
   });
 }
 async function sendSecretaryCompositeSources(env: Env, chatId: number, model: SecretaryModelRow): Promise<void> {
   const result = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position").bind(model.id).all<{position:number;telegram_file_id:string}>();
   const photos = result.results ?? [];
-  if (photos.length !== 4 || photos.some((photo, index) => photo.position !== index + 1)) {
-    await sendSecretary(env, chatId, secretaryProfileText(model).replace("Генерация графической композитки ещё подключается. Сейчас доступен поиск анкеты и её параметров.", "Фотографии ещё не загружены полностью. В теме «MODEL BANK» нужны четыре снимка."));
+  if (photos.length !== 7 || photos.some((photo, index) => photo.position !== index + 1)) {
+    await sendSecretary(env, chatId, secretaryProfileText(model).replace("Генерация графической композитки ещё подключается. Сейчас доступен поиск анкеты и её параметров.", "Фотографии ещё не загружены полностью. В теме «MODEL BANK» нужны семь снимков."));
     return;
   }
   await sendSecretary(env, chatId, secretaryProfileText(model));
   await telegram(env.SECRETARY_BOT_TOKEN, "sendMediaGroup", {
     chat_id: chatId,
-    media: photos.map((photo, index) => ({ type: "photo", media: photo.telegram_file_id, ...(index === 0 ? { caption: model.first_name + " " + model.last_name + " · фото 1/4" } : {}) })),
+    media: photos.map((photo, index) => ({ type: "photo", media: photo.telegram_file_id, ...(index === 0 ? { caption: model.first_name + " " + model.last_name + " · фото 1/7" } : {}) })),
   });
 }
 
@@ -1629,7 +1608,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     }
     if (data === "photo_replace:yes") {
       const newPhotos = JSON.parse(pendingPhotoSet.photos_json) as Array<{file_id:string;file_unique_id:string}>;
-      if (newPhotos.length !== 4) {
+      if (newPhotos.length !== 7) {
         await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Не удалось прочитать новый комплект.", show_alert: true });
         return;
       }
@@ -2108,8 +2087,8 @@ async function publishCompositeModel(
   const result = await env.DB.prepare("SELECT position,telegram_file_id FROM model_telegram_photos WHERE model_id=? ORDER BY position")
     .bind(modelId).all<{ position: number; telegram_file_id: string }>();
   const photos = result.results ?? [];
-  if (photos.length !== 4 || photos.some((photo, index) => photo.position !== index + 1)) {
-    throw new Error("Для модели не загружены все четыре фотографии.");
+  if (photos.length !== 7 || photos.some((photo, index) => photo.position !== index + 1)) {
+    throw new Error("Для модели не загружены все семь фотографий.");
   }
   const png = await renderCompositePng(env, model, photos.map((photo) => photo.telegram_file_id), stage);
   await stage("Отправка PNG в Telegram");
