@@ -1373,8 +1373,8 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       return;
     }
     const pendingInput = await env.DB.prepare(
-      "SELECT command_message_id FROM secretary_composite_input_pending WHERE chat_id=? AND thread_id=? AND user_id=?",
-    ).bind(String(message.chat.id), message.message_thread_id, senderId).first<{command_message_id:number|null}>();
+      "SELECT command_message_id,prompt_message_id FROM secretary_composite_input_pending WHERE chat_id=? AND thread_id=? AND user_id=?",
+    ).bind(String(message.chat.id), message.message_thread_id, senderId).first<{command_message_id:number|null;prompt_message_id:number|null}>();
     if (pendingInput && command && !command.startsWith("/")) {
       await env.DB.prepare("DELETE FROM secretary_composite_input_pending WHERE chat_id=? AND thread_id=? AND user_id=?")
         .bind(String(message.chat.id), message.message_thread_id, senderId).run();
@@ -1383,7 +1383,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
         await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Отправьте от 1 до 20 фамилий или ФИО — по одной модели на строку." });
         return;
       }
-      await generateCompositeBatchInTopic(env, message, requestedNames, [pendingInput.command_message_id,message.message_id].filter((id): id is number => typeof id === "number"));
+      await generateCompositeBatchInTopic(env, message, requestedNames, [pendingInput.command_message_id,pendingInput.prompt_message_id,message.message_id].filter((id): id is number => typeof id === "number"));
       return;
     }
     const compLines = command.split(/\r?\n/);
@@ -1400,10 +1400,12 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       await env.DB.prepare(
         "INSERT INTO secretary_composite_input_pending(chat_id,thread_id,user_id,command_message_id) VALUES(?,?,?,?) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET command_message_id=excluded.command_message_id,created_at=CURRENT_TIMESTAMP",
       ).bind(String(message.chat.id),message.message_thread_id,senderId,message.message_id).run();
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
+      const prompt = await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
         chat_id:message.chat.id,message_thread_id:message.message_thread_id,
         text:"Готовлю поток. Отправьте список фамилий или ФИО — по одной модели на строку.",
       });
+      await env.DB.prepare("UPDATE secretary_composite_input_pending SET prompt_message_id=? WHERE chat_id=? AND thread_id=? AND user_id=?")
+        .bind(prompt.result?.message_id ?? null,String(message.chat.id),message.message_thread_id,senderId).run();
       return;
     }
     const compCommand = command.match(/^\/comp(?:@\w+)?\s+(.+)$/i);
@@ -1777,10 +1779,12 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     await telegram(env.SECRETARY_BOT_TOKEN, "editMessageReplyMarkup", {
       chat_id: msg.chat.id, message_id: msg.message_id, reply_markup: { inline_keyboard: [] },
     });
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+    const prompt = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: msg.chat.id, message_thread_id: msg.message_thread_id,
       text: "Отправьте от 1 до 20 фамилий или ФИО — по одной модели на строку.",
     });
+    await env.DB.prepare("UPDATE secretary_composite_input_pending SET prompt_message_id=? WHERE chat_id=? AND thread_id=? AND user_id=?")
+      .bind(prompt.result?.message_id ?? null,String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
     return;
   }
   const match = data.match(/^(csel|comp):([a-zA-Z0-9_-]{1,50})$/);
