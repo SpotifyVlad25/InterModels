@@ -1153,9 +1153,16 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
   } catch (error) {
     const cancelled = error instanceof Error && error.message === "SECRETARY_OPERATION_CANCELLED";
     if (newMessageId && !publicationCommitted) await deleteTelegramMessage(env, message.chat.id, newMessageId, "failed/cancelled composite");
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const redactSecrets = (value: string): string => [
+      env.MODEL_BOT_TOKEN, env.DIRECTOR_BOT_TOKEN, env.SECRETARY_BOT_TOKEN,
+      env.MODEL_WEBHOOK_SECRET, env.DIRECTOR_WEBHOOK_SECRET, env.SECRETARY_WEBHOOK_SECRET,
+      env.COMPOSITE_RENDERER_TOKEN,
+    ].filter((secret): secret is string => typeof secret === "string" && secret.length > 0)
+      .reduce((safe, secret) => safe.split(secret).join("[REDACTED]"), value);
+    const errorMessage = redactSecrets(error instanceof Error ? error.message : String(error));
+    const errorStack = error instanceof Error ? redactSecrets(error.stack ?? "") : "";
     const details = error instanceof Error
-      ? { name: error.name, message: error.message, stack: error.stack }
+      ? { name: error.name, message: errorMessage, stack: errorStack || undefined }
       : { message: errorMessage };
     const renderStage = errorMessage.match(/^Composite PNG ([^:]+):/)?.[1];
     const failureStage = renderStage ?? compositeStage;
@@ -1166,7 +1173,7 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
            SET failure_stage=?,failure_message=?,failure_stack=?,failed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
            WHERE id=? AND status IN ('running','publishing')`,
         ).bind(failureStage, errorMessage.slice(0, 4000),
-          error instanceof Error ? (error.stack ?? "").slice(0, 12000) || null : null,
+          errorStack.slice(0, 12000) || null,
           operationId).run();
       } catch (persistError) {
         console.error("Unable to persist composite failure details", {
