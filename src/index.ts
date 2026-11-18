@@ -782,7 +782,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   <style>
     text{font-family:"DejaVu Sans",Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
-    .parameter-label{font-weight:700;letter-spacing:.4px;fill:#777}
+    .parameter-label{font-weight:700;letter-spacing:.4px;fill:#000}
     .parameter-value{font-weight:400}
     .phone{font-size:${23 * infoScale}px;font-weight:500;letter-spacing:.1px}
     .website{font-size:${22 * infoScale}px;font-weight:400}
