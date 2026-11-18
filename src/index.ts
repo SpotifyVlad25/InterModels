@@ -673,8 +673,7 @@ async function compositeFontBuffer(value: unknown): Promise<Uint8Array> {
 async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: string[], onStage?: (stage: string) => Promise<void>): Promise<Uint8Array> {
   let stage = "init_wasm";
   try {
-    await onStage?.("Инициализация графического движка");
-    await ensureResvg();
+    await onStage?.("Подготовка графического движка");
     stage = "download_photos";
     await onStage?.("Загрузка 4 фотографий");
     const photoStartedAt = Date.now();
@@ -718,6 +717,7 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
       if (!png.length || png.length > 20 * 1024 * 1024) throw new Error("External renderer PNG size is invalid");
       return png;
     }
+    await ensureResvg();
     const renderer = new Resvg(svg, { font: { fontBuffers, defaultFontFamily: "Roboto", loadSystemFonts: false } });
     try {
       stage = "rasterize_png";
