@@ -234,6 +234,19 @@ jobs:
             }
             console.log(`${label}: legacy commands and custom menu buttons cleared.`);
           }
+
+          // The Director cabinet is the persistent default menu button for every private chat.
+          const directorToken = process.env.DIRECTOR_BOT_TOKEN;
+          const cabinetMenu = {
+            type: "web_app",
+            text: "Кабинет",
+            web_app: { url: "https://intermodels.spotify-vlad25.workers.dev/app" }
+          };
+          await call(directorToken, "setChatMenuButton", {menu_button:cabinetMenu});
+          for (const chat_id of chatIds) {
+            await call(directorToken, "setChatMenuButton", {chat_id:Number(chat_id),menu_button:cabinetMenu}, true);
+          }
+          console.log("DIRECTOR_BOT_TOKEN: persistent Cabinet menu button configured globally and for known admin chats.");
           NODE
 
       - name: Configure Telegram bot descriptions

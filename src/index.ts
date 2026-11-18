@@ -488,7 +488,7 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
         chat_id: message.chat.id,
         menu_button: {
           type: "web_app",
-          text: "Открыть кабинет",
+          text: "Кабинет",
           web_app: { url: "https://intermodels.spotify-vlad25.workers.dev/app" },
         },
       });
