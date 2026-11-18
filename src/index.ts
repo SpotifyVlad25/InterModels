@@ -680,7 +680,7 @@ function transliterateCompositeName(value: string): string {
 }
 function translateCompositeColor(value: string | null): string | null {
   if (!value) return null;
-  const normalized = value.trim().toLocaleLowerCase("ru-RU").replace(/ё/g, "е").replace(/[\\s_]+/g, " ");
+  const normalized = value.trim().toLocaleLowerCase("ru-RU").replace(/ё/g, "е").replace(/[\s_]+/g, " ");
   const phrases: Record<string, string> = {
     "русые":"Dark Blonde","светло-русые":"Light Blonde","темно-русые":"Dark Blonde",
     "темно русые":"Dark Blonde","блонд":"Blonde","блондин":"Blonde","блондинка":"Blonde",
