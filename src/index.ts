@@ -667,11 +667,53 @@ function imageDimensions(data: string): { width: number; height: number } {
   }
   throw new Error("Unable to read original photo dimensions");
 }
+function transliterateCompositeName(value: string): string {
+  const map: Record<string, string> = {
+    а:"a",б:"b",в:"v",г:"g",д:"d",е:"e",ё:"yo",ж:"zh",з:"z",и:"i",й:"y",
+    к:"k",л:"l",м:"m",н:"n",о:"o",п:"p",р:"r",с:"s",т:"t",у:"u",ф:"f",
+    х:"kh",ц:"ts",ч:"ch",ш:"sh",щ:"shch",ъ:"",ы:"y",ь:"",э:"e",ю:"yu",я:"ya",
+  };
+  return value.replace(/[А-ЯЁа-яё]/g, (char) => {
+    const result = map[char.toLowerCase()] ?? char;
+    return char === char.toUpperCase() ? result.toUpperCase() : result;
+  });
+}
+function translateCompositeColor(value: string | null): string | null {
+  if (!value) return null;
+  const normalized = value.trim().toLocaleLowerCase("ru-RU").replace(/ё/g, "е").replace(/[\s_]+/g, " ");
+  const phrases: Record<string, string> = {
+    "русые":"Dark Blonde","светло-русые":"Light Blonde","темно-русые":"Dark Blonde",
+    "темно русые":"Dark Blonde","блонд":"Blonde","блондин":"Blonde","блондинка":"Blonde",
+    "светлые":"Blonde","платиновый блонд":"Platinum Blonde","платиновый":"Platinum Blonde",
+    "каштановые":"Chestnut","каштановый":"Chestnut","шатен":"Brown","шатенка":"Brown",
+    "брюнет":"Dark Brown","брюнетка":"Dark Brown","темные":"Dark Brown","черные":"Black",
+    "черный":"Black","коричневые":"Brown","коричневый":"Brown","рыжие":"Red",
+    "рыжий":"Red","медные":"Copper","седые":"Grey","седой":"Grey","серые":"Grey",
+    "белые":"White","голубые":"Blue","голубой":"Blue","синие":"Blue","синий":"Blue",
+    "карие":"Brown","карий":"Brown","зеленые":"Green","зеленый":"Green",
+    "серо-голубые":"Blue-Grey","серо голубые":"Blue-Grey","серо-зеленые":"Grey-Green",
+    "серо зеленые":"Grey-Green","голубо-зеленые":"Blue-Green","голубо зеленые":"Blue-Green",
+    "разноцветные":"Multicoloured","ореховые":"Hazel","янтарные":"Amber",
+  };
+  if (phrases[normalized]) return phrases[normalized];
+  const words: Record<string, string> = {
+    "светло":"Light","темно":"Dark","русый":"Dark Blonde","русая":"Dark Blonde",
+    "русые":"Dark Blonde","блонд":"Blonde","каштановый":"Chestnut","каштановая":"Chestnut",
+    "карий":"Brown","карие":"Brown","голубой":"Blue","голубые":"Blue","синий":"Blue",
+    "синие":"Blue","зеленый":"Green","зеленые":"Green","серый":"Grey","серые":"Grey",
+    "черный":"Black","черные":"Black","коричневый":"Brown","коричневые":"Brown",
+    "рыжий":"Red","рыжие":"Red","медный":"Copper","медные":"Copper","седой":"Grey",
+    "седые":"Grey","белый":"White","белые":"White",
+  };
+  return normalized.split(" ").map((word) => words[word] ?? transliterateCompositeName(word)).join(" ");
+}
 function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru" | "en" = "ru"): string {
   if (photos.length !== 7) throw new Error("A composite requires exactly seven original photos");
   const firstName = (model.first_name || "").trim();
   const surnameInitial = (model.last_name || "").trim().charAt(0);
-  const rawName = (firstName + (surnameInitial ? " " + surnameInitial + "." : "")).toUpperCase();
+  const displayFirstName = language === "en" ? transliterateCompositeName(firstName) : firstName;
+  const displaySurnameInitial = language === "en" ? transliterateCompositeName(surnameInitial) : surnameInitial;
+  const rawName = (displayFirstName + (displaySurnameInitial ? " " + displaySurnameInitial + "." : "")).toUpperCase();
   const labels = language === "en"
     ? ["HEIGHT", "BUST", "WAIST", "HIPS", "HAIR", "EYES", "CLOTHING", "SHOES"]
     : ["РОСТ", "ГРУДЬ", "ТАЛИЯ", "БЁДРА", "ВОЛОСЫ", "ГЛАЗА", "ОДЕЖДА", "ОБУВЬ"];
@@ -681,7 +723,9 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
     model.bust_cm != null ? String(model.bust_cm) + unit : null,
     model.waist_cm != null ? String(model.waist_cm) + unit : null,
     model.hips_cm != null ? String(model.hips_cm) + unit : null,
-    model.hair_color || null, model.eye_color || null, model.clothing_size || null, model.shoe_size || null,
+    language === "en" ? translateCompositeColor(model.hair_color) : model.hair_color || null,
+    language === "en" ? translateCompositeColor(model.eye_color) : model.eye_color || null,
+    model.clothing_size || null, model.shoe_size || null,
   ];
   // Fixed InterModels comp-card canvas. Photo frames are never cropped or
   // distorted: SVG "meet" contains each full source image inside its cell.
