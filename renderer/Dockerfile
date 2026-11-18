@@ -6,6 +6,8 @@ ENV NODE_OPTIONS=--max-old-space-size=768
 
 WORKDIR /app
 COPY package.json ./
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
 RUN npm install --omit=dev --no-audit --no-fund
 COPY server.mjs ./
 
