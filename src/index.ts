@@ -998,29 +998,18 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     reply_markup: { inline_keyboard: [[{ text: "➕ Создать фотоанкету", callback_data: "photo:create" }]] },
   });
 }
-async function sendCompositePng(env: Env, chatId: number, threadId: number, png: Uint8Array, caption: string): Promise<number> {
-  const endpoint = `https://api.telegram.org/bot${env.SECRETARY_BOT_TOKEN}/`;
-  const makeForm = (field: "photo" | "document") => {
-    const form = new FormData();
-    form.set("chat_id", String(chatId));
-    form.set("message_thread_id", String(threadId));
-    form.set("caption", caption);
-    form.set(field, new Blob([png], { type: "image/png" }), "intermodels-composite.png");
-    return form;
-  };
-  // Send as a document first: Telegram preserves the original PNG instead of recompressing it.
-  const documentResponse = await fetch(endpoint + "sendDocument", { method: "POST", body: makeForm("document") });
-  const documentResult: any = await documentResponse.json().catch(() => null);
-  if (documentResponse.ok && documentResult?.ok) return Number(documentResult.result?.message_id);
-
-  const documentError = documentResult?.description ?? `HTTP ${documentResponse.status}`;
-  const photoResponse = await fetch(endpoint + "sendPhoto", { method: "POST", body: makeForm("photo") });
-  const photoResult: any = await photoResponse.json().catch(() => null);
-  if (!photoResponse.ok || !photoResult?.ok) {
-    const photoError = photoResult?.description ?? `HTTP ${photoResponse.status}`;
-    throw new Error(`Telegram delivery failed (sendDocument: ${documentError}; sendPhoto: ${photoError})`);
-  }
-  return Number(photoResult.result?.message_id);
+async function sendCompositePng(env: Env, chatId: number, threadId: number, png: Uint8Array, caption: string, modelId: string): Promise<number> {
+  const endpoint = `https://api.telegram.org/bot${env.SECRETARY_BOT_TOKEN}/sendPhoto`;
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  form.set("message_thread_id", String(threadId));
+  form.set("caption", caption);
+  form.set("reply_markup", JSON.stringify({ inline_keyboard: [[{ text: "📎 Файл", callback_data: "compfile:" + modelId }]] }));
+  form.set("photo", new Blob([png], { type: "image/png" }), "intermodels-composite.png");
+  const response = await fetch(endpoint, { method: "POST", body: form });
+  const result: any = await response.json().catch(() => null);
+  if (!response.ok || !result?.ok) throw new Error(`Telegram sendPhoto failed: ${result?.description ?? response.status}`);
+  return Number(result.result?.message_id);
 }
 async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawName: string): Promise<void> {
   const query = normalizeName(rawName);
@@ -1084,7 +1073,7 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     compositeStage = "deliver_png";
     await updateStage("Публикация готового PNG");
     await assertSecretaryOperationActive(env, operationId);
-    newMessageId = await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels");
+    newMessageId = await sendCompositePng(env, message.chat.id, message.message_thread_id!, png, model.first_name + " " + model.last_name + " · InterModels", model.id);
     if (!Number.isSafeInteger(newMessageId) || newMessageId <= 0) throw new Error("Telegram не вернул ID композитки.");
     const recorded = await recordSecretaryOperationResult(env, operationId, message.chat.id, newMessageId);
     if (!recorded || !(await claimSecretaryOperationPublication(env, operationId))) {
@@ -2092,7 +2081,7 @@ async function publishCompositeModel(
   }
   const png = await renderCompositePng(env, model, photos.map((photo) => photo.telegram_file_id), stage);
   await stage("Отправка PNG в Telegram");
-  const messageId = await sendCompositePng(env, Number(topic.chat_id), topic.thread_id, png, model.first_name + " " + model.last_name + " · InterModels");
+  const messageId = await sendCompositePng(env, Number(topic.chat_id), topic.thread_id, png, model.first_name + " " + model.last_name + " · InterModels", modelId);
   if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("Telegram не вернул ID новой композитки.");
 
   let publicationClaimed = false;
