@@ -498,13 +498,47 @@ async function getSecretaryPhotoData(env: Env, fileId: string): Promise<string> 
   }
   return "data:" + mime + ";base64," + bytesToBase64(bytes);
 }
+function imageDimensions(data: string): { width: number; height: number } {
+  const comma = data.indexOf(",");
+  if (!data.startsWith("data:") || comma < 0) throw new Error("Invalid composite image data URI");
+  const binary = atob(data.slice(comma + 1));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const u16 = (p: number) => (bytes[p] << 8) | bytes[p + 1];
+  const u24le = (p: number) => bytes[p] | (bytes[p + 1] << 8) | (bytes[p + 2] << 16);
+  const u32le = (p: number) => (bytes[p] | (bytes[p + 1] << 8) | (bytes[p + 2] << 16) | (bytes[p + 3] << 24)) >>> 0;
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return { width: u32le(16), height: u32le(20) };
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let p = 2;
+    while (p + 4 < bytes.length) {
+      if (bytes[p] !== 0xff) { p++; continue; }
+      const marker = bytes[p + 1]; p += 2;
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+      if (p + 2 > bytes.length) break;
+      const length = u16(p);
+      if (length < 2 || p + length > bytes.length) break;
+      if ([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker)) return { height: u16(p + 3), width: u16(p + 5) };
+      p += length;
+    }
+  }
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    const chunk = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
+    if (chunk === "VP8X" && bytes.length >= 30) return { width: u24le(24) + 1, height: u24le(27) + 1 };
+    if (chunk === "VP8 " && bytes.length >= 30) return { width: (bytes[26] | (bytes[27] << 8)) & 0x3fff, height: (bytes[28] | (bytes[29] << 8)) & 0x3fff };
+    if (chunk === "VP8L" && bytes.length >= 25) {
+      const b1 = bytes[21], b2 = bytes[22], b3 = bytes[23], b4 = bytes[24];
+      return { width: 1 + (((b2 & 0x3f) << 8) | b1), height: 1 + (((b4 & 0x0f) << 10) | (b3 << 2) | ((b2 & 0xc0) >> 6)) };
+    }
+  }
+  throw new Error("Unable to read original photo dimensions");
+}
 function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
+  if (photos.length !== 4) throw new Error("A composite requires exactly four original photos");
   const firstName = (model.first_name || "").trim();
   const surnameInitial = (model.last_name || "").trim().charAt(0);
   const rawName = (firstName + (surnameInitial ? " " + surnameInitial + "." : "")).toUpperCase();
   const name = escapeXml(rawName);
-  // The short display name spans the full width beneath photo #3.
-  const nameSize = rawName.length > 18 ? 44 : rawName.length > 16 ? 48 : rawName.length > 13 ? 52 : 58;
+  const nameSize = rawName.length > 18 ? 48 : rawName.length > 16 ? 54 : rawName.length > 13 ? 60 : 68;
   const leftValues = [
     model.height_cm != null ? "РОСТ  " + model.height_cm + " СМ" : null,
     model.bust_cm != null ? "ГРУДЬ  " + model.bust_cm + " СМ" : null,
@@ -517,34 +551,52 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
     model.clothing_size ? "ОДЕЖДА  " + model.clothing_size : null,
     model.shoe_size ? "ОБУВЬ  " + model.shoe_size : null,
   ];
-  // Keep each category in its own column and preserve row positions when a value is absent.
-  const renderDetails = (items: Array<string | null>, x: number) => items
-    .map((v, i) => {
-      if (!v) return "";
-      const fontSize = v.length > 25 ? 18 : v.length > 20 ? 20 : 23;
-      return `<text x="${x}" y="${1735 + i * 70}" class="detail" font-size="${fontSize}">${escapeXml(v)}</text>`;
-    }).join("");
-  const details = renderDetails(leftValues, 950) + renderDetails(rightValues, 1240);
-  // "meet" preserves the complete source photo: no cropping and no stretching.
-  const img = (data: string, x: number, y: number, w: number, h: number) =>
-    `<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet"/>`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1600" height="2260" viewBox="0 0 1600 2260">
-  <rect width="1600" height="2260" fill="#fff"/>
-  <text x="90" y="70" class="brand">INTERMODELS</text><text x="1510" y="70" text-anchor="end" class="small">ПОРТФОЛИО МОДЕЛИ</text>
-  <defs><clipPath id="a"><rect x="90" y="110" width="820" height="1093"/></clipPath><clipPath id="b"><rect x="950" y="110" width="560" height="700"/></clipPath><clipPath id="c"><rect x="950" y="850" width="560" height="700"/></clipPath><clipPath id="d"><rect x="90" y="1240" width="820" height="820"/></clipPath></defs>
-  <g clip-path="url(#a)"><rect x="90" y="110" width="820" height="1093" fill="#f1f1f1"/> ${img(photos[0],90,110,820,1093)}</g>
-  <g clip-path="url(#b)"><rect x="950" y="110" width="560" height="700" fill="#f1f1f1"/> ${img(photos[2],950,110,560,700)}</g>
-  <g clip-path="url(#c)"><rect x="950" y="850" width="560" height="700" fill="#f1f1f1"/> ${img(photos[3],950,850,560,700)}</g>
-  <g clip-path="url(#d)"><rect x="90" y="1240" width="820" height="820" fill="#f1f1f1"/> ${img(photos[1],90,1240,820,820)}</g>
-  <text x="950" y="1645" class="name" font-size="${nameSize}">${name}</text>${details}
-  <line x1="90" y1="2110" x2="1510" y2="2110" stroke="#222" stroke-width="2"/>
-  <text x="445" y="101" text-anchor="middle" class="contact">https://inter-models.ru</text>
-  <text x="1155" y="101" text-anchor="middle" class="contact">+7 902 632-32-72</text>
-  <text x="1510" y="2210" text-anchor="end" class="logo">INTERMODELS</text>
-  <text x="1510" y="2242" text-anchor="end" class="logo-sub">MODEL AGENCY</text>
+  const renderDetails = (items: Array<string | null>, x: number) => items.map((v, i) => {
+    if (!v) return "";
+    const fontSize = v.length > 25 ? 23 : v.length > 20 ? 26 : 30;
+    return \`<text x="\${x}" y="\${625 + i * 76}" class="detail" font-size="\${fontSize}">\${escapeXml(v)}</text>\`;
+  }).join("");
+  const details = renderDetails(leftValues, 875) + renderDetails(rightValues, 1230);
+  const canvasW = 1600, canvasH = 2844, half = 800;
+  const leftPhotos = [photos[1], photos[2], photos[3]].map((data) => ({ data, ...imageDimensions(data) }));
+  const ratioSum = leftPhotos.reduce((sum, photo) => sum + photo.height / photo.width, 0);
+  const leftImageWidth = canvasH / ratioSum;
+  if (!Number.isFinite(leftImageWidth) || leftImageWidth <= 0 || leftImageWidth > half) throw new Error("The three original photos cannot fit the left column at their natural proportions");
+  let leftY = 0;
+  const leftImages = leftPhotos.map((photo) => {
+    const h = leftImageWidth * photo.height / photo.width;
+    const x = (half - leftImageWidth) / 2;
+    const element = \`<image href="\${photo.data}" x="\${x.toFixed(2)}" y="\${leftY.toFixed(2)}" width="\${leftImageWidth.toFixed(2)}" height="\${h.toFixed(2)}" preserveAspectRatio="none"/>\`;
+    leftY += h;
+    return element;
+  }).join("");
+  const main = \`<image href="\${photos[0]}" x="850" y="1000" width="700" height="1500" preserveAspectRatio="xMidYMid meet"/>\`;
+  return \`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="\${canvasW}" height="\${canvasH}" viewBox="0 0 \${canvasW} \${canvasH}">
+  <rect width="\${canvasW}" height="\${canvasH}" fill="#fff"/>
+  <rect x="0" y="0" width="\${half}" height="\${canvasH}" fill="#f3f3f3"/>
+  \${leftImages}
+  <line x1="\${half}" y1="0" x2="\${half}" y2="\${canvasH}" stroke="#dedede" stroke-width="2"/>
+  <text x="850" y="115" class="brand">INTERMODELS</text>
+  <text x="850" y="170" class="agency">MODEL AGENCY</text>
+  <text x="850" y="235" class="contact">inter-models.ru</text>
+  <text x="850" y="280" class="contact">+7 902 632-32-72</text>
+  <line x1="850" y1="330" x2="1550" y2="330" stroke="#222" stroke-width="2"/>
+  <text x="850" y="485" class="section">ПАРАМЕТРЫ МОДЕЛИ</text>
+  <line x1="1200" y1="540" x2="1200" y2="850" stroke="#bdbdbd" stroke-width="2"/>
+  \${details}
+  \${main}
+  <text x="1200" y="2665" text-anchor="middle" class="name" font-size="\${nameSize}">\${name}</text>
+  <text x="1200" y="2735" text-anchor="middle" class="model">MODEL</text>
   <style>
-    text{font-family:Roboto,sans-serif;fill:#171717}.brand{font-size:30px;font-weight:700;letter-spacing:8px}.small{font-size:17px;letter-spacing:3px;fill:#777}.eyebrow{font-size:17px;letter-spacing:4px;fill:#777}.name{font-size:58px;font-weight:800;letter-spacing:.5px}.detail{font-size:23px;font-weight:600;letter-spacing:.5px}.contact{font-size:21px;font-weight:500;letter-spacing:1px}.logo{font-size:38px;font-weight:800;letter-spacing:8px}.logo-sub{font-size:17px;font-weight:500;letter-spacing:6px;fill:#777}
-  </style></svg>`;
+    text{font-family:Roboto,sans-serif;fill:#171717}
+    .brand{font-size:62px;font-weight:800;letter-spacing:5px}
+    .agency{font-size:28px;font-weight:500;letter-spacing:10px;fill:#666}
+    .contact{font-size:27px;font-weight:500;letter-spacing:1px;fill:#555}
+    .section{font-size:25px;font-weight:700;letter-spacing:4px;fill:#777}
+    .detail{font-size:30px;font-weight:600;letter-spacing:.3px}
+    .name{font-size:68px;font-weight:800;letter-spacing:.5px}
+    .model{font-size:30px;font-weight:500;letter-spacing:12px;fill:#777}
+  </style></svg>\`;
 }
 function compositeErrorText(error: unknown): string {
   if (error instanceof Error) return error.stack || error.message;
