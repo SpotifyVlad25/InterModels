@@ -1306,6 +1306,14 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена. Нажмите «Создать композитку», чтобы ввести одну или несколько фамилий.",
       reply_markup: { inline_keyboard: [[{ text: "➕ Создать композитку", callback_data: "composite:create" }]] } }); return;
   }
+  if(/^\/topics_check(?:@\\w+)?$/i.test(command)){
+    if(!hasDirectorAccess(env,senderId)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Проверка тем доступна только владельцу или директору."});return;}
+    const photo=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
+    const comp=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
+    const current=String(message.chat.id);const sameGroup=Boolean(photo&&comp&&photo.chat_id===comp.chat_id);
+    const lines=["🔎 Проверка тем InterModels","MODEL BANK: "+(photo?"chat "+photo.chat_id+" · topic "+photo.thread_id:"не подключена"),"КОМПОЗИТКИ: "+(comp?"chat "+comp.chat_id+" · topic "+comp.thread_id:"не подключена"),"Обе темы в одной группе: "+(sameGroup?"да":"нет"),"Текущая группа: "+current,"MODEL BANK в этой группе: "+(photo?.chat_id===current?"да":"нет"),"КОМПОЗИТКИ в этой группе: "+(comp?.chat_id===current?"да":"нет"),"ID тем различаются: "+(photo&&comp&&photo.thread_id!==comp.thread_id?"да":"нет")];
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:lines.join("\n")});return;
+  }
   const compositeTopic = await env.DB.prepare("SELECT chat_id, thread_id FROM secretary_composite_topics WHERE id = 1").first<{chat_id:string;thread_id:number}>();
   const isCompositeTopic = Boolean(compositeTopic && compositeTopic.chat_id === String(message.chat.id) && compositeTopic.thread_id === message.message_thread_id);
   const isCompCommand = /^\/comp(?:@\w+)?(?:\s|$)/i.test(command);
@@ -1388,14 +1396,6 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       return;
     }
     return;
-  }
-  if(/^\/topics_check(?:@\\w+)?$/i.test(command)){
-    if(!hasDirectorAccess(env,senderId)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Проверка тем доступна только владельцу или директору."});return;}
-    const photo=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
-    const comp=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
-    const current=String(message.chat.id);const sameGroup=Boolean(photo&&comp&&photo.chat_id===comp.chat_id);
-    const lines=["🔎 Проверка тем InterModels","MODEL BANK: "+(photo?"chat "+photo.chat_id+" · topic "+photo.thread_id:"не подключена"),"КОМПОЗИТКИ: "+(comp?"chat "+comp.chat_id+" · topic "+comp.thread_id:"не подключена"),"Обе темы в одной группе: "+(sameGroup?"да":"нет"),"Текущая группа: "+current,"MODEL BANK в этой группе: "+(photo?.chat_id===current?"да":"нет"),"КОМПОЗИТКИ в этой группе: "+(comp?.chat_id===current?"да":"нет"),"ID тем различаются: "+(photo&&comp&&photo.thread_id!==comp.thread_id?"да":"нет")];
-    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:lines.join("\n")});return;
   }
   if (/^\/photo_check(?:@\\w+)?$/i.test(command)) {
     if (!hasDirectorAccess(env, senderId)) {
@@ -1610,9 +1610,9 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     const topic = await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1")
       .first<{chat_id:string;thread_id:number}>();
     const publication = await env.DB.prepare(
-      "SELECT model_id,photo_file_ids_json,model_snapshot_json FROM composite_topic_publications WHERE model_id=? AND chat_id=? AND thread_id=? AND message_id=?",
+      "SELECT model_id,photo_file_ids_json,model_snapshot_json,style,language FROM composite_topic_publications WHERE model_id=? AND chat_id=? AND thread_id=? AND message_id=?",
     ).bind(fileMatch[1], String(msg.chat.id), msg.message_thread_id, msg.message_id)
-      .first<{model_id:string;photo_file_ids_json:string|null;model_snapshot_json:string|null}>();
+      .first<{model_id:string;photo_file_ids_json:string|null;model_snapshot_json:string|null;style:"basic"|"fashion";language:"ru"|"en"}>();
     if (!topic || topic.chat_id !== String(msg.chat.id) || topic.thread_id !== msg.message_thread_id || !publication) {
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Эта композитка уже заменена или недоступна.", show_alert: true });
       return;
@@ -1644,7 +1644,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       if (!Array.isArray(photoFileIds) || photoFileIds.length !== 7 || photoFileIds.some(id=>typeof id!=="string" || !id)) {
         throw new Error("Снимок исходных фотографий повреждён.");
       }
-      const png = await renderCompositePng(env, model, photoFileIds);
+      const png = await renderCompositePng(env, model, photoFileIds, undefined, publication.language);
       const form = new FormData();
       form.set("chat_id", String(msg.chat.id));
       form.set("message_thread_id", String(msg.message_thread_id));
@@ -2568,7 +2568,7 @@ export default {
     try {
       const isCompositeUpdate = isSecretary && (
         /^\/comp(?:@\w+)?(?:\s|$)/i.test(update.message?.text ?? "") ||
-        ["csel:", "composite:", "comp_style:", "comp_lang:"].some((prefix) => (update.callback_query?.data ?? "").startsWith(prefix))
+        ["csel:", "composite:", "comp_style:", "comp_lang:", "photo_style:"].some((prefix) => (update.callback_query?.data ?? "").startsWith(prefix))
       );
       if (isCompositeUpdate && typeof update.update_id === "number") {
         const claim = await env.DB.prepare(
