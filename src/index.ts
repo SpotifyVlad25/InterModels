@@ -878,14 +878,14 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
     await ensureResvg();
     const renderer = new Resvg(svg, { font: { fontBuffers, defaultFontFamily: "Roboto", loadSystemFonts: false } });
     stage = "rasterize_png";
-      await onStage?.("Рендеринг PNG");
-      const renderStartedAt = Date.now();
-      const rendered = renderer.render();
-      console.info("Composite rasterization completed", { modelId: model.id, elapsedMs: Date.now() - renderStartedAt });
-      const png = rendered.asPng();
-      console.info("Composite PNG encoded", { modelId: model.id, pngBytes: png.byteLength });
-      // @resvg/resvg-js uses the native Node binding here; unlike the WASM
-      // renderer it does not expose renderer.free(). Let Node reclaim it via GC.
+    await onStage?.("Рендеринг PNG");
+    const renderStartedAt = Date.now();
+    const rendered = renderer.render();
+    console.info("Composite rasterization completed", { modelId: model.id, elapsedMs: Date.now() - renderStartedAt });
+    const png = rendered.asPng();
+    console.info("Composite PNG encoded", { modelId: model.id, pngBytes: png.byteLength });
+    // @resvg/resvg-js uses the native Node binding here; unlike the WASM
+    // renderer it does not expose renderer.free(). Let Node reclaim it via GC.
     return png;
   } catch (error) {
     const details = compositeErrorText(error);
