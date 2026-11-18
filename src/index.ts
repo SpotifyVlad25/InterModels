@@ -1693,6 +1693,31 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     return;
   }
+  const republishCommand=command.match(/^\/photo_republish(?:@\w+)?\s+(.+?)\s+(basic|fashion)$/i);
+  if(republishCommand){
+    if(!hasDirectorAccess(env,senderId)){
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Повторная публикация доступна только владельцу или директору."});
+      return;
+    }
+    const requestedName=republishCommand[1].trim();
+    const style=republishCommand[2].toLowerCase() as "basic"|"fashion";
+    const models=await getActiveModels(env);
+    const matches=models.filter(model=>normalizeName(model.first_name+" "+model.last_name)===normalizeName(requestedName));
+    if(matches.length!==1){
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:matches.length?"Найдено несколько анкет. Укажите полное имя и фамилию.":"Анкета «"+requestedName+"» не найдена."});
+      return;
+    }
+    const model=matches[0];
+    try{
+      const published=await publishSecretaryPhotoSetToDatabase(env,model.id,style,message.chat.id,message.message_thread_id);
+      if(!published)throw new Error("Тема "+style.toUpperCase()+" не настроена или совпадает с MODEL BANK.");
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Готово: "+model.first_name+" "+model.last_name+" · "+style.toUpperCase()+". В PHOTO DATABASE опубликованы все 7 фотографий из сохранённого комплекта."});
+    }catch(error){
+      console.error("Manual photo database republish failed",{modelId:model.id,style,error:compositeErrorText(error)});
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Не удалось опубликовать "+style.toUpperCase()+" для "+model.first_name+" "+model.last_name+": "+compositeErrorText(error).slice(0,350)+". Сохранённый комплект в MODEL BANK не изменён."});
+    }
+    return;
+  }
   if (!message.photo?.length && !message.document && command && !command.startsWith("/")) {
     const stylePrefix=command.match(/^(basic|fashion)\s+(.+)$/i);
     const styleSuffix=command.match(/^(.+?)\s+(basic|fashion)$/i);
@@ -2009,11 +2034,24 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:style==="basic"?"Выбран Basic.":"Выбран Fashion."});
     const photos=JSON.parse(pending.photos_json) as Array<{file_id:string;file_unique_id:string}>;
     await saveSecretaryPhotoSet(env,pending.model_id,photos,String(callback.from.id),msg.chat.id,msg.message_thread_id,style);
-    try{await publishSecretaryPhotoSetToDatabase(env,pending.model_id,style,msg.chat.id,msg.message_thread_id);}catch(error){console.error("Photo database mirror failed",{modelId:pending.model_id,style,error:compositeErrorText(error)});}
-    await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
+    let databasePublished=false;
+    let publicationError:string|null=null;
+    try{
+      databasePublished=await publishSecretaryPhotoSetToDatabase(env,pending.model_id,style,msg.chat.id,msg.message_thread_id);
+      if(!databasePublished)throw new Error("Тема PHOTO DATABASE не настроена или совпадает с MODEL BANK.");
+    }catch(error){
+      publicationError=compositeErrorText(error);
+      console.error("Photo database mirror failed",{modelId:pending.model_id,style,error:publicationError});
+    }
+    if(databasePublished){
+      await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
+    }
     const model=await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(pending.model_id).first<{first_name:string;last_name:string}>();
     await telegram(env.SECRETARY_BOT_TOKEN,"deleteMessage",{chat_id:msg.chat.id,message_id:msg.message_id});
-    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+" готова✅",reply_markup:{inline_keyboard:[[{text:"➕ Создать новую анкету",callback_data:"photo:create"}]]}});return;
+    const resultText=databasePublished
+      ? "Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+" готова✅ Фотографии сохранены и опубликованы в "+style.toUpperCase()+"."
+      : "Фотографии "+(model?.first_name??"")+" "+(model?.last_name??"")+" сохранены в MODEL BANK, но не опубликованы в "+style.toUpperCase()+". Повторную публикацию можно запустить командой /photo_republish "+(model?.first_name??"")+" "+(model?.last_name??"")+" "+style.toUpperCase()+". Ошибка: "+(publicationError??"неизвестная ошибка").slice(0,220);
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:resultText,reply_markup:{inline_keyboard:databasePublished?[[{text:"➕ Создать новую анкету",callback_data:"photo:create"}]]:[]}});return;
   }
   const compStyleMatch=data.match(/^comp_style:(basic|fashion)$/);
   if(compStyleMatch){
