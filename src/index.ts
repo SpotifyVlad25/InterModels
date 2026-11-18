@@ -711,7 +711,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   const nameSize = Math.min(76, (tabWidth - 64) / Math.max(1, rawName.length * 0.68));
   const parameterColumn = (startIndex: number, x: number) => values.slice(startIndex, startIndex + 4).map((value, index) => {
     if (!value) return "";
-    const y = detailsTop + (index + 0.66) * detailsBandH / 4;
+    const rowStep = detailsBandH / 4 * 0.8;
+    const y = detailsTop + detailsBandH * 0.54 + (index - 1.5) * rowStep;
     const labelSize = 18 * infoScale;
     const valueSize = 24 * infoScale;
     return `<text x="${x}" y="${y}" class="parameter-label" font-size="${labelSize}">${escapeXml(labels[startIndex + index])}</text><text x="${x + 154 * infoScale}" y="${y}" class="parameter-value" font-size="${valueSize}">${escapeXml(value)}</text>`;
