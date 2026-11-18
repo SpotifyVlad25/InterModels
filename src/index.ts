@@ -628,32 +628,39 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   const firstRow = values.slice(0, 4).map((value, index) => value ? labels[index] + " " + value : null).filter((value): value is string => Boolean(value));
   const secondRow = values.slice(4, 8).map((value, index) => value ? labels[index + 4] + " " + value : null).filter((value): value is string => Boolean(value));
 
-  // Test layout: equal left/right columns; the right side is split 75/25
-  // between a seamless 3x2 photo gallery and the model information block.
-  const canvasW = 2560, canvasH = 1706;
+  // Auto-fit layout: preserve every source aspect ratio and calculate the
+  // two gallery row heights from the actual three photo ratios in each row.
+  // The right column remains 1029px wide; each row fills it edge-to-edge.
+  const rightW = 1029;
+  const infoH = 317;
   const dimensions = photos.map(imageDimensions);
-  const photoAspect = dimensions[0].width / dimensions[0].height;
-  if (!Number.isFinite(photoAspect) || photoAspect <= 0) throw new Error("Invalid source photo aspect ratio");
-  for (let index = 1; index < dimensions.length; index++) {
-    const aspect = dimensions[index].width / dimensions[index].height;
-    if (!Number.isFinite(aspect) || Math.abs(aspect / photoAspect - 1) > 0.01) {
-      throw new Error("All seven composite photos must have the same aspect ratio (within 1%)");
-    }
-  }
-  const mainW = canvasW / 2;
-  const rightW = canvasW - mainW;
-  const cellW = rightW / 3;
-  const galleryH = canvasH * 0.75;
-  const cellH = galleryH / 2;
-  const infoH = canvasH - galleryH;
+  const aspects = dimensions.map(({ width, height }) => {
+    const aspect = width / height;
+    if (!Number.isFinite(aspect) || aspect <= 0) throw new Error("Invalid source photo aspect ratio");
+    return aspect;
+  });
+  const firstRowAspectSum = aspects[1] + aspects[2] + aspects[3];
+  const secondRowAspectSum = aspects[4] + aspects[5] + aspects[6];
+  const firstRowH = rightW / firstRowAspectSum;
+  const secondRowH = rightW / secondRowAspectSum;
+  const galleryH = firstRowH + secondRowH;
+  const canvasH = galleryH + infoH;
+  const mainW = aspects[0] * canvasH;
+  const canvasW = mainW + rightW;
   const nameBandH = infoH / 4, detailsBandH = infoH / 2, footerH = infoH / 4;
   const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
   const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="none"/>`;
   const gallery = photos.slice(1).map((data, index) => {
-    const col = index % 3, row = Math.floor(index / 3);
-    return `<image href="${data}" x="${mainW + col * cellW}" y="${row * cellH}" width="${cellW}" height="${cellH}" preserveAspectRatio="none"/>`;
+    const row = Math.floor(index / 3);
+    const rowStart = row === 0 ? 1 : 4;
+    const rowHeight = row === 0 ? firstRowH : secondRowH;
+    const col = index % 3;
+    const x = mainW + aspects.slice(rowStart, rowStart + col).reduce((sum, aspect) => sum + aspect * rowHeight, 0);
+    const width = aspects[index + 1] * rowHeight;
+    const y = row === 0 ? 0 : firstRowH;
+    return `<image href="${data}" x="${x}" y="${y}" width="${width}" height="${rowHeight}" preserveAspectRatio="none"/>`;
   }).join("");
-  const infoScale = infoH / 500;
+  const infoScale = infoH / 317;
   const baseNameSize = rawName.length > 27 ? 58 : rawName.length > 20 ? 68 : 82;
   const nameSize = baseNameSize * infoScale;
   const lineText = (items: string[], y: number) => {
