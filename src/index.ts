@@ -587,18 +587,22 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
     model.clothing_size ? "ОДЕЖДА  " + model.clothing_size : null,
     model.shoe_size ? "ОБУВЬ  " + model.shoe_size : null,
   ];
-  const renderDetails = (items: Array<string | null>, x: number) => items.map((v, i) => {
-    if (!v) return "";
-    const fontSize = v.length > 25 ? 23 : v.length > 20 ? 26 : 30;
-    return `<text x="${x}" y="${625 + i * 76}" class="detail" font-size="${fontSize}">${escapeXml(v)}</text>`;
-  }).join("");
-  const details = renderDetails(leftValues, 875) + renderDetails(rightValues, 1230);
   const canvasW = 1600, canvasH = 2844, half = 800;
   const leftPhotos = [photos[1], photos[2], photos[3]].map((data) => ({ data, ...imageDimensions(data) }));
   const ratioSum = leftPhotos.reduce((sum, photo) => sum + photo.height / photo.width, 0);
   const leftImageWidth = Math.min(half, canvasH / ratioSum);
   if (!Number.isFinite(leftImageWidth) || leftImageWidth <= 0) throw new Error("Invalid original photo dimensions");
   const totalLeftHeight = leftImageWidth * ratioSum;
+  const rightWidth = canvasW - leftImageWidth;
+  const contentLeft = leftImageWidth + 50;
+  const contentCenter = leftImageWidth + rightWidth / 2;
+  const contentRight = canvasW - 50;
+  const renderDetails = (items: Array<string | null>, x: number) => items.map((v, i) => {
+    if (!v) return "";
+    const fontSize = v.length > 25 ? 23 : v.length > 20 ? 26 : 30;
+    return `<text x="${x}" y="${625 + i * 76}" class="detail" font-size="${fontSize}">${escapeXml(v)}</text>`;
+  }).join("");
+  const details = renderDetails(leftValues, contentLeft + 25) + renderDetails(rightValues, contentCenter + 30);
   let leftY = (canvasH - totalLeftHeight) / 2;
   const leftImages = leftPhotos.map((photo) => {
     const h = leftImageWidth * photo.height / photo.width;
@@ -607,23 +611,23 @@ function compositeSvg(model: SecretaryModelRow, photos: string[]): string {
     leftY += h;
     return element;
   }).join("");
-  const main = `<image href="${photos[0]}" x="800" y="900" width="800" height="1700" preserveAspectRatio="xMidYMid meet"/>`;
+  const main = `<image href="${photos[0]}" x="${leftImageWidth.toFixed(2)}" y="900" width="${rightWidth.toFixed(2)}" height="1700" preserveAspectRatio="xMidYMid meet"/>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
   <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
-  <rect x="0" y="0" width="${half}" height="${canvasH}" fill="#f3f3f3"/>
+  <rect x="0" y="0" width="${leftImageWidth.toFixed(2)}" height="${canvasH}" fill="#f3f3f3"/>
   ${leftImages}
-  <line x1="${half}" y1="0" x2="${half}" y2="${canvasH}" stroke="#dedede" stroke-width="2"/>
-  <text x="850" y="115" class="brand">INTERMODELS</text>
-  <text x="850" y="170" class="agency">MODEL AGENCY</text>
-  <text x="850" y="235" class="contact">inter-models.ru</text>
-  <text x="850" y="280" class="contact">+7 902 632-32-72</text>
-  <line x1="850" y1="330" x2="1550" y2="330" stroke="#222" stroke-width="2"/>
-  <text x="850" y="485" class="section">ПАРАМЕТРЫ МОДЕЛИ</text>
-  <line x1="1200" y1="540" x2="1200" y2="850" stroke="#bdbdbd" stroke-width="2"/>
+  <line x1="${leftImageWidth.toFixed(2)}" y1="0" x2="${leftImageWidth.toFixed(2)}" y2="${canvasH}" stroke="#dedede" stroke-width="2"/>
+  <text x="${contentLeft}" y="115" class="brand">INTERMODELS</text>
+  <text x="${contentLeft}" y="170" class="agency">MODEL AGENCY</text>
+  <text x="${contentLeft}" y="235" class="contact">inter-models.ru</text>
+  <text x="${contentLeft}" y="280" class="contact">+7 902 632-32-72</text>
+  <line x1="${contentLeft}" y1="330" x2="${contentRight}" y2="330" stroke="#222" stroke-width="2"/>
+  <text x="${contentLeft}" y="485" class="section">ПАРАМЕТРЫ МОДЕЛИ</text>
+  <line x1="${contentCenter}" y1="540" x2="${contentCenter}" y2="850" stroke="#bdbdbd" stroke-width="2"/>
   ${details}
   ${main}
-  <text x="1200" y="2665" text-anchor="middle" class="name" font-size="${nameSize}">${name}</text>
-  <text x="1200" y="2735" text-anchor="middle" class="model">MODEL</text>
+  <text x="${contentCenter}" y="2665" text-anchor="middle" class="name" font-size="${nameSize}">${name}</text>
+  <text x="${contentCenter}" y="2735" text-anchor="middle" class="model">MODEL</text>
   <style>
     text{font-family:Roboto,sans-serif;fill:#171717}
     .brand{font-size:62px;font-weight:800;letter-spacing:5px}
