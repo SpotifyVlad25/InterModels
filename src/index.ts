@@ -1805,7 +1805,6 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     }
     await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
       .bind(String(msg.chat.id), msg.message_thread_id, String(callback.from.id)).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "editMessageReplyMarkup", { chat_id: msg.chat.id, message_id: msg.message_id, reply_markup: { inline_keyboard: [] } });
     return;
   }
   if (data === "composite:create") {
