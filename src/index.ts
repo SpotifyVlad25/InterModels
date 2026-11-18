@@ -2700,7 +2700,7 @@ export default {
     });
     try {
       const isCompositeUpdate = isSecretary && (
-        Boolean(update.message?.message_thread_id && update.message?.text && (update.message.chat.type==="group"||update.message.chat.type==="supergroup")) ||
+        Boolean(update.message?.message_thread_id && update.message?.text && (update.message?.chat.type==="group"||update.message?.chat.type==="supergroup")) ||
         ["csel:", "composite:", "comp_style:", "comp_lang:", "photo_style:", "bank_intent_style:"].some((prefix) => (update.callback_query?.data ?? "").startsWith(prefix))
       );
       if (isCompositeUpdate && typeof update.update_id === "number") {
