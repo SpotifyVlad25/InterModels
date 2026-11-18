@@ -784,8 +784,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
     .name{font-weight:800;letter-spacing:1px}
     .parameter-label{font-weight:700;letter-spacing:.4px;fill:#000}
     .parameter-value{font-weight:400}
-    .phone{font-size:${23 * infoScale}px;font-weight:500;letter-spacing:.1px}
-    .website{font-size:${22 * infoScale}px;font-weight:400}
+    .phone{font-size:${25 * infoScale}px;font-weight:600;letter-spacing:.1px}
+    .website{font-size:${24 * infoScale}px;font-weight:500}
     .brand{font-size:${42 * infoScale}px;font-weight:800;letter-spacing:${3 * infoScale}px}
     .tagline{font-size:${16 * infoScale}px;font-weight:400;letter-spacing:${4 * infoScale}px}
     .separator{stroke:#e5e5e5;stroke-width:2}
