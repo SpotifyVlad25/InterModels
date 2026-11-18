@@ -1782,7 +1782,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       await env.DB.prepare("DELETE FROM secretary_composite_set_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(message.chat.id),message.message_thread_id,senderId).run();
       await deleteTelegramMessage(env,message.chat.id,setPending.prompt_message_id??undefined,"Compositarium set name prompt");
       await deleteTelegramMessage(env,message.chat.id,message.message_id,"Compositarium set name input");
-      await generateCompositeSetInTopic(env,message,{...message,text:command},command);
+      await generateCompositeSetInTopic(env,message,command);
       return;
     }
     const optionPending=await env.DB.prepare("SELECT stage,mode,style,language,names_text,command_message_id,prompt_message_id FROM secretary_composite_request_pending WHERE chat_id=? AND thread_id=? AND user_id=? AND created_at>=datetime('now','-30 minutes')").bind(String(message.chat.id),message.message_thread_id,senderId).first<{stage:string;mode:"single"|"batch";style:"basic"|"fashion"|null;language:"ru"|"en"|null;names_text:string|null;command_message_id:number|null;prompt_message_id:number|null}>();
