@@ -630,7 +630,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   // vertically: the upper two-thirds hold six seamless gallery photos (3x2),
   // and the lower third holds the model name, measurements, contacts and logo.
   const canvasW = 2400, canvasH = 1500;
-  const mainW = 1050, rightW = canvasW - mainW, galleryH = 1000;
+  const mainW = 1050, rightW = canvasW - mainW, galleryH = 900;
   const nameBandH = 110, detailsBandH = 170, footerH = canvasH - galleryH - nameBandH - detailsBandH;
   const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
   const cellW = rightW / 3, cellH = galleryH / 2;
@@ -655,10 +655,10 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   ${lineText(firstRow, detailsTop + 68)}
   ${lineText(secondRow, detailsTop + 132)}
   <line x1="${mainW}" y1="${footerTop}" x2="${canvasW}" y2="${footerTop}" class="separator"/>
-  <text x="${contactX}" y="${footerTop + 88}" class="phone">+7 902 632-32-72</text>
-  <text x="${contactX}" y="${footerTop + 150}" class="website">inter-models.ru</text>
-  <text x="${logoCenterX}" y="${footerTop + 125}" text-anchor="middle" class="brand">INTERMODELS</text>
-  <text x="${logoCenterX}" y="${footerTop + 175}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
+  <text x="${contactX}" y="${footerTop + 138}" class="phone">+7 902 632-32-72</text>
+  <text x="${contactX}" y="${footerTop + 200}" class="website">inter-models.ru</text>
+  <text x="${logoCenterX}" y="${footerTop + 175}" text-anchor="middle" class="brand">INTERMODELS</text>
+  <text x="${logoCenterX}" y="${footerTop + 225}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
   <style>
     text{font-family:"DejaVu Sans",Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
