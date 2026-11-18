@@ -1176,7 +1176,7 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
   const rejectedDetails = (rejectedRows.results ?? []).map((row) => "• " + row.requested_name + " — " + (row.last_error ?? "ошибка проверки")).join("\n").slice(0, 2800);
   const status = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
     chat_id: chatId, message_thread_id: threadId,
-    text: queued ? "Подготавливаю первую композитку…" : "Поток завершён: нет заданий для генерации.",
+    text: queued ? "Подготавливаю первую композитку…" : "Поток завершён: нет заданий для генерации." + (rejectedDetails ? "\n\nНе удалось поставить в очередь:\n" + rejectedDetails : ""),
     ...(queued ? { reply_markup: secretaryCancelKeyboard(operationId) } : {}),
   });
   const queue = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
@@ -1202,12 +1202,11 @@ async function updateSecretaryCompositeBatchStatus(env: Env, operationId: string
   ).bind(operationId).first<{chat_id:string;status_message_id:number|null;queue_message_id:number|null;status:string}>();
   if (!operation || !operation.status_message_id || operation.status !== "running") return;
   const stats = await env.DB.prepare(
-    "SELECT COUNT(*) AS total,SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) AS published,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status IN ('pending','processing') THEN 1 ELSE 0 END) AS waiting FROM secretary_composite_batch_items WHERE operation_id=?",
-  ).bind(operationId).first<{total:number;published:number|null;failed:number|null;waiting:number|null}>();
+    "SELECT COUNT(*) AS total,SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) AS published,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed FROM secretary_composite_batch_items WHERE operation_id=?",
+  ).bind(operationId).first<{total:number;published:number|null;failed:number|null}>();
   const total = stats?.total ?? 0;
   const published = stats?.published ?? 0;
   const failed = stats?.failed ?? 0;
-  const waiting = stats?.waiting ?? 0;
   const text = `Сейчас: ${stage ?? "обработка очереди"}\nГотово: ${published}/${total} · ошибок: ${failed}`;
   try {
     await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
