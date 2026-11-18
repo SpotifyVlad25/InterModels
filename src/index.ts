@@ -495,11 +495,11 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
         menu_button: { type: "web_app", text: "Кабинет", web_app: { url: "https://intermodels.spotify-vlad25.workers.dev/app" } },
       });
     }
-    await sendDirectorMenu("InterModels Director подключён. У вас полный доступ.\\n\\nЧтобы добавить одну или несколько моделей в базу, нажмите «➕ Добавить модель».");
+    await sendDirectorMenu("InterModels Director подключён. У вас полный доступ.\n\nЧтобы добавить одну или несколько моделей в базу, нажмите «➕ Добавить модель».");
     return;
   }
   if (message.text?.startsWith("/help")) {
-    await sendDirectorMenu("Команды:\\n/start — подключить бота\\n/help — помощь\\n\\n➕ Добавить модель — создать записи в базе по имени и фамилии.");
+    await sendDirectorMenu("Команды:\n/start — подключить бота\n/help — помощь\n\n➕ Добавить модель — создать записи в базе по имени и фамилии.");
     return;
   }
   if (message.text === "➕ Добавить модель" || message.text === "Добавить модель") {
@@ -509,14 +509,14 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
       ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
-      text: "Отправьте имя и фамилию одной модели.\\n\\nМожно добавить сразу несколько: каждую пару «имя фамилия» укажите с новой строки.",
+      text: "Отправьте имя и фамилию одной модели.\n\nМожно добавить сразу несколько: каждую пару «имя фамилия» укажите с новой строки.",
     });
     return;
   }
   const directorSession = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id=?")
     .bind(senderId).first<{state:string}>();
   if (directorSession?.state !== "director_add_model" || !message.text) return;
-  const lines = message.text.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);
+  const lines = message.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (!lines.length) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: "Не вижу имён. Отправьте имя и фамилию, по одной модели на строку." });
     return;
@@ -524,14 +524,14 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
   const invalid: string[] = [];
   const entries: Array<{firstName:string;lastName:string;label:string}> = [];
   for (const line of lines) {
-    const parts = line.split(/\\s+/).filter(Boolean);
+    const parts = line.split(/\s+/).filter(Boolean);
     if (parts.length < 2 || normalizeName(line).length < 3) { invalid.push(line); continue; }
     entries.push({ firstName: parts[0], lastName: parts.slice(1).join(" "), label: line });
   }
   if (invalid.length) {
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
-      text: "Не удалось распознать имя и фамилию в строках:\\n" + invalid.map((line) => "• " + line).join("\\n") + "\\n\\nИсправьте эти строки и отправьте их ещё раз. Остальные записи пока не создавались.",
+      text: "Не удалось распознать имя и фамилию в строках:\n" + invalid.map((line) => "• " + line).join("\n") + "\n\nИсправьте эти строки и отправьте их ещё раз. Остальные записи пока не создавались.",
     });
     return;
   }
@@ -551,9 +551,9 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
     .bind(senderId).run();
   const linesOut = [
     "Готово. Записи добавлены в базу InterModels.",
-    created.length ? "\\nСоздано:\\n" + created.map((name) => "• " + name).join("\\n") : "",
-    duplicates.length ? "\\nУже были в базе (повторно не создавал):\\n" + duplicates.map((name) => "• " + name).join("\\n") : "",
-    "\\nТеперь модели могут открыть @InterModels_model_bot, отправить /start и зарегистрироваться по своему имени и фамилии. Подключение по-прежнему подтверждается директором.",
+    created.length ? "\nСоздано:\n" + created.map((name) => "• " + name).join("\n") : "",
+    duplicates.length ? "\nУже были в базе (повторно не создавал):\n" + duplicates.map((name) => "• " + name).join("\n") : "",
+    "\nТеперь модели могут открыть @InterModels_model_bot, отправить /start и зарегистрироваться по своему имени и фамилии. Подключение по-прежнему подтверждается директором.",
   ].filter(Boolean).join("");
   await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
     chat_id: message.chat.id,
