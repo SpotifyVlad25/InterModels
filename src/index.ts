@@ -1283,29 +1283,41 @@ async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
   }
 }
 
-async function secretaryTopicDiagnostics(env:Env,chatId:number):Promise<string>{
+async function secretaryTopicDiagnostics(env:Env,_chatId:number):Promise<string>{
   const photo=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
   const comp=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
   const sameGroup=Boolean(photo&&comp&&photo.chat_id===comp.chat_id);
   const me=await telegram(env.SECRETARY_BOT_TOKEN,"getMe",{}).catch(()=>null);
   const botId=me?.result?.id;
-  const photoLive=photo?await telegram(env.SECRETARY_BOT_TOKEN,"getForumTopic",{chat_id:Number(photo.chat_id),message_thread_id:photo.thread_id}).catch(()=>null):null;
-  const compLive=comp?await telegram(env.SECRETARY_BOT_TOKEN,"getForumTopic",{chat_id:Number(comp.chat_id),message_thread_id:comp.thread_id}).catch(()=>null):null;
-  const permissions=photo&&sameGroup&&botId?await telegram(env.SECRETARY_BOT_TOKEN,"getChatMember",{chat_id:Number(photo.chat_id),user_id:botId}).catch(()=>null):null;
-  const photoName=photoLive?.result?.name??null;
-  const compName=compLive?.result?.name??null;
-  const member=permissions?.result;
-  const canDelete=member?.status==="creator"||(member?.status==="administrator"&&member?.can_delete_messages===true);
+  const inspectGroup=async(id:string|null|undefined)=>{
+    if(!id||!botId)return {chat:null,member:null};
+    const [chat,member]=await Promise.all([
+      telegram(env.SECRETARY_BOT_TOKEN,"getChat",{chat_id:Number(id)}).catch(()=>null),
+      telegram(env.SECRETARY_BOT_TOKEN,"getChatMember",{chat_id:Number(id),user_id:botId}).catch(()=>null)
+    ]);
+    return {chat:chat?.result??null,member:member?.result??null};
+  };
+  const photoGroup=await inspectGroup(photo?.chat_id);
+  const compGroup=sameGroup?photoGroup:await inspectGroup(comp?.chat_id);
+  const canDelete=(member:any)=>member?.status==="creator"||(member?.status==="administrator"&&member?.can_delete_messages===true);
+  const groupStatus=(data:{chat:any;member:any})=>{
+    if(!data.chat)return "нет доступа к группе";
+    const forum=data.chat.is_forum===true?"форум":"не форум";
+    const member=data.member?.status??"статус бота неизвестен";
+    return forum+" · бот: "+member;
+  };
+  const permissionStatus=(data:{chat:any;member:any})=>data.member?(canDelete(data.member)?"может удалять сообщения":"нет права can_delete_messages"):"не удалось проверить";
   return [
     "🔎 Проверка тем InterModels",
-    "MODEL BANK: "+(photo?(photo.chat_id+" · topic "+photo.thread_id+" · "+(photoName??"не подтверждена")):"не подключена"),
-    "КОМПОЗИТКИ: "+(comp?(comp.chat_id+" · topic "+comp.thread_id+" · "+(compName??"не подтверждена")):"не подключена"),
-    "Название MODEL BANK: "+(photoName?(photoName.toUpperCase().includes("MODEL BANK")?"совпадает":"не совпадает — ожидалось MODEL BANK"):"не удалось проверить"),
-    "Название КОМПОЗИТКИ: "+(compName?(compName.toUpperCase().includes("КОМПОЗИТКИ")?"совпадает":"не совпадает — ожидалось КОМПОЗИТКИ"):"не удалось проверить"),
+    "MODEL BANK: "+(photo?(photo.chat_id+" · topic ID "+photo.thread_id):"не подключена"),
+    "КОМПОЗИТКИ: "+(comp?(comp.chat_id+" · topic ID "+comp.thread_id):"не подключена"),
+    "Группа MODEL BANK: "+(photo?groupStatus(photoGroup):"не настроена"),
+    "Группа КОМПОЗИТКИ: "+(comp?groupStatus(compGroup):"не настроена"),
     "Обе темы в одной группе: "+(sameGroup?"да":"нет"),
     "ID тем различаются: "+(photo&&comp&&photo.thread_id!==comp.thread_id?"да":"нет"),
-    "Secretary видит обе темы: "+(photoLive&&compLive?"да":"не удалось подтвердить"),
-    "Secretary может удалять сообщения: "+(permissions?(canDelete?"да":"нет"):"не удалось проверить")
+    "Удаление в MODEL BANK: "+(photo?permissionStatus(photoGroup):"не проверяется"),
+    "Удаление в КОМПОЗИТКАХ: "+(comp?permissionStatus(compGroup):"не проверяется"),
+    "Название и существование конкретных тем: не проверяются — Telegram Bot API не предоставляет чтение списка тем или их названий."
   ].join("\n");
 }
 async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): Promise<void> {
