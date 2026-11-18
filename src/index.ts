@@ -803,23 +803,28 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   const progressStatus = await env.DB.prepare(
     "SELECT status_message_id FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?",
   ).bind(String(message.chat.id), threadId, senderId, albumId).first<{status_message_id:number|null}>();
-  if (progressStatus?.status_message_id) {
-    try {
-      await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", {
-        chat_id: message.chat.id, message_id: progressStatus.status_message_id,
-      });
-    } catch (error) {
-      console.error("Failed to delete photo upload progress message", error);
-    }
-  }
-  await env.DB.prepare(
-    "DELETE FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?",
-  ).bind(String(message.chat.id), threadId, senderId, albumId).run();
+  const progressMessageId = progressStatus?.status_message_id ?? null;
   if (items.some((item) => item.model_id !== resolvedModelId)) {
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
+    if (progressMessageId) {
+      try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: message.chat.id, message_id: progressMessageId }); } catch {}
+    }
+    await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
+      .bind(String(message.chat.id), threadId, senderId, albumId).run();
     await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "У фотографий альбома должно быть одно ФИО в подписи первого снимка. Отправьте комплект заново." });
     return;
+  }
+  if (progressMessageId) {
+    try {
+      await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
+        chat_id: message.chat.id, message_id: progressMessageId,
+        text: "Получены все 4 фотографии. Сохраняю комплект…",
+        reply_markup: secretaryCancelKeyboard(albumOperation.id),
+      });
+    } catch (error) {
+      console.error("Failed to update photo album progress message", error);
+    }
   }
   const newPhotos = items.map(({file_id,file_unique_id}) => ({file_id,file_unique_id}));
   const previous = await env.DB.prepare(
@@ -846,16 +851,24 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     });
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
+    if (progressMessageId) {
+      try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: message.chat.id, message_id: progressMessageId }); } catch {}
+    }
+    await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
+      .bind(String(message.chat.id), threadId, senderId, albumId).run();
     return;
   }
   const operationId = albumOperation.id;
   await assertSecretaryOperationActive(env, operationId);
-  const uploadStatus = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
-    chat_id: message.chat.id, message_thread_id: threadId,
-    text: "Сохраняю 4 фотографии в MODEL BANK…",
-    reply_markup: secretaryCancelKeyboard(operationId),
-  });
-  const uploadStatusId = uploadStatus.result?.message_id;
+  let uploadStatusId = progressMessageId;
+  if (!uploadStatusId) {
+    const uploadStatus = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+      chat_id: message.chat.id, message_thread_id: threadId,
+      text: "Сохраняю 4 фотографии в MODEL BANK…",
+      reply_markup: secretaryCancelKeyboard(operationId),
+    });
+    uploadStatusId = uploadStatus.result?.message_id;
+  }
   try {
     await saveSecretaryPhotoSet(env, resolvedModelId, newPhotos, senderId, message.chat.id, threadId, operationId);
     await finishSecretaryOperation(env, operationId, "completed");
@@ -875,6 +888,8 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     throw error;
   }
   await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
+    .bind(String(message.chat.id), threadId, senderId, albumId).run();
+  await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
     .bind(String(message.chat.id), threadId, senderId, albumId).run();
   if (uploadStatusId) {
     try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: message.chat.id, message_id: uploadStatusId }); } catch {}
