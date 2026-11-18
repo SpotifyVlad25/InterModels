@@ -780,9 +780,9 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   if (message.document) {
     const mime = (message.document.mime_type ?? "").toLowerCase();
     const fileName = (message.document.file_name ?? "").toLowerCase();
-    const supportedByName = /\\.(jpe?g|png|webp)$/.test(fileName);
+    const supportedByName = /\.(jpe?g|png|webp)$/.test(fileName);
     if (!["image/jpeg", "image/png", "image/webp"].includes(mime) && !supportedByName) {
-      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "Не удалось распознать формат файла. Отправьте 4 изображения JPEG, PNG или WEBP как файлы." });
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "Не удалось распознать формат файла. Отправьте 7 изображений JPEG, PNG или WEBP как файлы." });
       return;
     }
   }
