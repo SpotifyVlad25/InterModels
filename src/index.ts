@@ -628,40 +628,22 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   const firstRow = values.slice(0, 4).map((value, index) => value ? labels[index] + " " + value : null).filter((value): value is string => Boolean(value));
   const secondRow = values.slice(4, 8).map((value, index) => value ? labels[index + 4] + " " + value : null).filter((value): value is string => Boolean(value));
 
-  // Auto-fit layout: preserve every source aspect ratio and calculate the
-  // two gallery row heights from the actual three photo ratios in each row.
-  // The right column remains 1029px wide; each row fills it edge-to-edge.
-  const rightW = 1029;
-  const infoH = 317;
-  const dimensions = photos.map(imageDimensions);
-  const aspects = dimensions.map(({ width, height }) => {
-    const aspect = width / height;
-    if (!Number.isFinite(aspect) || aspect <= 0) throw new Error("Invalid source photo aspect ratio");
-    return aspect;
-  });
-  const firstRowAspectSum = aspects[1] + aspects[2] + aspects[3];
-  const secondRowAspectSum = aspects[4] + aspects[5] + aspects[6];
-  if (!Number.isFinite(firstRowAspectSum) || !Number.isFinite(secondRowAspectSum)) {
-    throw new Error("Invalid gallery row aspect ratios");
-  }
-  const firstRowH = rightW / firstRowAspectSum;
-  const secondRowH = rightW / secondRowAspectSum;
-  const galleryH = firstRowH + secondRowH;
-  const canvasH = galleryH + infoH;
-  const mainW = aspects[0] * canvasH;
-  const canvasW = mainW + rightW;
+  // Fixed InterModels comp-card canvas. Photo frames are never cropped or
+  // distorted: SVG "meet" contains each full source image inside its cell.
+  const canvasW = 1938, canvasH = 1364;
+  const mainW = 909, rightW = 1029;
+  const galleryH = 1047, infoH = 317;
+  const cellW = 343, firstRowH = 523, secondRowH = 524;
   const nameBandH = infoH / 4, detailsBandH = infoH / 2, footerH = infoH / 4;
   const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
-  const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="none"/>`;
+  const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
   const gallery = photos.slice(1).map((data, index) => {
     const row = Math.floor(index / 3);
-    const rowStart = row === 0 ? 1 : 4;
-    const rowHeight = row === 0 ? firstRowH : secondRowH;
     const col = index % 3;
-    const x = mainW + aspects.slice(rowStart, rowStart + col).reduce((sum, aspect) => sum + aspect * rowHeight, 0);
-    const width = aspects[index + 1] * rowHeight;
+    const x = mainW + col * cellW;
     const y = row === 0 ? 0 : firstRowH;
-    return `<image href="${data}" x="${x}" y="${y}" width="${width}" height="${rowHeight}" preserveAspectRatio="none"/>`;
+    const height = row === 0 ? firstRowH : secondRowH;
+    return `<image href="${data}" x="${x}" y="${y}" width="${cellW}" height="${height}" preserveAspectRatio="xMidYMid meet"/>`;
   }).join("");
   const infoScale = infoH / 317;
   const baseNameSize = rawName.length > 27 ? 58 : rawName.length > 20 ? 68 : 82;
