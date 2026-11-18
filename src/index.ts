@@ -437,6 +437,17 @@ async function handleDirectorMessage(env: Env, message: TelegramMessage): Promis
   }
   if (message.text?.startsWith("/start")) {
     if (isDirector) await saveTopic(env, "director", message);
+    // Restore the authenticated Director Mini App entry point in the private chat menu.
+    if (isDirector && message.chat.type === "private") {
+      await telegram(env.DIRECTOR_BOT_TOKEN, "setChatMenuButton", {
+        chat_id: message.chat.id,
+        menu_button: {
+          type: "web_app",
+          text: "Открыть кабинет",
+          web_app: { url: "https://intermodels.spotify-vlad25.workers.dev/app" },
+        },
+      });
+    }
     await telegram(env.DIRECTOR_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id,
       ...(message.message_thread_id ? { message_thread_id: message.message_thread_id } : {}),
