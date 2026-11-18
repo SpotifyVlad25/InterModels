@@ -1547,7 +1547,6 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
         await handleSecretaryGroupMessage(env,{...message,text:rawNames});
         return;
       }
-      await env.DB.prepare("INSERT INTO secretary_composite_request_pending(chat_id,thread_id,user_id,stage,mode,style,language,names_text,command_message_id,prompt_message_id) VALUES(?,?,?,'names',?,NULL,NULL,NULL,?,NULL) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET stage='names',mode=excluded.mode,style=NULL,language=NULL,names_text=NULL,command_message_id=excluded.command_message_id,prompt_message_id=NULL,created_at=CURRENT_TIMESTAMP").bind(String(message.chat.id),message.message_thread_id,senderId,mode,message.message_id).run();
       await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:mode==="single"?"Отправьте ФИО одной модели.":"Отправьте от 1 до 20 моделей — по одной на строку."});return;
     }
     if(/^\/comp_help(?:@\w+)?$/i.test(command)){
