@@ -1263,6 +1263,22 @@ async function finalizeSecretaryCompositeBatchOperation(env: Env, operationId: s
   await env.DB.prepare("UPDATE secretary_operations SET cleanup_at=datetime('now','+2 minutes') WHERE id=?").bind(operationId).run();
 }
 
+async function cleanupSecretaryCompositeBatchMessages(env: Env): Promise<void> {
+  const expired = await env.DB.prepare(
+    "SELECT id,chat_id,status_message_id,intro_message_id,queue_message_id,input_message_id FROM secretary_operations WHERE kind='composite_batch' AND cleanup_at IS NOT NULL AND cleanup_at<=datetime('now')",
+  ).all<{id:string;chat_id:string;status_message_id:number|null;intro_message_id:number|null;queue_message_id:number|null;input_message_id:string|null}>();
+  for (const operation of expired.results ?? []) {
+    const ids = new Set<number>();
+    for (const id of [operation.status_message_id,operation.intro_message_id,operation.queue_message_id]) if (id) ids.add(id);
+    if (operation.input_message_id) {
+      try { for (const id of JSON.parse(operation.input_message_id) as number[]) if (Number.isSafeInteger(id) && id>0) ids.add(id); } catch {}
+    }
+    for (const messageId of ids) await deleteTelegramMessage(env,operation.chat_id,messageId,"composite batch temporary UI cleanup");
+    await env.DB.prepare("UPDATE secretary_operations SET status_message_id=NULL,intro_message_id=NULL,queue_message_id=NULL,input_message_id=NULL,cleanup_at=NULL WHERE id=?")
+      .bind(operation.id).run();
+  }
+}
+
 async function processSecretaryCompositeBatchJobs(env: Env): Promise<void> {
   await env.DB.prepare(
     "UPDATE secretary_composite_batch_items SET status='failed',last_error='Задание зависло при обработке более 10 минут.',updated_at=CURRENT_TIMESTAMP WHERE status='processing' AND updated_at < datetime('now','-10 minutes')",
@@ -1356,8 +1372,8 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       return;
     }
     const pendingInput = await env.DB.prepare(
-      "SELECT 1 AS pending FROM secretary_composite_input_pending WHERE chat_id=? AND thread_id=? AND user_id=?",
-    ).bind(String(message.chat.id), message.message_thread_id, senderId).first<{pending:number}>();
+      "SELECT command_message_id FROM secretary_composite_input_pending WHERE chat_id=? AND thread_id=? AND user_id=?",
+    ).bind(String(message.chat.id), message.message_thread_id, senderId).first<{command_message_id:number|null}>();
     if (pendingInput && command && !command.startsWith("/")) {
       await env.DB.prepare("DELETE FROM secretary_composite_input_pending WHERE chat_id=? AND thread_id=? AND user_id=?")
         .bind(String(message.chat.id), message.message_thread_id, senderId).run();
@@ -1366,7 +1382,27 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
         await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Отправьте от 1 до 20 фамилий или ФИО — по одной модели на строку." });
         return;
       }
-      await generateCompositeBatchInTopic(env, message, requestedNames);
+      await generateCompositeBatchInTopic(env, message, requestedNames, [pendingInput.command_message_id,message.message_id].filter((id): id is number => typeof id === "number"));
+      return;
+    }
+    const compLines = command.split(/\r?\n/);
+    if (/^\/comp(?:@\w+)?$/i.test(compLines[0].trim()) && compLines.length > 1) {
+      const names = compLines.slice(1).map((line) => line.trim()).filter(Boolean);
+      if (!names.length || names.length > 20 || names.some((name) => name.length > 100)) {
+        await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Отправьте от 1 до 20 фамилий или ФИО — по одной модели на строку."});
+        return;
+      }
+      await generateCompositeBatchInTopic(env,message,names,[message.message_id]);
+      return;
+    }
+    if (/^\/comp(?:@\w+)?$/i.test(command)) {
+      await env.DB.prepare(
+        "INSERT INTO secretary_composite_input_pending(chat_id,thread_id,user_id,command_message_id) VALUES(?,?,?,?) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET command_message_id=excluded.command_message_id,created_at=CURRENT_TIMESTAMP",
+      ).bind(String(message.chat.id),message.message_thread_id,senderId,message.message_id).run();
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{
+        chat_id:message.chat.id,message_thread_id:message.message_thread_id,
+        text:"Готовлю поток. Отправьте список фамилий или ФИО — по одной модели на строку.",
+      });
       return;
     }
     const compCommand = command.match(/^\/comp(?:@\w+)?\s+(.+)$/i);
@@ -1584,9 +1620,9 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
   if (cancelMatch) {
     const operationId = cancelMatch[1];
     const operation = await env.DB.prepare(
-      "SELECT kind,source_key,status_message_id,result_chat_id,result_message_id,status FROM secretary_operations WHERE id=? AND actor_id=?",
+      "SELECT kind,source_key,status_message_id,intro_message_id,queue_message_id,input_message_id,result_chat_id,result_message_id,status,chat_id FROM secretary_operations WHERE id=? AND actor_id=?",
     ).bind(operationId, String(callback.from.id)).first<{
-      kind:string;source_key:string|null;status_message_id:number|null;result_chat_id:string|null;result_message_id:number|null;status:string;
+      kind:string;source_key:string|null;status_message_id:number|null;intro_message_id:number|null;queue_message_id:number|null;input_message_id:string|null;result_chat_id:string|null;result_message_id:number|null;status:string;chat_id:string;
     }>();
     const result = await env.DB.prepare(
       "UPDATE secretary_operations SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=? AND actor_id=? AND status='running'",
@@ -1606,10 +1642,19 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
         .bind(operationId).run();
     }
     if (cancelled && operation && (operation.kind === "composite" || operation.kind === "composite_batch")) {
-      const resultChatId = operation.result_chat_id ?? String(callback.message?.chat.id ?? "");
+      const resultChatId = operation.result_chat_id ?? operation.chat_id ?? String(callback.message?.chat.id ?? "");
       await deleteTelegramMessage(env, resultChatId, operation.result_message_id ?? undefined, "cancelled composite result");
       const statusMessageId = operation.status_message_id ?? callback.message?.message_id;
       await deleteTelegramMessage(env, resultChatId, statusMessageId ?? undefined, "cancelled composite status");
+      if (operation.kind === "composite_batch") {
+        await deleteTelegramMessage(env,resultChatId,operation.intro_message_id ?? undefined,"cancelled composite intro");
+        await deleteTelegramMessage(env,resultChatId,operation.queue_message_id ?? undefined,"cancelled composite queue");
+        if (operation.input_message_id) {
+          try { for (const id of JSON.parse(operation.input_message_id) as number[]) await deleteTelegramMessage(env,resultChatId,id,"cancelled composite input"); } catch {}
+        }
+        await env.DB.prepare("UPDATE secretary_operations SET status_message_id=NULL,intro_message_id=NULL,queue_message_id=NULL,input_message_id=NULL,cleanup_at=NULL WHERE id=?")
+          .bind(operationId).run();
+      }
     } else if (cancelled && callback.message) {
       try {
         await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
@@ -2468,6 +2513,7 @@ export default {
       await processRefreshCampaigns(env);
       await processCompositeRefreshJobs(env);
       await processSecretaryCompositeBatchJobs(env);
+      await cleanupSecretaryCompositeBatchMessages(env);
       await processPendingSecretaryAlbums(env);
     })());
   },
