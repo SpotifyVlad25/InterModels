@@ -1084,11 +1084,13 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     const oldPublication = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
       .bind(model.id).first<{ chat_id: string; message_id: number }>();
     await env.DB.prepare(
-      `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at)
-       VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP)
+      `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at,photo_file_ids_json,model_snapshot_json)
+       VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP,?,?)
        ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
-         message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP`,
-    ).bind(model.id, String(message.chat.id), message.message_thread_id!, newMessageId).run();
+         message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP,
+         photo_file_ids_json=excluded.photo_file_ids_json,model_snapshot_json=excluded.model_snapshot_json`,
+    ).bind(model.id, String(message.chat.id), message.message_thread_id!, newMessageId,
+      JSON.stringify(photos.map((photo) => photo.telegram_file_id)), JSON.stringify(model)).run();
     publicationCommitted = true;
     if (oldPublication) {
       try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: oldPublication.chat_id, message_id: oldPublication.message_id }); }
@@ -1581,26 +1583,41 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     const topic = await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1")
       .first<{chat_id:string;thread_id:number}>();
     const publication = await env.DB.prepare(
-      "SELECT model_id FROM composite_topic_publications WHERE model_id=? AND chat_id=? AND thread_id=? AND message_id=?",
-    ).bind(fileMatch[1], String(msg.chat.id), msg.message_thread_id, msg.message_id).first<{model_id:string}>();
+      "SELECT model_id,photo_file_ids_json,model_snapshot_json FROM composite_topic_publications WHERE model_id=? AND chat_id=? AND thread_id=? AND message_id=?",
+    ).bind(fileMatch[1], String(msg.chat.id), msg.message_thread_id, msg.message_id)
+      .first<{model_id:string;photo_file_ids_json:string|null;model_snapshot_json:string|null}>();
     if (!topic || topic.chat_id !== String(msg.chat.id) || topic.thread_id !== msg.message_thread_id || !publication) {
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Эта композитка уже заменена или недоступна.", show_alert: true });
       return;
     }
     await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Готовлю PNG-файл…" });
     try {
-      const model = await env.DB.prepare(
-        `SELECT m.id,m.first_name,m.last_name,p.height_cm,p.bust_cm,p.waist_cm,p.hips_cm,
-          p.clothing_size,p.shoe_size,p.hair_color,p.eye_color
-         FROM models m LEFT JOIN model_profiles p ON p.model_id=m.id
-         WHERE m.id=? AND m.is_active=1 AND m.lifecycle_status='active'`,
-      ).bind(fileMatch[1]).first<SecretaryModelRow>();
+      let model: SecretaryModelRow | null = publication.model_snapshot_json
+        ? JSON.parse(publication.model_snapshot_json) as SecretaryModelRow
+        : null;
+      if (!model) {
+        model = await env.DB.prepare(
+          `SELECT m.id,m.first_name,m.last_name,p.height_cm,p.bust_cm,p.waist_cm,p.hips_cm,
+            p.clothing_size,p.shoe_size,p.hair_color,p.eye_color
+           FROM models m LEFT JOIN model_profiles p ON p.model_id=m.id
+           WHERE m.id=? AND m.is_active=1 AND m.lifecycle_status='active'`,
+        ).bind(fileMatch[1]).first<SecretaryModelRow>();
+      }
       if (!model) throw new Error("Анкета модели больше не активна.");
-      const photoRows = await env.DB.prepare("SELECT position,telegram_file_id FROM model_telegram_photos WHERE model_id=? ORDER BY position")
-        .bind(fileMatch[1]).all<{position:number;telegram_file_id:string}>();
-      const photos = photoRows.results ?? [];
-      if (photos.length !== 7 || photos.some((p,i)=>p.position!==i+1)) throw new Error("Исходные фотографии больше недоступны.");
-      const png = await renderCompositePng(env, model, photos.map(p=>p.telegram_file_id));
+      let photoFileIds: string[] | null = publication.photo_file_ids_json
+        ? JSON.parse(publication.photo_file_ids_json) as string[]
+        : null;
+      if (!photoFileIds) {
+        const photoRows = await env.DB.prepare("SELECT position,telegram_file_id FROM model_telegram_photos WHERE model_id=? ORDER BY position")
+          .bind(fileMatch[1]).all<{position:number;telegram_file_id:string}>();
+        const photos = photoRows.results ?? [];
+        if (photos.length !== 7 || photos.some((p,i)=>p.position!==i+1)) throw new Error("Исходные фотографии больше недоступны.");
+        photoFileIds = photos.map(p=>p.telegram_file_id);
+      }
+      if (!Array.isArray(photoFileIds) || photoFileIds.length !== 7 || photoFileIds.some(id=>typeof id!=="string" || !id)) {
+        throw new Error("Снимок исходных фотографий повреждён.");
+      }
+      const png = await renderCompositePng(env, model, photoFileIds);
       const form = new FormData();
       form.set("chat_id", String(msg.chat.id));
       form.set("message_thread_id", String(msg.message_thread_id));
@@ -2215,11 +2232,13 @@ async function publishCompositeModel(
     old = await env.DB.prepare("SELECT chat_id,message_id FROM composite_topic_publications WHERE model_id=?")
     .bind(modelId).first<{ chat_id: string; message_id: number }>();
     await env.DB.prepare(
-      `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at)
-       VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+      `INSERT INTO composite_topic_publications(model_id,chat_id,thread_id,message_id,campaign_id,published_at,photo_file_ids_json,model_snapshot_json)
+       VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,?,?)
        ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
-         message_id=excluded.message_id,campaign_id=excluded.campaign_id,published_at=CURRENT_TIMESTAMP`,
-    ).bind(modelId, topic.chat_id, topic.thread_id, messageId, campaignId).run();
+         message_id=excluded.message_id,campaign_id=excluded.campaign_id,published_at=CURRENT_TIMESTAMP,
+         photo_file_ids_json=excluded.photo_file_ids_json,model_snapshot_json=excluded.model_snapshot_json`,
+    ).bind(modelId, topic.chat_id, topic.thread_id, messageId, campaignId,
+      JSON.stringify(photos.map((photo) => photo.telegram_file_id)), JSON.stringify(model)).run();
     if (publicationClaimed) {
       await env.DB.prepare("UPDATE secretary_operations SET status='running',result_chat_id=NULL,result_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='publishing'")
         .bind(operationId).run();
