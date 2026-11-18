@@ -1816,7 +1816,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
     const model=await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(pending.model_id).first<{first_name:string;last_name:string}>();
     await telegram(env.SECRETARY_BOT_TOKEN,"deleteMessage",{chat_id:msg.chat.id,message_id:msg.message_id});
-    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+" · "+(style==="basic"?"Basic":"Fashion")+" готова✅",reply_markup:{inline_keyboard:[[{text:"➕ Создать новую анкету",callback_data:"photo:create"}]]}});return;
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+" готова✅",reply_markup:{inline_keyboard:[[{text:"➕ Создать новую анкету",callback_data:"photo:create"}]]}});return;
   }
   const compStyleMatch=data.match(/^comp_style:(basic|fashion)$/);
   if(compStyleMatch){
