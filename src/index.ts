@@ -719,8 +719,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   const leftColumnX = mainW + 52 * infoScale;
   const rightColumnX = mainW + rightW / 2 + 18 * infoScale;
   const contactX = mainW + 64 * infoScale;
-  const websiteCenterX = mainW + rightW / 2;
-  const logoRightX = canvasW - 64 * infoScale;
+  const websiteCenterX = mainW + rightW * 0.41;
+  const logoRightX = canvasW - 28 * infoScale;
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
   <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
   ${mainPhoto}
@@ -737,8 +737,8 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   <style>
     text{font-family:"DejaVu Sans",Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
-    .parameter-label{font-weight:400;letter-spacing:.4px;fill:#777}
-    .parameter-value{font-weight:600}
+    .parameter-label{font-weight:700;letter-spacing:.4px;fill:#777}
+    .parameter-value{font-weight:400}
     .phone{font-size:${23 * infoScale}px;font-weight:500;letter-spacing:.1px}
     .website{font-size:${22 * infoScale}px;font-weight:400}
     .brand{font-size:${42 * infoScale}px;font-weight:800;letter-spacing:${3 * infoScale}px}
