@@ -1187,11 +1187,37 @@ async function sendCompositePng(env: Env, chatId: number, threadId: number, png:
 async function publishCompositariumAlbum(env:Env,modelId:string):Promise<boolean>{
   const topic=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_compositarium_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
   if(!topic)return false;
-  const variants=await env.DB.prepare("SELECT style,language,telegram_photo_file_id FROM composite_topic_publications WHERE model_id=? AND telegram_photo_file_id IS NOT NULL ORDER BY CASE style WHEN 'basic' THEN 0 ELSE 1 END,CASE language WHEN 'ru' THEN 0 ELSE 1 END").bind(modelId).all<{style:"basic"|"fashion";language:"ru"|"en";telegram_photo_file_id:string}>();
-  const photos=variants.results??[];
-  if(!photos.length)return false;
-  const model=await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(modelId).first<{first_name:string;last_name:string}>();
-  const caption=(model?.first_name??"")+" "+(model?.last_name??"");
+  const variants=await env.DB.prepare("SELECT style,language,telegram_photo_file_id,photo_file_ids_json,model_snapshot_json FROM composite_topic_publications WHERE model_id=? ORDER BY CASE language WHEN 'ru' THEN 0 ELSE 1 END,CASE style WHEN 'basic' THEN 0 ELSE 1 END").bind(modelId).all<{style:"basic"|"fashion";language:"ru"|"en";telegram_photo_file_id:string|null;photo_file_ids_json:string|null;model_snapshot_json:string|null}>();
+  const rows=variants.results??[];
+  if(!rows.length)return false;
+  const model=await env.DB.prepare("SELECT m.id,m.first_name,m.last_name,p.height_cm,p.bust_cm,p.waist_cm,p.hips_cm,p.clothing_size,p.shoe_size,p.hair_color,p.eye_color FROM models m LEFT JOIN model_profiles p ON p.model_id=m.id WHERE m.id=?").bind(modelId).first<SecretaryModelRow>();
+  if(!model)throw new Error("Модель для альбома КОМПОЗИТАРИЯ не найдена.");
+  const caption=model.first_name+" "+model.last_name;
+  const photos:Array<{telegram_photo_file_id:string}>=[];
+  for(const row of rows){
+    let photoFileId=row.telegram_photo_file_id;
+    if(!photoFileId){
+      let sourceIds:string[]=[];
+      try{sourceIds=JSON.parse(row.photo_file_ids_json??"[]") as string[]}catch{}
+      if(sourceIds.length!==7||sourceIds.some(id=>typeof id!=="string"||!id))throw new Error("Не удалось восстановить исходные фотографии варианта "+row.style+"/"+row.language+".");
+      let snapshot:SecretaryModelRow=model;
+      try{if(row.model_snapshot_json)snapshot=JSON.parse(row.model_snapshot_json) as SecretaryModelRow;}catch{}
+      const png=await renderCompositePng(env,snapshot,sourceIds,undefined,row.language);
+      const form=new FormData();
+      form.set("chat_id",topic.chat_id);form.set("message_thread_id",String(topic.thread_id));form.set("caption",caption);
+      form.set("photo",new Blob([png],{type:"image/png"}),"intermodels-composite-backfill.png");
+      const response=await fetch("https://api.telegram.org/bot"+env.SECRETARY_BOT_TOKEN+"/sendPhoto",{method:"POST",body:form});
+      const result:any=await response.json().catch(()=>null);
+      if(!response.ok||!result?.ok)throw new Error("Не удалось восстановить вариант в КОМПОЗИТАРИИ: "+(result?.description??response.status));
+      const sizes=result.result?.photo;
+      photoFileId=Array.isArray(sizes)?sizes[sizes.length-1]?.file_id:null;
+      const temporaryMessageId=Number(result.result?.message_id);
+      if(typeof photoFileId!=="string"||!photoFileId||!Number.isSafeInteger(temporaryMessageId)||temporaryMessageId<=0)throw new Error("Telegram не вернул файл восстановленной композитки.");
+      await deleteTelegramMessage(env,topic.chat_id,temporaryMessageId,"temporary Compositarium backfill photo");
+      await env.DB.prepare("UPDATE composite_topic_publications SET telegram_photo_file_id=? WHERE model_id=? AND style=? AND language=?").bind(photoFileId,modelId,row.style,row.language).run();
+    }
+    photos.push({telegram_photo_file_id:photoFileId});
+  }
   let messageIds:number[]=[];
   if(photos.length===1){
     const sent=await telegram(env.SECRETARY_BOT_TOKEN,"sendPhoto",{chat_id:topic.chat_id,message_thread_id:topic.thread_id,photo:photos[0].telegram_photo_file_id,caption});
@@ -1786,7 +1812,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:mode==="single"?"Отправьте ФИО одной модели.":"Отправьте от 1 до 20 моделей — по одной на строку."});return;
     }
     if(/^\/comp_help(?:@\w+)?$/i.test(command)){
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Просто отправьте имя или фамилию. Одна строка — одна композитка; несколько строк — пакет. Стиль определяется по доступным фотокомплектам: если их несколько, бот предложит выбор. Язык бот спрашивает всегда."});return;
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Для отдельной композитки используйте «➕ Композитка». Для четырёх вариантов одной модели — «🧩 СЕТ».",reply_markup:{inline_keyboard:[[{text:"➕ Композитка",callback_data:"composite:create"},{text:"🧩 СЕТ",callback_data:"composite:set"}]]}});return;
     }
     if(command && !command.startsWith("/")){
       const lines=command.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
