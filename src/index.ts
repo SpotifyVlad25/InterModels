@@ -1192,6 +1192,7 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
   for (let index = 0; index < names.length; index++) {
     const requestedName = names[index].trim();
     let modelId: string | null = null;
+    let itemStyle: "basic" | "fashion" = style;
     let failure: string | null = null;
     try {
       const normalized = normalizeName(requestedName);
@@ -1206,7 +1207,7 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
       const available = await env.DB.prepare("SELECT style,COUNT(*) AS count,MIN(position) AS min_position,MAX(position) AS max_position FROM model_telegram_photo_sets WHERE model_id=? GROUP BY style")
         .bind(modelId).all<{style:"basic"|"fashion";count:number;min_position:number;max_position:number}>();
       const validStyles = (available.results ?? []).filter(row => row.count === 7 && row.min_position === 1 && row.max_position === 7).map(row => row.style);
-      const effectiveStyle = validStyles.includes(style) ? style : validStyles.length === 1 ? validStyles[0] : null;
+      const effectiveStyle = validStyles.includes(itemStyle) ? itemStyle : validStyles.length === 1 ? validStyles[0] : null;
       if (!effectiveStyle) throw new Error("У модели нет полного набора фотографий выбранного стиля. Проверьте MODEL BANK.");
       const photoResult = await env.DB.prepare("SELECT position FROM model_telegram_photo_sets WHERE model_id=? AND style=? ORDER BY position")
         .bind(modelId, effectiveStyle).all<{position:number}>();
@@ -1214,7 +1215,7 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
       if (photos.length !== 7 || photos.some((photo, i) => photo.position !== i + 1)) {
         throw new Error("У модели отсутствует полный комплект фотографий. Загрузите его в MODEL BANK.");
       }
-      style = effectiveStyle;
+      itemStyle = effectiveStyle;
       queued++;
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
@@ -1222,7 +1223,7 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
     const itemId = randomId();
     await env.DB.prepare(
       "INSERT INTO secretary_composite_batch_items(id,operation_id,position,requested_name,model_id,status,last_error,style,language) VALUES(?,?,?,?,?,?,?,?,?)",
-    ).bind(itemId, operationId, index + 1, requestedName, modelId, failure ? "failed" : "pending", failure, style, language).run();
+    ).bind(itemId, operationId, index + 1, requestedName, modelId, failure ? "failed" : "pending", failure, itemStyle, language).run();
     const itemMessage = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: chatId, message_thread_id: threadId,
       text: failure ? "❌ " + requestedName + " — " + failure : "⏳ " + requestedName + " — В очереди",
