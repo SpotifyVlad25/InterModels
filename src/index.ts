@@ -1349,7 +1349,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_composite_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
       .bind(String(message.chat.id), message.message_thread_id, senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена. Нажмите «Создать композитку», чтобы ввести одну или несколько фамилий.",
+    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Тема «КОМПОЗИТКИ» подключена.\\n\\n/comp — одна композитка.\\n/comps — список моделей.\\n/comp_help — подсказка команд.",
       reply_markup: { inline_keyboard: [[{ text: "➕ Создать композитку", callback_data: "composite:create" }]] } }); return;
   }
   if(/^\/topics_check(?:@\w+)?$/i.test(command)){
@@ -1813,7 +1813,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:language==="ru"?"Русский выбран.":"English selected."});
     if(pending.names_text){
       const names=pending.names_text.split("\n").map(name=>name.trim()).filter(Boolean);
-      if(!names.length||names.length>20||names.some(name=>name.length>100)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:"В команде должен быть список от 1 до 20 фамилий или ФИО."});return;}
+      if(!names.length||(pending.mode==="single"?names.length!==1:names.length>20)||names.some(name=>name.length>100)){await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:pending.mode==="single"?"Команда /comp принимает только одну модель. Для списка используйте /comps.":"В списке должно быть от 1 до 20 моделей."});return;}
       await env.DB.prepare("DELETE FROM secretary_composite_request_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
       await telegram(env.SECRETARY_BOT_TOKEN,"deleteMessage",{chat_id:msg.chat.id,message_id:msg.message_id});
       const sourceMessage={...msg,from:callback.from};const ids=[pending.command_message_id].filter((id):id is number=>typeof id==="number");
