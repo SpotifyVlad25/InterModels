@@ -206,6 +206,7 @@ async function createRequest(
       chat_id: env.OWNER_TELEGRAM_ID,
       text: message,
       disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: keyboard },
     });
   }
   await sendModel(env, replyChatId, "Совпадение найдено. Заявка отправлена директору на проверку. Доступ откроется только после её подтверждения.", replyThreadId);
@@ -354,6 +355,9 @@ async function canManageRequests(env: Env, telegramId: string): Promise<boolean>
   return hasDirectorAccess(env, telegramId);
 }
 async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery): Promise<void> {
+  if (!(await canManageRequests(env, String(callback.from.id)))) {
+    await answerCallback(env, callback, "Недостаточно прав.", true); return;
+  }
   const data = callback.data ?? "";
   const refreshMatch = data.match(/^comprefresh:([a-f0-9]{12})$/);
   if (refreshMatch) {
@@ -393,9 +397,6 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
       await sendDirector(env, "🔄 Обновление Comp запущено по завершённой кампании. В очереди: " + queued + " моделей. Уже опубликованные композитки повторно в очередь не попадают.");
     }
     return;
-  }
-  if (!(await canManageRequests(env, String(callback.from.id)))) {
-    await answerCallback(env, callback, "Недостаточно прав.", true); return;
   }
   if (data === "composite:create") {
     const msg = callback.message;
@@ -2250,9 +2251,11 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
   await generateCompositeInTopic(env, callback.message, model.first_name + " " + model.last_name);
 }
 
-const DELEGATED_ADMIN_TELEGRAM_IDS = new Set(["727737302"]);
 function hasDirectorAccess(env: Env, telegramId: string): boolean {
-  return telegramId === env.OWNER_TELEGRAM_ID || telegramId === env.DIRECTOR_TELEGRAM_ID || DELEGATED_ADMIN_TELEGRAM_IDS.has(telegramId);
+  return Boolean(telegramId) && (
+    telegramId === env.OWNER_TELEGRAM_ID ||
+    telegramId === env.DIRECTOR_TELEGRAM_ID
+  );
 }
 interface MiniAppActor { id: string; first_name?: string; last_name?: string; username?: string; }
 function bytesToHex(bytes: ArrayBuffer): string { return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2,"0")).join(""); }
