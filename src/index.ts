@@ -775,6 +775,9 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   const albumId = message.media_group_id!;
   const threadId = message.message_thread_id;
   if (threadId === undefined) return;
+  const databaseTopic = await env.DB.prepare("SELECT style FROM secretary_photo_database_topics WHERE chat_id=? AND thread_id=?").bind(String(message.chat.id),threadId).first<{style:"basic"|"fashion"}>();
+  const databaseStyle = databaseTopic?.style ?? null;
+  const uploadIntent = databaseStyle ? null : await env.DB.prepare("SELECT model_id,style FROM secretary_photo_upload_intents WHERE chat_id=? AND thread_id=? AND uploader_id=? AND created_at>=datetime('now','-30 minutes')").bind(String(message.chat.id),threadId,senderId).first<{model_id:string;style:"basic"|"fashion"|null}>();
   const media = message.photo?.length ? message.photo[message.photo.length - 1] : message.document;
   if (!media) return;
   if (message.document) {
@@ -797,25 +800,39 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     fileUniqueIdPresent: Boolean(media.file_unique_id),
   });
   const caption = (message.caption ?? "").trim();
+  let captionStyle: "basic"|"fashion"|null = null;
   let modelId: string | null = null;
   if (caption) {
-    if (caption.length > 100 || /[\r\n]/.test(caption)) {
-      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "В подписи укажите только имя и фамилию модели." });
+    if (caption.length > 120 || /[\r\n]/.test(caption)) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: "В подписи укажите имя и фамилию модели, при необходимости добавив BASIC или FASHION." });
       return;
     }
-    const target = normalizeName(caption);
+    let modelCaption=caption;
+    const stylePrefix=modelCaption.match(/^(basic|fashion)\s+(.+)$/i);
+    const styleSuffix=modelCaption.match(/^(.+?)\s+(basic|fashion)$/i);
+    if(stylePrefix){captionStyle=stylePrefix[1].toLowerCase() as "basic"|"fashion";modelCaption=stylePrefix[2].trim();}
+    else if(styleSuffix){captionStyle=styleSuffix[2].toLowerCase() as "basic"|"fashion";modelCaption=styleSuffix[1].trim();}
+    const target = normalizeName(modelCaption);
     const models = await getActiveModels(env);
     const matches = models.filter((m) => normalizeName(m.first_name + " " + m.last_name) === target);
     if (matches.length !== 1) {
-      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: matches.length ? "Найдено несколько анкет с таким ФИО. Уточните данные в базе." : "Анкета «" + caption + "» не найдена. Проверьте ФИО." });
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: threadId, text: matches.length ? "Найдено несколько анкет с таким ФИО. Уточните данные в базе." : "Анкета «" + modelCaption + "» не найдена. Проверьте ФИО." });
       return;
     }
     modelId = matches[0].id;
+    if(uploadIntent && uploadIntent.model_id!==modelId){
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Этот альбом не совпадает с выбранной в MODEL BANK моделью. Начните загрузку заново."});
+      return;
+    }
   } else {
     const existing = await env.DB.prepare(
       "SELECT model_id FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ? AND model_id IS NOT NULL LIMIT 1",
     ).bind(String(message.chat.id), threadId, senderId, albumId).first<{model_id:string}>();
-    modelId = existing?.model_id ?? null;
+    modelId = existing?.model_id ?? uploadIntent?.model_id ?? null;
+  }
+  if(databaseStyle && captionStyle && captionStyle!==databaseStyle){
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Стиль в подписи не совпадает с темой. В этой теме принимаются только "+(databaseStyle==="basic"?"BASIC":"FASHION")+"-комплекты."});
+    return;
   }
   await env.DB.prepare(
     `INSERT INTO secretary_photo_album_items
@@ -853,7 +870,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   ).bind(String(message.chat.id), threadId, senderId, albumId)
     .all<{message_id:number;model_id:string|null;file_id:string;file_unique_id:string}>();
   const items = album.results ?? [];
-  if (items.length) await trackSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,{photoIds:items.map(item=>item.message_id)});
+  if (items.length && !databaseStyle) await trackSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,{photoIds:items.map(item=>item.message_id)});
   if (items.length > 7) {
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
@@ -954,11 +971,24 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   }
   const newPhotos=items.map(({file_id,file_unique_id})=>({file_id,file_unique_id}));
   await finishSecretaryOperation(env,albumOperation.id,"completed");
-  await env.DB.prepare("INSERT INTO secretary_photo_replacement_pending(chat_id,thread_id,user_id,model_id,photos_json,style) VALUES(?,?,?,?,?,'basic') ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET model_id=excluded.model_id,photos_json=excluded.photos_json,style='basic',created_at=CURRENT_TIMESTAMP").bind(String(message.chat.id),threadId,senderId,resolvedModelId,JSON.stringify(newPhotos)).run();
+  const selectedStyle = databaseStyle ?? uploadIntent?.style ?? captionStyle;
   await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?").bind(String(message.chat.id),threadId,senderId,albumId).run();
   await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id=? AND thread_id=? AND uploader_id=? AND media_group_id=?").bind(String(message.chat.id),threadId,senderId,albumId).run();
-  await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,progressMessageId?[progressMessageId]:[]);
   const model=await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
+  if(selectedStyle){
+    await saveSecretaryPhotoSet(env,resolvedModelId,newPhotos,senderId,message.chat.id,threadId,selectedStyle);
+    await env.DB.prepare("DELETE FROM secretary_photo_upload_intents WHERE chat_id=? AND thread_id=? AND uploader_id=?").bind(String(message.chat.id),threadId,senderId).run();
+    if(databaseStyle){
+      if(progressMessageId) await deleteTelegramMessage(env,message.chat.id,progressMessageId,"external photo database album complete");
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Комплект "+(model?.first_name??"")+" "+(model?.last_name??"")+" · "+(selectedStyle==="basic"?"BASIC":"FASHION")+" сохранён. Предыдущие 7 фотографий этого стиля заменены."});
+    }else{
+      await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,progressMessageId?[progressMessageId]:[]);
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+" · "+(selectedStyle==="basic"?"BASIC":"FASHION")+" обновлена. Новый комплект из 7 фотографий сохранён.",reply_markup:{inline_keyboard:[]}});
+    }
+    return;
+  }
+  await env.DB.prepare("INSERT INTO secretary_photo_replacement_pending(chat_id,thread_id,user_id,model_id,photos_json,style) VALUES(?,?,?,?,?,'basic') ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET model_id=excluded.model_id,photos_json=excluded.photos_json,style='basic',created_at=CURRENT_TIMESTAMP").bind(String(message.chat.id),threadId,senderId,resolvedModelId,JSON.stringify(newPhotos)).run();
+  await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,progressMessageId?[progressMessageId]:[]);
   await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:threadId,text:"Анкета "+(model?.first_name??"")+" "+(model?.last_name??"")+". Выберите набор фотографий:",
     reply_markup:{inline_keyboard:[[{text:"Basic",callback_data:"photo_style:basic"},{text:"Fashion",callback_data:"photo_style:fashion"}]]}});
 }
@@ -1324,6 +1354,27 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   if (!message.from || (message.chat.type !== "group" && message.chat.type !== "supergroup")) return;
   const senderId = String(message.from.id);
   const command = (message.text ?? "").trim();
+  const setupText = command.match(/^подключить\s+(basic|fashion|model\s*bank|композитки)$/i);
+  if(setupText){
+    if(!hasDirectorAccess(env,senderId)){
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Подключать темы может только владелец или директор."});return;
+    }
+    const target=setupText[1].toLowerCase().replace(/\s+/g," ");
+    if(target==="basic"||target==="fashion"){
+      const style=target as "basic"|"fashion";
+      await env.DB.prepare("INSERT INTO secretary_photo_database_topics(style,chat_id,thread_id,configured_by) VALUES(?,?,?,?) ON CONFLICT(style) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,configured_by=excluded.configured_by,created_at=CURRENT_TIMESTAMP")
+        .bind(style,String(message.chat.id),message.message_thread_id,senderId).run();
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Тема PHOTO DATABASE "+style.toUpperCase()+" подключена. Публикуйте альбомы ровно из 7 фотографий с подписью «Имя Фамилия». Новый комплект автоматически заменит предыдущий для этого стиля."});return;
+    }
+    if(target==="model bank"){
+      await env.DB.prepare("INSERT INTO secretary_photo_topics(id,chat_id,thread_id,configured_by) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,configured_by=excluded.configured_by")
+        .bind(String(message.chat.id),message.message_thread_id,senderId).run();
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Тема MODEL BANK подключена. Напишите имя и фамилию модели, при желании добавив BASIC или FASHION, затем отправьте альбом из 7 фотографий."});return;
+    }
+    await env.DB.prepare("INSERT INTO secretary_composite_topics(id,chat_id,thread_id,configured_by) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,configured_by=excluded.configured_by")
+      .bind(String(message.chat.id),message.message_thread_id,senderId).run();
+    await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Тема КОМПОЗИТКИ подключена. Напишите имя или фамилию модели — одна строка для одиночной композитки, несколько строк для массовой. По умолчанию BASIC и русский язык."});return;
+  }
   console.info("Secretary group update", {
     chatId: message.chat.id,
     threadId: message.message_thread_id ?? null,
@@ -1402,13 +1453,48 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Выберите стиль композитки:",reply_markup:{inline_keyboard:[[{text:"Basic",callback_data:"comp_style:basic"},{text:"Fashion",callback_data:"comp_style:fashion"}]]}});return;
     }
     if(/^\/comp_help(?:@\w+)?$/i.test(command)){
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Команды темы «КОМПОЗИТКИ»:\n/comp — создать композитку одной модели.\n/comps — создать композитки для списка моделей (до 20, по одной на строку).\n\nПосле команды выберите стиль Basic/Fashion и язык."});return;
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Можно просто отправить имя или фамилию. Одна строка — одна композитка; несколько строк — пакет. По умолчанию BASIC и русский язык. Команды /comp и /comps также поддерживаются."});return;
+    }
+    if(command && !command.startsWith("/")){
+      const lines=command.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+      let style:"basic"|"fashion"="basic";
+      let language:"ru"|"en"="ru";
+      const names=lines.map(line=>{
+        const prefix=line.match(/^(basic|fashion)\s+(.+)$/i);
+        const suffix=line.match(/^(.+?)\s+(basic|fashion)$/i);
+        const styleMatch=prefix??suffix;
+        if(styleMatch){
+          style=(prefix?prefix[1]:suffix![2]).toLowerCase() as "basic"|"fashion";
+          return (prefix?prefix[2]:suffix![1]).trim();
+        }
+        const langMatch=line.match(/^(english|английский|русский|russian)\s*[:,-]?\s*(.+)$/i);
+        if(langMatch){language=/^(english|английский)$/i.test(langMatch[1])?"en":"ru";return langMatch[2].trim();}
+        return line;
+      });
+      if(!names.length||names.length>20||names.some(name=>!name||name.length>100)){
+        await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Отправьте от 1 до 20 моделей — по одной на строку."});return;
+      }
+      if(names.length===1) await generateCompositeInTopic(env,message,names[0],style,language);
+      else await generateCompositeBatchInTopic(env,message,names,[message.message_id],style,language);
+      return;
     }
     if (command.startsWith("/")) {
       await env.DB.prepare("DELETE FROM secretary_composite_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
         .bind(String(message.chat.id), message.message_thread_id, senderId).run();
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Команда: /comp Фамилия или /comp Имя Фамилия" });
       return;
+    }
+    return;
+  }
+  const photoDatabaseTopic=await env.DB.prepare("SELECT style FROM secretary_photo_database_topics WHERE chat_id=? AND thread_id=?").bind(String(message.chat.id),message.message_thread_id).first<{style:"basic"|"fashion"}>();
+  if(photoDatabaseTopic){
+    if(!(await secretaryAllowed(env,senderId))){
+      if(message.photo?.length||message.document) await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"У вас нет доступа к фотобазе. Попросите владельца или директора выдать права."});
+      return;
+    }
+    if(message.media_group_id){await handleSecretaryAlbumMessage(env,message,senderId);return;}
+    if(message.photo?.length||message.document){
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Для обновления фотобазы отправьте все 7 фотографий одним альбомом и добавьте подпись «Имя Фамилия» к первому фото."});
     }
     return;
   }
@@ -1487,6 +1573,25 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
         chat_id: message.chat.id, message_thread_id: message.message_thread_id,
         text: "У вас нет доступа к загрузке фотографий в MODEL BANK. Попросите владельца или директора выдать доступ «Управление фотографиями» или «Создание композиток».",
       });
+    }
+    return;
+  }
+  if (!message.photo?.length && !message.document && command && !command.startsWith("/")) {
+    const stylePrefix=command.match(/^(basic|fashion)\s+(.+)$/i);
+    const styleSuffix=command.match(/^(.+?)\s+(basic|fashion)$/i);
+    const requestedStyle=(stylePrefix?.[1]??styleSuffix?.[2])?.toLowerCase() as "basic"|"fashion"|undefined;
+    const requestedName=(stylePrefix?.[2]??styleSuffix?.[1]??command).trim();
+    const models=await getActiveModels(env);
+    const matches=models.filter(m=>normalizeName(m.first_name+" "+m.last_name)===normalizeName(requestedName));
+    if(matches.length!==1){
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:matches.length?"Нашлось несколько анкет. Напишите имя и фамилию полностью.":"Модель «"+requestedName+"» не найдена. Проверьте имя и фамилию."});return;
+    }
+    await env.DB.prepare("INSERT INTO secretary_photo_upload_intents(chat_id,thread_id,uploader_id,model_id,style) VALUES(?,?,?,?,?) ON CONFLICT(chat_id,thread_id,uploader_id) DO UPDATE SET model_id=excluded.model_id,style=excluded.style,created_at=CURRENT_TIMESTAMP")
+      .bind(String(message.chat.id),message.message_thread_id,senderId,matches[0].id,requestedStyle??null).run();
+    if(requestedStyle){
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Принято: "+matches[0].first_name+" "+matches[0].last_name+" · "+requestedStyle.toUpperCase()+". Теперь отправьте одним альбомом ровно 7 фотографий."});
+    }else{
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Для "+matches[0].first_name+" "+matches[0].last_name+" выберите стиль:",reply_markup:{inline_keyboard:[[{text:"BASIC",callback_data:"bank_intent_style:basic"},{text:"FASHION",callback_data:"bank_intent_style:fashion"}]]}});
     }
     return;
   }
@@ -1759,6 +1864,20 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     });
     await env.DB.prepare("INSERT INTO secretary_photo_upload_sessions(chat_id,thread_id,uploader_id,prompt_message_id,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(chat_id,thread_id,uploader_id) DO UPDATE SET command_message_id=NULL,prompt_message_id=excluded.prompt_message_id,photo_message_ids_json='[]',bot_message_ids_json='[]',updated_at=CURRENT_TIMESTAMP")
       .bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id),prompt.result?.message_id ?? null).run();
+    return;
+  }
+  const bankIntentStyleMatch=data.match(/^bank_intent_style:(basic|fashion)$/);
+  if(bankIntentStyleMatch){
+    const msg=callback.message;
+    if(!msg||msg.chat.type!=="supergroup"||!msg.message_thread_id){await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Выбор доступен только в теме MODEL BANK.",show_alert:true});return;}
+    const topic=await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_photo_topics WHERE id=1").first<{chat_id:string;thread_id:number}>();
+    const intent=await env.DB.prepare("SELECT model_id FROM secretary_photo_upload_intents WHERE chat_id=? AND thread_id=? AND uploader_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).first<{model_id:string}>();
+    if(!topic||topic.chat_id!==String(msg.chat.id)||topic.thread_id!==msg.message_thread_id||!intent){await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Запрос загрузки истёк. Напишите имя модели заново.",show_alert:true});return;}
+    const style=bankIntentStyleMatch[1] as "basic"|"fashion";
+    await env.DB.prepare("UPDATE secretary_photo_upload_intents SET style=?,created_at=CURRENT_TIMESTAMP WHERE chat_id=? AND thread_id=? AND uploader_id=?").bind(style,String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
+    const model=await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(intent.model_id).first<{first_name:string;last_name:string}>();
+    await telegram(env.SECRETARY_BOT_TOKEN,"answerCallbackQuery",{callback_query_id:callback.id,text:"Стиль "+style.toUpperCase()+" выбран."});
+    await telegram(env.SECRETARY_BOT_TOKEN,"editMessageText",{chat_id:msg.chat.id,message_id:msg.message_id,text:"Принято: "+(model?.first_name??"")+" "+(model?.last_name??"")+" · "+style.toUpperCase()+". Теперь отправьте одним альбомом ровно 7 фотографий.",reply_markup:{inline_keyboard:[]}});
     return;
   }
   const photoStyleMatch=data.match(/^photo_style:(basic|fashion)$/);
@@ -2589,8 +2708,8 @@ export default {
     });
     try {
       const isCompositeUpdate = isSecretary && (
-        /^\/(?:comp|comps)(?:@\w+)?(?:\s|$)/i.test(update.message?.text ?? "") || /^\/comp_help(?:@\w+)?$/i.test(update.message?.text ?? "") ||
-        ["csel:", "composite:", "comp_style:", "comp_lang:", "photo_style:"].some((prefix) => (update.callback_query?.data ?? "").startsWith(prefix))
+        Boolean(update.message?.message_thread_id && (update.message.chat.type==="group"||update.message.chat.type==="supergroup")) ||
+        ["csel:", "composite:", "comp_style:", "comp_lang:", "photo_style:", "bank_intent_style:"].some((prefix) => (update.callback_query?.data ?? "").startsWith(prefix))
       );
       if (isCompositeUpdate && typeof update.update_id === "number") {
         const claim = await env.DB.prepare(
