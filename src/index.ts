@@ -659,7 +659,7 @@ function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru"
   <text x="${logoCenterX}" y="${footerTop + 137}" text-anchor="middle" class="brand">INTERMODELS</text>
   <text x="${logoCenterX}" y="${footerTop + 190}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
   <style>
-    text{font-family:Roboto,sans-serif;fill:#171717}
+    text{font-family:"DejaVu Sans",Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
     .detail{font-weight:600;letter-spacing:.2px}
     .phone{font-size:39px;font-weight:600;letter-spacing:.2px}
@@ -735,7 +735,7 @@ async function renderCompositePng(env: Env, model: SecretaryModelRow, fileIds: s
           "content-type": "application/json",
           authorization: "Bearer " + env.COMPOSITE_RENDERER_TOKEN,
         },
-        body: JSON.stringify({ svg, fonts: fontBuffers.map((font) => bytesToBase64(font)) }),
+        body: JSON.stringify({ svg }),
       });
       if (!response.ok) {
         const details = (await response.text()).slice(0, 1200);

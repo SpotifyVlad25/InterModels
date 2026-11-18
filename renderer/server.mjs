@@ -6,7 +6,6 @@ const port = Number(process.env.PORT || 8080);
 const token = process.env.COMPOSITE_RENDERER_TOKEN || "";
 const maxBodyBytes = Number(process.env.MAX_RENDER_BODY_BYTES || 48 * 1024 * 1024);
 const maxSvgCharacters = Number(process.env.MAX_SVG_CHARACTERS || 44 * 1024 * 1024);
-const maxFontBytes = Number(process.env.MAX_FONT_BYTES || 4 * 1024 * 1024);
 const maxPngBytes = Number(process.env.MAX_PNG_BYTES || 20 * 1024 * 1024);
 
 function authorized(header) {
@@ -32,15 +31,6 @@ async function readBody(req) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function decodeFont(value) {
-  if (typeof value !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
-    throw new Error("Invalid font payload");
-  }
-  const bytes = Buffer.from(value, "base64");
-  if (bytes.length < 4 || bytes.length > maxFontBytes) throw new Error("Font size is invalid");
-  return new Uint8Array(bytes);
-}
-
 const server = createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     return sendJson(res, token ? 200 : 503, { ok: Boolean(token), service: "intermodels-composite-renderer" });
@@ -61,14 +51,19 @@ const server = createServer(async (req, res) => {
     if (!payload || typeof payload.svg !== "string" || payload.svg.length < 100 || payload.svg.length > maxSvgCharacters) {
       return sendJson(res, 400, { error: "SVG payload is invalid or too large" });
     }
-    if (!Array.isArray(payload.fonts) || payload.fonts.length !== 2) {
-      return sendJson(res, 400, { error: "Exactly two font buffers are required" });
-    }
-    const fontBuffers = payload.fonts.map(decodeFont);
     if (!payload.svg.trimStart().startsWith("<svg")) return sendJson(res, 400, { error: "SVG root element is missing" });
 
+    // The native Node binding accepts fontFiles, not fontBuffers (WASM-only).
+    // DejaVu Sans is installed in the image and includes Cyrillic glyphs.
     const renderer = new Resvg(payload.svg, {
-      font: { fontBuffers, defaultFontFamily: "Roboto", loadSystemFonts: false },
+      font: {
+        fontFiles: [
+          "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+          "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ],
+        defaultFontFamily: "DejaVu Sans",
+        loadSystemFonts: false,
+      },
     });
     const png = renderer.render().asPng();
       if (!png.length || png.length > maxPngBytes) return sendJson(res, 413, { error: "Rendered PNG exceeds the configured limit" });
