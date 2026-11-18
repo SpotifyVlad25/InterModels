@@ -1542,6 +1542,10 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
           .bind(chatId, Number(threadId), uploaderId, albumId).run();
       }
     }
+    if (cancelled && operation?.kind === "composite_batch") {
+      await env.DB.prepare("UPDATE secretary_composite_batch_items SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE operation_id=? AND status='pending'")
+        .bind(operationId).run();
+    }
     if (cancelled && operation && (operation.kind === "composite" || operation.kind === "composite_batch")) {
       const resultChatId = operation.result_chat_id ?? String(callback.message?.chat.id ?? "");
       await deleteTelegramMessage(env, resultChatId, operation.result_message_id ?? undefined, "cancelled composite result");
@@ -2399,6 +2403,11 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(Promise.all([processRefreshCampaigns(env), processCompositeRefreshJobs(env), processPendingSecretaryAlbums(env)]).then(() => undefined));
+    ctx.waitUntil((async () => {
+      await processRefreshCampaigns(env);
+      await processCompositeRefreshJobs(env);
+      await processSecretaryCompositeBatchJobs(env);
+      await processPendingSecretaryAlbums(env);
+    })());
   },
 };
