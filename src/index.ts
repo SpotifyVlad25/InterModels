@@ -1509,6 +1509,50 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
     return;
   }
   const data = callback.data ?? "";
+  const fileMatch = data.match(/^compfile:([a-zA-Z0-9_-]{1,50})$/);
+  if (fileMatch) {
+    const msg = callback.message;
+    if (!msg || msg.chat.type !== "supergroup" || !msg.message_thread_id) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Файл доступен только в теме композиток.", show_alert: true });
+      return;
+    }
+    const topic = await env.DB.prepare("SELECT chat_id,thread_id FROM secretary_composite_topics WHERE id=1")
+      .first<{chat_id:string;thread_id:number}>();
+    const publication = await env.DB.prepare(
+      "SELECT model_id FROM composite_topic_publications WHERE model_id=? AND chat_id=? AND thread_id=? AND message_id=?",
+    ).bind(fileMatch[1], String(msg.chat.id), msg.message_thread_id, msg.message_id).first<{model_id:string}>();
+    if (!topic || topic.chat_id !== String(msg.chat.id) || topic.thread_id !== msg.message_thread_id || !publication) {
+      await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Эта композитка уже заменена или недоступна.", show_alert: true });
+      return;
+    }
+    await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Готовлю PNG-файл…" });
+    try {
+      const model = await env.DB.prepare(
+        `SELECT m.id,m.first_name,m.last_name,p.height_cm,p.bust_cm,p.waist_cm,p.hips_cm,
+          p.clothing_size,p.shoe_size,p.hair_color,p.eye_color
+         FROM models m LEFT JOIN model_profiles p ON p.model_id=m.id
+         WHERE m.id=? AND m.is_active=1 AND m.lifecycle_status='active'`,
+      ).bind(fileMatch[1]).first<SecretaryModelRow>();
+      if (!model) throw new Error("Анкета модели больше не активна.");
+      const photoRows = await env.DB.prepare("SELECT position,telegram_file_id FROM model_telegram_photos WHERE model_id=? ORDER BY position")
+        .bind(fileMatch[1]).all<{position:number;telegram_file_id:string}>();
+      const photos = photoRows.results ?? [];
+      if (photos.length !== 7 || photos.some((p,i)=>p.position!==i+1)) throw new Error("Исходные фотографии больше недоступны.");
+      const png = await renderCompositePng(env, model, photos.map(p=>p.telegram_file_id));
+      const form = new FormData();
+      form.set("chat_id", String(msg.chat.id));
+      form.set("message_thread_id", String(msg.message_thread_id));
+      form.set("caption", model.first_name + " " + model.last_name + " · оригинальный PNG");
+      form.set("document", new Blob([png], {type:"image/png"}), "intermodels-composite.png");
+      const response = await fetch(`https://api.telegram.org/bot${env.SECRETARY_BOT_TOKEN}/sendDocument`, {method:"POST",body:form});
+      const result: any = await response.json().catch(()=>null);
+      if (!response.ok || !result?.ok) throw new Error(result?.description ?? "Telegram не принял PNG.");
+    } catch (error) {
+      console.error("Composite original file delivery failed", {modelId:fileMatch[1],error:compositeErrorText(error)});
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {chat_id:msg.chat.id,message_thread_id:msg.message_thread_id,text:"Не удалось отправить PNG-файл. Ошибка записана в журнал."});
+    }
+    return;
+  }
   const cancelMatch = data.match(/^op_cancel:([a-f0-9]{12})$/);
   if (cancelMatch) {
     const operationId = cancelMatch[1];
