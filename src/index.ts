@@ -952,7 +952,6 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     await finishSecretaryOperation(env, operationId, "completed");
   } catch (error) {
     const cancelled = error instanceof Error && error.message === "SECRETARY_OPERATION_CANCELLED";
-    if (newMessageId && !publicationCommitted) await deleteTelegramMessage(env, message.chat.id, newMessageId, "failed/cancelled composite");
     await finishSecretaryOperation(env, operationId, cancelled ? "cancelled" : "failed");
     if (uploadStatusId) {
       try { await telegram(env.SECRETARY_BOT_TOKEN, "editMessageText", {
@@ -1099,6 +1098,7 @@ async function generateCompositeInTopic(env: Env, message: TelegramMessage, rawN
     }
   } catch (error) {
     const cancelled = error instanceof Error && error.message === "SECRETARY_OPERATION_CANCELLED";
+    if (newMessageId && !publicationCommitted) await deleteTelegramMessage(env, message.chat.id, newMessageId, "failed/cancelled composite");
     await finishSecretaryOperation(env, operationId, cancelled ? "cancelled" : "failed");
     const details = error instanceof Error
       ? { name: error.name, message: error.message, stack: error.stack }
@@ -1133,6 +1133,8 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
     const rawName = names[index].trim();
     const label = `[${index + 1}/${names.length}] ${rawName}`;
     let statusMessageId: number | undefined;
+    let inFlightMessageId: number | undefined;
+    let publicationCommitted = false;
     try {
       const normalized = normalizeName(rawName);
       const parts = normalized.split(" ");
@@ -1170,6 +1172,7 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
       await assertSecretaryOperationActive(env, operationId);
       await updateStage("Отправка готового PNG");
       const newMessageId = await sendCompositePng(env, chatId, threadId, png, model.first_name + " " + model.last_name + " · InterModels");
+      inFlightMessageId = newMessageId;
       if (!Number.isSafeInteger(newMessageId) || newMessageId <= 0) throw new Error("Telegram не вернул ID композитки.");
       const recorded = await recordSecretaryOperationResult(env, operationId, chatId, newMessageId);
       if (!recorded || !(await claimSecretaryOperationPublication(env, operationId))) {
@@ -1184,16 +1187,20 @@ async function generateCompositeBatchInTopic(env: Env, message: TelegramMessage,
          ON CONFLICT(model_id) DO UPDATE SET chat_id=excluded.chat_id,thread_id=excluded.thread_id,
            message_id=excluded.message_id,campaign_id=NULL,published_at=CURRENT_TIMESTAMP`,
       ).bind(model.id, String(chatId), threadId, newMessageId).run();
+      publicationCommitted = true;
       if (oldPublication) {
         try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: oldPublication.chat_id, message_id: oldPublication.message_id }); }
         catch (error) { console.error("Previous composite could not be deleted", { modelId: model.id, error: compositeErrorText(error) }); }
       }
-      await env.DB.prepare("UPDATE secretary_operations SET result_chat_id=NULL,result_message_id=NULL WHERE id=?")
+      await env.DB.prepare("UPDATE secretary_operations SET status='running',status_message_id=NULL,result_chat_id=NULL,result_message_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='publishing'")
         .bind(operationId).run();
       if (statusMessageId) await deleteTelegramMessage(env, chatId, statusMessageId, "completed batch item status");
+      inFlightMessageId = undefined;
+      publicationCommitted = false;
       completed++;
     } catch (error) {
       const details = error instanceof Error ? error.message : String(error);
+      if (inFlightMessageId && !publicationCommitted) await deleteTelegramMessage(env, chatId, inFlightMessageId, "failed/cancelled batch composite");
       if (details === "SECRETARY_OPERATION_CANCELLED") {
         wasCancelled = true;
         if (statusMessageId) await deleteTelegramMessage(env, chatId, statusMessageId, "cancelled batch status");
