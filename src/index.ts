@@ -2277,7 +2277,7 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       await env.DB.prepare("DELETE FROM secretary_composite_request_pending WHERE chat_id=? AND thread_id=? AND user_id=?").bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).run();
       await telegram(env.SECRETARY_BOT_TOKEN,"deleteMessage",{chat_id:msg.chat.id,message_id:msg.message_id});
       if(pending.prompt_message_id&&pending.prompt_message_id!==msg.message_id)await deleteTelegramMessage(env,msg.chat.id,pending.prompt_message_id,"composite options prompt");
-      const sourceMessage={...msg,from:callback.from};const ids=[pending.command_message_id].filter((id):id is number=>typeof id==="number");
+      const sourceMessage={...msg,from:callback.from};
       if(pending.command_message_id)await deleteTelegramMessage(env,msg.chat.id,pending.command_message_id,"composite source name");
       await generateCompositeInTopic(env,sourceMessage,names[0],pending.style,language);
     }else{
