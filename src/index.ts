@@ -1795,8 +1795,13 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       });
     } else {
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Оставили прежние фотографии." });
+      const keptModel = await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(pendingPhotoSet.model_id).first<{first_name:string;last_name:string}>();
       await cleanupSecretaryPhotoUploadMessages(env,msg.chat.id,msg.message_thread_id,String(callback.from.id),[msg.message_id]);
-      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: msg.chat.id, message_thread_id: msg.message_thread_id, text: "Прежние фотографии оставлены без изменений." });
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+        chat_id: msg.chat.id, message_thread_id: msg.message_thread_id,
+        text: "Анкета " + (keptModel?.first_name ?? "") + " " + (keptModel?.last_name ?? "") + " готова✅",
+        reply_markup: { inline_keyboard: [[{ text: "➕ Создать новую анкету", callback_data: "photo:create" }]] },
+      });
     }
     await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
       .bind(String(msg.chat.id), msg.message_thread_id, String(callback.from.id)).run();
