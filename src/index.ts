@@ -31,7 +31,7 @@ interface TelegramUpdate { update_id?: number; message?: TelegramMessage; callba
 interface ModelRow { id: string; first_name: string; last_name: string; phone: string | null; telegram_user_id: string | null; }
 interface RegistrationRow { id: string; telegram_user_id: string; candidate_model_ids: string; status: string; }
 interface SecretaryModelRow {
-  id: string; first_name: string; last_name: string;
+  id: string; first_name: string; last_name: string; phone: string | null;
   height_cm: number | null; bust_cm: number | null; waist_cm: number | null; hips_cm: number | null;
   clothing_size: string | null; shoe_size: string | null; hair_color: string | null; eye_color: string | null;
 }
@@ -516,7 +516,7 @@ async function findSecretaryModels(env: Env, surname: string): Promise<Secretary
   // Fetch active model names and compare with the same Unicode normalization
   // used by the composite command.
   const result = await env.DB.prepare(
-    `SELECT m.id, m.first_name, m.last_name,
+    `SELECT m.id, m.first_name, m.last_name, m.phone,
       p.height_cm, p.bust_cm, p.waist_cm, p.hips_cm,
       p.clothing_size, p.shoe_size, p.hair_color, p.eye_color
      FROM models m LEFT JOIN model_profiles p ON p.model_id = m.id
@@ -612,53 +612,61 @@ function imageDimensions(data: string): { width: number; height: number } {
 function compositeSvg(model: SecretaryModelRow, photos: string[], language: "ru" | "en" = "ru"): string {
   if (photos.length !== 7) throw new Error("A composite requires exactly seven original photos");
   const rawName = ((model.first_name || "").trim() + " " + (model.last_name || "").trim()).trim().toUpperCase();
-  const name = escapeXml(rawName);
-  const nameSize = rawName.length > 24 ? 54 : rawName.length > 18 ? 66 : 78;
-  const labels=language==="en"?["HEIGHT","BUST","WAIST","HIPS","HAIR","EYES","CLOTHING","SHOES"]:["РОСТ","ГРУДЬ","ТАЛИЯ","БЁДРА","ВОЛОСЫ","ГЛАЗА","ОДЕЖДА","ОБУВЬ"];
-  const unit=language==="en"?" CM":" СМ";
-  const details=[
-    model.height_cm!=null?labels[0]+"  "+model.height_cm+unit:null,
-    model.bust_cm!=null?labels[1]+"  "+model.bust_cm+unit:null,
-    model.waist_cm!=null?labels[2]+"  "+model.waist_cm+unit:null,
-    model.hips_cm!=null?labels[3]+"  "+model.hips_cm+unit:null,
-    model.hair_color?labels[4]+"  "+model.hair_color:null,
-    model.eye_color?labels[5]+"  "+model.eye_color:null,
-    model.clothing_size?labels[6]+"  "+model.clothing_size:null,
-    model.shoe_size?labels[7]+"  "+model.shoe_size:null,
-  ].filter((value):value is string=>Boolean(value));
+  const labels = language === "en"
+    ? ["HEIGHT", "BUST", "WAIST", "HIPS", "HAIR", "EYES", "CLOTHING", "SHOES"]
+    : ["РОСТ", "ГРУДЬ", "ТАЛИЯ", "БЁДРА", "ВОЛОСЫ", "ГЛАЗА", "ОДЕЖДА", "ОБУВЬ"];
+  const unit = language === "en" ? " CM" : " СМ";
+  const values = [
+    model.height_cm != null ? String(model.height_cm) + unit : null,
+    model.bust_cm != null ? String(model.bust_cm) + unit : null,
+    model.waist_cm != null ? String(model.waist_cm) + unit : null,
+    model.hips_cm != null ? String(model.hips_cm) + unit : null,
+    model.hair_color || null, model.eye_color || null, model.clothing_size || null, model.shoe_size || null,
+  ];
+  const firstRow = values.slice(0, 4).map((value, index) => value ? labels[index] + " " + value : null).filter((value): value is string => Boolean(value));
+  const secondRow = values.slice(4, 8).map((value, index) => value ? labels[index + 4] + " " + value : null).filter((value): value is string => Boolean(value));
 
-  // Landscape comp card: one full-height hero image, six flush gallery cells,
-  // and an uninterrupted information area below the gallery.
+  // Approved landscape layout: one full-height hero, six independent gallery
+  // photos (3x2), then three full-width horizontal information bands.
   const canvasW = 2400, canvasH = 1500;
-  const mainW = 1050, galleryW = canvasW - mainW, galleryH = 900;
-  const cellW = galleryW / 3, cellH = galleryH / 2;
+  const mainW = 1050, rightW = canvasW - mainW, galleryH = 900;
+  const nameBandH = 145, detailsBandH = 205, footerH = canvasH - galleryH - nameBandH - detailsBandH;
+  const detailsTop = galleryH + nameBandH, footerTop = detailsTop + detailsBandH;
+  const cellW = rightW / 3, cellH = galleryH / 2;
   const mainPhoto = `<image href="${photos[0]}" x="0" y="0" width="${mainW}" height="${canvasH}" preserveAspectRatio="xMidYMid meet"/>`;
   const gallery = photos.slice(1).map((data, index) => {
     const col = index % 3, row = Math.floor(index / 3);
-    const x = mainW + col * cellW, y = row * cellH;
-    return `<image href="${data}" x="${x}" y="${y}" width="${cellW}" height="${cellH}" preserveAspectRatio="xMidYMid meet"/>`;
+    return `<image href="${data}" x="${mainW + col * cellW}" y="${row * cellH}" width="${cellW}" height="${cellH}" preserveAspectRatio="xMidYMid meet"/>`;
   }).join("");
-
-  const infoX = mainW + 70;
-  const nameY = galleryH + 125;
-  const detailColumns = [details.slice(0, 4), details.slice(4, 8)];
-  const detailMarkup = detailColumns.map((items, column) => items.map((value, index) => {
-    const fontSize = value.length > 26 ? 26 : value.length > 20 ? 30 : 34;
-    return `<text x="${infoX + column * 650}" y="${galleryH + 270 + index * 72}" class="detail" font-size="${fontSize}">${escapeXml(value)}</text>`;
-  }).join("")).join("");
-
+  const nameSize = rawName.length > 27 ? 58 : rawName.length > 20 ? 68 : 82;
+  const lineText = (items: string[], y: number) => {
+    const value = items.join("  |  ");
+    const fontSize = value.length > 100 ? 27 : value.length > 78 ? 31 : 36;
+    return value ? `<text x="${mainW + rightW / 2}" y="${y}" text-anchor="middle" class="detail" font-size="${fontSize}">${escapeXml(value)}</text>` : "";
+  };
+  const contactX = mainW + 64;
+  const logoCenterX = mainW + rightW * 0.4 + rightW * 0.3;
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
   <rect width="${canvasW}" height="${canvasH}" fill="#fff"/>
   ${mainPhoto}
   ${gallery}
-  <text x="${infoX}" y="${nameY}" class="name" font-size="${nameSize}">${name}</text>
-  ${detailMarkup}
-  <text x="${canvasW - 70}" y="${canvasH - 55}" text-anchor="end" class="brand">INTERMODELS</text>
+  <text x="${mainW + 64}" y="${galleryH + 94}" class="name" font-size="${nameSize}">${escapeXml(rawName)}</text>
+  ${lineText(firstRow, detailsTop + 82)}
+  ${lineText(secondRow, detailsTop + 151)}
+  <line x1="${mainW}" y1="${footerTop}" x2="${canvasW}" y2="${footerTop}" class="separator"/>
+  <text x="${contactX}" y="${footerTop + 104}" class="phone">+7 902 632-32-72</text>
+  <text x="${contactX}" y="${footerTop + 174}" class="website">inter-models.ru</text>
+  <text x="${logoCenterX}" y="${footerTop + 137}" text-anchor="middle" class="brand">INTERMODELS</text>
+  <text x="${logoCenterX}" y="${footerTop + 190}" text-anchor="middle" class="tagline">MODEL AGENCY</text>
   <style>
     text{font-family:Roboto,sans-serif;fill:#171717}
     .name{font-weight:800;letter-spacing:1px}
-    .detail{font-weight:600;letter-spacing:.3px}
-    .brand{font-size:34px;font-weight:800;letter-spacing:5px;fill:#777}
+    .detail{font-weight:600;letter-spacing:.2px}
+    .phone{font-size:39px;font-weight:600;letter-spacing:.2px}
+    .website{font-size:36px;font-weight:400}
+    .brand{font-size:78px;font-weight:900;letter-spacing:5px}
+    .tagline{font-size:34px;font-weight:500;letter-spacing:7px}
+    .separator{stroke:#e5e5e5;stroke-width:2}
   </style></svg>`;
 }
 function compositeErrorText(error: unknown): string {
