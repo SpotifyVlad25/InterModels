@@ -11,3 +11,5 @@ ALTER TABLE secretary_composite_input_pending ADD COLUMN command_message_id INTE
 -- can reproduce that card even if the model's photo bank or measurements change later.
 ALTER TABLE composite_topic_publications ADD COLUMN photo_file_ids_json TEXT;
 ALTER TABLE composite_topic_publications ADD COLUMN model_snapshot_json TEXT;
+
+ALTER TABLE secretary_composite_input_pending ADD COLUMN prompt_message_id INTEGER;
