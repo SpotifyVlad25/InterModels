@@ -99,6 +99,42 @@ async function deleteTelegramMessage(env: Env, chatId: number | string, messageI
     console.warn("Unable to clean up Telegram message", { context, chatId, messageId, error: compositeErrorText(error) });
   }
 }
+async function trackSecretaryPhotoUploadMessages(
+  env: Env, chatId: number, threadId: number, uploaderId: string,
+  additions: { commandId?: number; promptId?: number; photoIds?: number[]; botIds?: number[] } = {},
+): Promise<void> {
+  const key = { chat: String(chatId), thread: threadId, uploader: uploaderId };
+  const current = await env.DB.prepare(
+    "SELECT command_message_id,prompt_message_id,photo_message_ids_json,bot_message_ids_json FROM secretary_photo_upload_sessions WHERE chat_id=? AND thread_id=? AND uploader_id=?",
+  ).bind(key.chat,key.thread,key.uploader).first<{command_message_id:number|null;prompt_message_id:number|null;photo_message_ids_json:string;bot_message_ids_json:string}>();
+  const photos = new Set<number>(JSON.parse(current?.photo_message_ids_json ?? "[]"));
+  const bots = new Set<number>(JSON.parse(current?.bot_message_ids_json ?? "[]"));
+  for (const id of additions.photoIds ?? []) if (Number.isSafeInteger(id) && id>0) photos.add(id);
+  for (const id of additions.botIds ?? []) if (Number.isSafeInteger(id) && id>0) bots.add(id);
+  await env.DB.prepare(
+    `INSERT INTO secretary_photo_upload_sessions(chat_id,thread_id,uploader_id,command_message_id,prompt_message_id,photo_message_ids_json,bot_message_ids_json,updated_at)
+     VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+     ON CONFLICT(chat_id,thread_id,uploader_id) DO UPDATE SET
+       command_message_id=COALESCE(excluded.command_message_id,secretary_photo_upload_sessions.command_message_id),
+       prompt_message_id=COALESCE(excluded.prompt_message_id,secretary_photo_upload_sessions.prompt_message_id),
+       photo_message_ids_json=excluded.photo_message_ids_json,
+       bot_message_ids_json=excluded.bot_message_ids_json,updated_at=CURRENT_TIMESTAMP`,
+  ).bind(key.chat,key.thread,key.uploader,additions.commandId ?? current?.command_message_id ?? null,
+    additions.promptId ?? current?.prompt_message_id ?? null,JSON.stringify([...photos]),JSON.stringify([...bots])).run();
+}
+async function cleanupSecretaryPhotoUploadMessages(env: Env, chatId: number, threadId: number, uploaderId: string, extraIds: number[] = []): Promise<void> {
+  const session = await env.DB.prepare(
+    "SELECT command_message_id,prompt_message_id,progress_message_id,photo_message_ids_json,bot_message_ids_json FROM secretary_photo_upload_sessions WHERE chat_id=? AND thread_id=? AND uploader_id=?",
+  ).bind(String(chatId),threadId,uploaderId).first<{command_message_id:number|null;prompt_message_id:number|null;progress_message_id:number|null;photo_message_ids_json:string;bot_message_ids_json:string}>();
+  const ids = new Set<number>(extraIds);
+  for (const id of [session?.command_message_id,session?.prompt_message_id,session?.progress_message_id]) if (id) ids.add(id);
+  for (const field of [session?.photo_message_ids_json,session?.bot_message_ids_json]) {
+    try { for (const id of JSON.parse(field ?? "[]") as number[]) if (Number.isSafeInteger(id) && id>0) ids.add(id); } catch {}
+  }
+  for (const id of ids) await deleteTelegramMessage(env,String(chatId),id,"MODEL BANK completed upload cleanup");
+  await env.DB.prepare("DELETE FROM secretary_photo_upload_sessions WHERE chat_id=? AND thread_id=? AND uploader_id=?")
+    .bind(String(chatId),threadId,uploaderId).run();
+}
 function secretaryCancelKeyboard(operationId: string): Record<string, unknown> {
   return { inline_keyboard: [[{ text: "❌ Отменить", callback_data: "op_cancel:" + operationId }]] };
 }
@@ -826,6 +862,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
   ).bind(String(message.chat.id), threadId, senderId, albumId)
     .all<{message_id:number;model_id:string|null;file_id:string;file_unique_id:string}>();
   const items = album.results ?? [];
+  if (items.length) await trackSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,{photoIds:items.map(item=>item.message_id)});
   if (items.length > 7) {
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
@@ -868,6 +905,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
         });
         const sentMessageId = sent.result?.message_id;
         if (sentMessageId) {
+          await trackSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,{botIds:[sentMessageId]});
           await env.DB.prepare(
             "INSERT INTO secretary_photo_album_status (chat_id, thread_id, uploader_id, media_group_id, status_message_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, thread_id, uploader_id, media_group_id) DO UPDATE SET status_message_id = excluded.status_message_id",
           ).bind(String(message.chat.id), threadId, senderId, albumId, sentMessageId).run();
@@ -933,12 +971,14 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     await env.DB.prepare(
       "INSERT INTO secretary_photo_replacement_pending (chat_id, thread_id, user_id, model_id, photos_json) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, thread_id, user_id) DO UPDATE SET model_id=excluded.model_id, photos_json=excluded.photos_json, created_at=CURRENT_TIMESTAMP",
     ).bind(String(message.chat.id), threadId, senderId, resolvedModelId, JSON.stringify(newPhotos)).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMediaGroup", {
+    const oldAlbum = await telegram(env.SECRETARY_BOT_TOKEN, "sendMediaGroup", {
       chat_id: message.chat.id, message_thread_id: threadId,
       media: oldPhotos.map((p) => ({ type: "photo", media: p.telegram_file_id })),
     });
+    const oldAlbumIds = (oldAlbum.result ?? []).map((item: any) => item.message_id).filter((id: any) => Number.isSafeInteger(id));
+    if (oldAlbumIds.length) await trackSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,{botIds:oldAlbumIds});
     const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+    const replacePrompt = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id, message_thread_id: threadId,
       text: "⚠️ Такая модель уже есть: " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + ". Выше — ранее сохранённые фотографии. Хотите заменить их новыми?",
       reply_markup: { inline_keyboard: [[
@@ -946,6 +986,7 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
         { text: "Нет, оставить", callback_data: "photo_replace:no" },
       ]] },
     });
+    if (replacePrompt.result?.message_id) await trackSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,{botIds:[replacePrompt.result.message_id]});
     await env.DB.prepare("DELETE FROM secretary_photo_album_items WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
       .bind(String(message.chat.id), threadId, senderId, albumId).run();
     if (progressMessageId) {
@@ -988,14 +1029,12 @@ async function handleSecretaryAlbumMessage(env: Env, message: TelegramMessage, s
     .bind(String(message.chat.id), threadId, senderId, albumId).run();
   await env.DB.prepare("DELETE FROM secretary_photo_album_status WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND media_group_id = ?")
     .bind(String(message.chat.id), threadId, senderId, albumId).run();
-  if (uploadStatusId) {
-    try { await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: message.chat.id, message_id: uploadStatusId }); } catch {}
-  }
+  await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,threadId,senderId,uploadStatusId ? [uploadStatusId] : []);
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(resolvedModelId).first<{first_name:string;last_name:string}>();
   await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
     chat_id: message.chat.id, message_thread_id: threadId,
-    text: "Готово: альбом из 7 фотографий для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранён в правильном порядке.",
-    reply_markup: { inline_keyboard: [[{ text: "➕ Создать фотоанкету", callback_data: "photo:create" }]] },
+    text: "Анкета " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " готова✅",
+    reply_markup: { inline_keyboard: [[{ text: "➕ Создать новую анкету", callback_data: "photo:create" }]] },
   });
 }
 async function sendCompositePng(env: Env, chatId: number, threadId: number, png: Uint8Array, caption: string, modelId: string): Promise<number> {
@@ -1430,10 +1469,12 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     await env.DB.prepare("INSERT INTO secretary_photo_topics (id, chat_id, thread_id, configured_by) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id, thread_id=excluded.thread_id, configured_by=excluded.configured_by")
       .bind(String(message.chat.id), message.message_thread_id, senderId).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+    const prompt = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: message.chat.id, message_thread_id: message.message_thread_id,
       text: "Режим добавления фотографий включён. Отправьте одним альбомом ровно 7 оригинальных фото. В подписи к первому фото укажите точное имя и фамилию модели, например: Анастасия Деревянкина. Модель должна уже существовать в основной базе. Фото сохранятся в её фототеку «MODEL BANK».",
     });
+    await env.DB.prepare("INSERT INTO secretary_photo_upload_sessions(chat_id,thread_id,uploader_id,command_message_id,prompt_message_id,updated_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(chat_id,thread_id,uploader_id) DO UPDATE SET command_message_id=excluded.command_message_id,prompt_message_id=excluded.prompt_message_id,photo_message_ids_json='[]',bot_message_ids_json='[]',updated_at=CURRENT_TIMESTAMP")
+      .bind(String(message.chat.id),message.message_thread_id,senderId,message.message_id,prompt.result?.message_id ?? null).run();
     return;
   }
   if (/^\/comp_setup(?:@\w+)?$/i.test(command)) {
@@ -1487,9 +1528,11 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
     }
     const model = matches[0];
     const initialPhotos = [{ file_id: bestPhoto.file_id, file_unique_id: bestPhoto.file_unique_id }];
+    await trackSecretaryPhotoUploadMessages(env,message.chat.id,message.message_thread_id,senderId,{photoIds:[message.message_id]});
     await env.DB.prepare("INSERT INTO secretary_photo_batches (chat_id, thread_id, uploader_id, model_id, next_position, photos_json, updated_at) VALUES (?, ?, ?, ?, 2, ?, CURRENT_TIMESTAMP) ON CONFLICT(chat_id, thread_id, uploader_id) DO UPDATE SET model_id=excluded.model_id, next_position=2, photos_json=excluded.photos_json, updated_at=CURRENT_TIMESTAMP")
       .bind(String(message.chat.id), message.message_thread_id, senderId, model.id, JSON.stringify(initialPhotos)).run();
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Принято: " + model.first_name + " " + model.last_name + ". Фото 1 из 7. Отправьте ещё шесть фото подряд." });
+    const firstPrompt = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: "Принято: " + model.first_name + " " + model.last_name + ". Фото 1 из 7. Отправьте ещё шесть фото подряд." });
+    if (firstPrompt.result?.message_id) await trackSecretaryPhotoUploadMessages(env,message.chat.id,message.message_thread_id,senderId,{botIds:[firstPrompt.result.message_id]});
     return;
   }
   const batch = await env.DB.prepare("SELECT model_id, next_position, photos_json FROM secretary_photo_batches WHERE chat_id = ? AND thread_id = ? AND uploader_id = ? AND updated_at >= datetime('now', '-30 minutes')")
@@ -1500,14 +1543,18 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
   }
   const stagedPhotos = JSON.parse(batch.photos_json) as Array<{file_id:string;file_unique_id:string}>;
   stagedPhotos.push({ file_id: bestPhoto.file_id, file_unique_id: bestPhoto.file_unique_id });
+  await trackSecretaryPhotoUploadMessages(env,message.chat.id,message.message_thread_id,senderId,{photoIds:[message.message_id]});
   const next = batch.next_position + 1;
   await env.DB.prepare("UPDATE secretary_photo_batches SET next_position = ?, photos_json = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND thread_id = ? AND uploader_id = ?")
     .bind(next, JSON.stringify(stagedPhotos), String(message.chat.id), message.message_thread_id, senderId).run();
   const model = await env.DB.prepare("SELECT first_name, last_name FROM models WHERE id = ?").bind(batch.model_id).first<{first_name:string;last_name:string}>();
   if (next === 8) await saveSecretaryPhotoSet(env, batch.model_id, stagedPhotos, senderId, message.chat.id, message.message_thread_id);
-  await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id, text: next === 8 ? "Готово: для " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " сохранены все 7 фотографий." : "Фото " + batch.next_position + " из 7 принято. Осталось " + (7 - batch.next_position) + ".",
-    ...(next === 8 ? { reply_markup: { inline_keyboard: [[{ text: "➕ Создать фотоанкету", callback_data: "photo:create" }]] } } : {}),
+  if (next === 8) await cleanupSecretaryPhotoUploadMessages(env,message.chat.id,message.message_thread_id,senderId);
+  const uploadReply = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, message_thread_id: message.message_thread_id,
+    text: next === 8 ? "Анкета " + (model?.first_name ?? "") + " " + (model?.last_name ?? "") + " готова✅" : "Фото " + batch.next_position + " из 7 принято. Осталось " + (7 - batch.next_position) + ".",
+    ...(next === 8 ? { reply_markup: { inline_keyboard: [[{ text: "➕ Создать новую анкету", callback_data: "photo:create" }]] } } : {}),
   });
+  if (next !== 8 && uploadReply.result?.message_id) await trackSecretaryPhotoUploadMessages(env,message.chat.id,message.message_thread_id,senderId,{botIds:[uploadReply.result.message_id]});
 }
 async function sendSecretaryCompositeSources(env: Env, chatId: number, model: SecretaryModelRow): Promise<void> {
   const result = await env.DB.prepare("SELECT position, telegram_file_id FROM model_telegram_photos WHERE model_id = ? ORDER BY position").bind(model.id).all<{position:number;telegram_file_id:string}>();
@@ -1709,11 +1756,13 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       return;
     }
     await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Готово. Можно загружать фото." });
-    await telegram(env.SECRETARY_BOT_TOKEN, "editMessageReplyMarkup", { chat_id: msg.chat.id, message_id: msg.message_id, reply_markup: { inline_keyboard: [] } });
-    await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
+    await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id });
+    const prompt = await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
       chat_id: msg.chat.id, message_thread_id: msg.message_thread_id,
-      text: "Начните новую фотоанкету: отправьте первое фото с подписью «Имя Фамилия», затем ещё три фото подряд (или одним альбомом из четырёх).",
+      text: "Начните новую фотоанкету: отправьте первое фото с подписью «Имя Фамилия», затем ещё шесть фото подряд (или одним альбомом из семи).",
     });
+    await env.DB.prepare("INSERT INTO secretary_photo_upload_sessions(chat_id,thread_id,uploader_id,prompt_message_id,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(chat_id,thread_id,uploader_id) DO UPDATE SET command_message_id=NULL,prompt_message_id=excluded.prompt_message_id,photo_message_ids_json='[]',bot_message_ids_json='[]',updated_at=CURRENT_TIMESTAMP")
+      .bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id),prompt.result?.message_id ?? null).run();
     return;
   }
   if (data === "photo_replace:yes" || data === "photo_replace:no") {
@@ -1737,19 +1786,19 @@ async function handleSecretaryCallback(env: Env, callback: TelegramCallbackQuery
       }
       await saveSecretaryPhotoSet(env, pendingPhotoSet.model_id, newPhotos, String(callback.from.id), msg.chat.id, msg.message_thread_id);
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Фотографии заменены." });
-      try {
-        await telegram(env.SECRETARY_BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id });
-      } catch (error) {
-        console.error("Failed to delete photo replacement prompt", error);
-      }
+      const replacedModel = await env.DB.prepare("SELECT first_name,last_name FROM models WHERE id=?").bind(pendingPhotoSet.model_id).first<{first_name:string;last_name:string}>();
+      const oldPreview = await env.DB.prepare("SELECT message_id FROM secretary_photo_upload_sessions WHERE chat_id=? AND thread_id=? AND uploader_id=?")
+        .bind(String(msg.chat.id),msg.message_thread_id,String(callback.from.id)).first<{message_id:number}>();
+      await cleanupSecretaryPhotoUploadMessages(env,msg.chat.id,msg.message_thread_id,String(callback.from.id),[msg.message_id]);
       await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", {
         chat_id: msg.chat.id, message_thread_id: msg.message_thread_id,
-        text: "✅ Новые фотографии успешно сохранены.",
-        reply_markup: { inline_keyboard: [[{ text: "➕ Создать фотоанкету", callback_data: "photo:create" }]] },
+        text: "Анкета " + (replacedModel?.first_name ?? "") + " " + (replacedModel?.last_name ?? "") + " готова✅",
+        reply_markup: { inline_keyboard: [[{ text: "➕ Создать новую анкету", callback_data: "photo:create" }]] },
       });
     } else {
       await telegram(env.SECRETARY_BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callback.id, text: "Оставили прежние фотографии." });
-      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: msg.chat.id, message_thread_id: msg.message_thread_id, text: "Хорошо, прежние фотографии оставлены без изменений." });
+      await cleanupSecretaryPhotoUploadMessages(env,msg.chat.id,msg.message_thread_id,String(callback.from.id),[msg.message_id]);
+      await telegram(env.SECRETARY_BOT_TOKEN, "sendMessage", { chat_id: msg.chat.id, message_thread_id: msg.message_thread_id, text: "Прежние фотографии оставлены без изменений." });
     }
     await env.DB.prepare("DELETE FROM secretary_photo_replacement_pending WHERE chat_id = ? AND thread_id = ? AND user_id = ?")
       .bind(String(msg.chat.id), msg.message_thread_id, String(callback.from.id)).run();
