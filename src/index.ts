@@ -1543,8 +1543,12 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       if(!validCount||names.some(name=>name.length>100)){
         await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:mode==="single"?"Команда /comp принимает только одну модель. Для списка используйте /comps.":"Для /comps отправьте не более 20 моделей — по одной на строку."});return;
       }
-      await env.DB.prepare("INSERT INTO secretary_composite_request_pending(chat_id,thread_id,user_id,stage,mode,style,language,names_text,command_message_id,prompt_message_id) VALUES(?,?,?,'style',?,NULL,NULL,?,?,NULL) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET stage='style',mode=excluded.mode,style=NULL,language=NULL,names_text=excluded.names_text,command_message_id=excluded.command_message_id,prompt_message_id=NULL,created_at=CURRENT_TIMESTAMP").bind(String(message.chat.id),message.message_thread_id,senderId,mode,rawNames||null,message.message_id).run();
-      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Выберите стиль композитки:",reply_markup:{inline_keyboard:[[{text:"Basic",callback_data:"comp_style:basic"},{text:"Fashion",callback_data:"comp_style:fashion"}]]}});return;
+      if(rawNames){
+        await handleSecretaryGroupMessage(env,{...message,text:rawNames});
+        return;
+      }
+      await env.DB.prepare("INSERT INTO secretary_composite_request_pending(chat_id,thread_id,user_id,stage,mode,style,language,names_text,command_message_id,prompt_message_id) VALUES(?,?,?,'names',?,NULL,NULL,NULL,?,NULL) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET stage='names',mode=excluded.mode,style=NULL,language=NULL,names_text=NULL,command_message_id=excluded.command_message_id,prompt_message_id=NULL,created_at=CURRENT_TIMESTAMP").bind(String(message.chat.id),message.message_thread_id,senderId,mode,message.message_id).run();
+      await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:mode==="single"?"Отправьте ФИО одной модели.":"Отправьте от 1 до 20 моделей — по одной на строку."});return;
     }
     if(/^\/comp_help(?:@\w+)?$/i.test(command)){
       await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:"Просто отправьте имя или фамилию. Одна строка — одна композитка; несколько строк — пакет. По умолчанию BASIC и русский язык."});return;
@@ -1575,7 +1579,7 @@ async function handleSecretaryGroupMessage(env: Env, message: TelegramMessage): 
       const initialStyle=modelStyles[0]??"basic";
       const initialStage=hasStyleChoice?"style":"language";
       await env.DB.prepare("INSERT INTO secretary_composite_request_pending(chat_id,thread_id,user_id,stage,mode,style,language,names_text,command_message_id,prompt_message_id) VALUES(?,?,?, ?,?,?,NULL,?,?,NULL) ON CONFLICT(chat_id,thread_id,user_id) DO UPDATE SET stage=excluded.stage,mode=excluded.mode,style=excluded.style,language=NULL,names_text=excluded.names_text,command_message_id=excluded.command_message_id,prompt_message_id=NULL,created_at=CURRENT_TIMESTAMP")
-        .bind(String(message.chat.id),message.message_thread_id,senderId,initialStage,names.length===1?"single":"batch",initialStyle,names.join("\\n"),message.message_id).run();
+        .bind(String(message.chat.id),message.message_thread_id,senderId,initialStage,names.length===1?"single":"batch",initialStyle,names.join("\n"),message.message_id).run();
       const promptText=hasStyleChoice?"Выберите стиль композитки:":"Выберите язык композитки:";
       const keyboard=hasStyleChoice?[[{text:"Basic",callback_data:"comp_style:basic"},{text:"Fashion",callback_data:"comp_style:fashion"}]]:[[{text:"Русский",callback_data:"comp_lang:ru"},{text:"English",callback_data:"comp_lang:en"}]];
       const optionPrompt=await telegram(env.SECRETARY_BOT_TOKEN,"sendMessage",{chat_id:message.chat.id,message_thread_id:message.message_thread_id,text:promptText,reply_markup:{inline_keyboard:keyboard}});
