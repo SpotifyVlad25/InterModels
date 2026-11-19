@@ -297,80 +297,52 @@ async function showModelProfilePrompt(env:Env,telegramId:string,chatId:number,th
  const step=PROFILE_STEPS.find(x=>x.state===session?.state);if(step){await sendModel(env,chatId,"Продолжим заполнение анкеты.\\n\\n"+step.prompt,threadId,profileKeyboard());return;}
  await beginModelProfile(env,telegramId,chatId,threadId);
 }
-async function handleModelMessage(env: Env, message: TelegramMessage): Promise<void> {
-  // Model onboarding and profile updates are private-chat only.
-  // Group updates must never be answered or persisted as model topics.
-  if (message.chat.type !== "private") return;
-  const user = message.from;
-  if (!user) return;
-  console.info("Model private update", {
-    chatId: message.chat.id,
-    chatType: message.chat.type,
-    senderId: user.id,
-    command: (message.text ?? "").trim().slice(0, 80),
-  });
-  const replyChatId = message.chat.id;
-  const replyThreadId = message.message_thread_id;
-  if (message.text?.startsWith("/start")) {
-    await saveTopic(env, "model", message);
-    const linked = await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(String(user.id)).first<{id:string}>();
-    if (linked) { await showModelProfilePrompt(env, String(user.id), replyChatId, replyThreadId); return; }
-    await env.DB.prepare(`INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
-      VALUES (?, 'awaiting_name', '{}', CURRENT_TIMESTAMP)
-      ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', data_json = '{}', updated_at = CURRENT_TIMESTAMP`).bind(String(user.id)).run();
-    await telegram(env.MODEL_BOT_TOKEN, "sendMessage", {
-      chat_id: replyChatId, ...(replyThreadId ? { message_thread_id: replyThreadId } : {}),
-      text: "Добро пожаловать в InterModels!\n\nВведите имя и фамилию точно так, как они указаны в агентстве. Либо отправьте свой номер телефона кнопкой ниже.",
-      reply_markup: { keyboard: [[{ text: "Поделиться контактом", request_contact: true }]], resize_keyboard: true, one_time_keyboard: true },
-    });
-    return;
-  }
-  if (message.text === "/profile") {
-    const linked = await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(String(user.id)).first<{id:string}>();
-    if (!linked) { await sendModel(env, replyChatId, "Сначала дождитесь подтверждения подключения директором.", replyThreadId); return; }
-    await beginModelProfile(env, String(user.id), replyChatId, replyThreadId); return;
-  }
-  if (message.text && await handleModelProfileStep(env, String(user.id), replyChatId, message.text, replyThreadId)) return;
-  if (message.contact) {
-    if (message.contact.user_id !== user.id) {
-      await sendModel(env, replyChatId, "Отправьте именно свой контакт через кнопку Telegram, а не контакт другого человека.", replyThreadId);
-      return;
-    }
-    const phone = normalizePhone(message.contact.phone_number);
-    if (!phone) { await sendModel(env, replyChatId, "Не удалось прочитать номер. Попробуйте ещё раз или введите ФИО.", replyThreadId); return; }
-    const models = await getActiveModels(env);
-    const matches = models.filter((m) => m.phone && normalizePhone(m.phone) === phone);
-    const candidates = matches.filter((m) => !m.telegram_user_id || m.telegram_user_id === String(user.id));
-    if (!candidates.length) {
-      await sendModel(env, replyChatId, matches.length
-        ? "Эта анкета уже привязана к другому Telegram-аккаунту. Обратитесь к директору агентства."
-        : "Анкета с таким номером не найдена. Проверьте номер или обратитесь к директору агентства.", replyThreadId);
-      return;
-    }
-    await createRequest(env, user, "phone", message.contact.phone_number, candidates, replyChatId, replyThreadId);
-    return;
-  }
-  if (!message.text) return;
-  if (message.text.startsWith("/")) { await sendModel(env, replyChatId, "Для начала регистрации отправьте /start.", replyThreadId); return; }
-  const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?")
-    .bind(String(user.id)).first<{ state: string }>();
-  if (!session || session.state !== "awaiting_name") {
-    await sendModel(env, replyChatId, "Отправьте /start, чтобы начать подключение.", replyThreadId); return;
-  }
-  const target = normalizeName(message.text);
-  if (target.length < 3) { await sendModel(env, replyChatId, "Введите полные имя и фамилию.", replyThreadId); return; }
-  const models = await getActiveModels(env);
-  const matches = models.filter((m) => normalizeName(`${m.first_name} ${m.last_name}`) === target);
-  const candidates = matches.filter((m) => !m.telegram_user_id || m.telegram_user_id === String(user.id));
-  if (!candidates.length) {
-    await sendModel(env, replyChatId, matches.length
-      ? "Эта анкета уже привязана к другому Telegram-аккаунту. Обратитесь к директору агентства."
-      : "Анкета с таким ФИО не найдена. Проверьте написание или обратитесь к директору агентства.", replyThreadId);
-    return;
-  }
-  await createRequest(env, user, "name", message.text.trim(), candidates, replyChatId, replyThreadId);
+async function handleModelMessage(env:Env,message:TelegramMessage):Promise<void>{
+ if(message.chat.type!=="private"||!message.from)return;
+ const user=message.from,uid=String(user.id),chat=message.chat.id,thread=message.message_thread_id,text=(message.text??"").trim();
+ if(text.startsWith("/start")){
+  await saveTopic(env,"model",message);
+  const linked=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=? AND is_active=1").bind(uid).first<{id:string}>();
+  if(linked){await showModelProfilePrompt(env,uid,chat,thread);return;}
+  await env.DB.prepare("INSERT INTO bot_sessions(telegram_user_id,state,data_json,updated_at) VALUES(?,'awaiting_name','{}',CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state='awaiting_name',data_json='{}',updated_at=CURRENT_TIMESTAMP").bind(uid).run();
+  await sendModel(env,chat,"Добро пожаловать в InterModels!\\n\\nВведите полное ФИО, включая отчество, как в документах.",thread);return;
+ }
+ const session=await env.DB.prepare("SELECT state,data_json FROM bot_sessions WHERE telegram_user_id=?").bind(uid).first<{state:string;data_json:string}>();
+ if(text==="Профиль"){const linked=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=? AND is_active=1").bind(uid).first<{id:string}>();if(!linked){await sendModel(env,chat,"Сначала дождитесь подтверждения директора.",thread);return;}await showModelProfile(env,uid,chat,thread);return;}
+ if(text==="Отпуск"){await sendModel(env,chat,"Раздел «Отпуск» будет настроен отдельно.",thread,profileKeyboard());return;}
+ if(text==="Редактировать"){await startProfileEdit(env,uid,chat,thread);return;}
+ if(text==="⬅️ Назад"){await showModelProfile(env,uid,chat,thread);return;}
+ if(session?.state==="profile_edit_menu"){
+  const labels=["Возраст","Рост","Параметры","Размер одежды","Размер обуви","Телефон","Цвет волос","Цвет глаз"],keys=["age","height","measurements","clothing","shoe","phone","hair","eyes"],i=labels.indexOf(text);
+  if(i<0){await sendModel(env,chat,"Выберите пункт из меню.",thread);return;}
+  if(keys[i]==="age"){const r=await env.DB.prepare("SELECT birth_date FROM models WHERE telegram_user_id=?").bind(uid).first<{birth_date:string|null}>();await sendModel(env,chat,"Возраст рассчитывается автоматически: "+(ageFromBirthDate(r?.birth_date)??"не указан")+" лет.",thread);return;}
+  await env.DB.prepare("UPDATE bot_sessions SET state='profile_edit_value',data_json=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(JSON.stringify({field:keys[i]}),uid).run();
+  const prompts=["","Укажите рост в сантиметрах.","Укажите параметры грудь/талия/бёдра, например 95/70/95.","Укажите размер одежды.","Укажите размер обуви.","Укажите телефон и оператора.","Укажите цвет волос.","Укажите цвет глаз."];
+  await sendModel(env,chat,prompts[i],thread);return;
+ }
+ if(session?.state==="profile_edit_value"){
+  let d:any={};try{d=JSON.parse(session.data_json??"{}");}catch{}const key=d.field;
+  if(key==="height"&&!/^\\d{2,3}$/.test(text)||key==="measurements"&&!/^\\d{2,3}\\s*[/ ]\\s*\\d{2,3}\\s*[/ ]\\s*\\d{2,3}$/.test(text)){await sendModel(env,chat,"Неверный формат. Попробуйте ещё раз.",thread);return;}
+  if(key==="height")await env.DB.prepare("UPDATE model_profiles SET height_cm=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(Number(text),uid).run();
+  else if(key==="measurements"){const n=text.split(/[/ ]+/).map(Number);await env.DB.prepare("UPDATE model_profiles SET bust_cm=?,waist_cm=?,hips_cm=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(n[0],n[1],n[2],uid).run();}
+  else if(key==="phone")await env.DB.prepare("UPDATE models SET phone=? WHERE telegram_user_id=?").bind(text,uid).run();
+  else{const col=key==="clothing"?"clothing_size":key==="shoe"?"shoe_size":key==="hair"?"hair_color":"eye_color";await env.DB.prepare("UPDATE model_profiles SET "+col+"=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(text,uid).run();}
+  await env.DB.prepare("UPDATE bot_sessions SET state='profile_complete',data_json='{}',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
+  await showModelProfile(env,uid,chat,thread);await deleteModelAnswer(env,chat,message.message_id);return;
+ }
+ if(text==="/profile"){await showModelProfile(env,uid,chat,thread);return;}
+ if(text&&await handleModelProfileStep(env,uid,chat,text,thread)){await deleteModelAnswer(env,chat,message.message_id);return;}
+ if(!text)return;
+ if(text.startsWith("/")){await sendModel(env,chat,"Отправьте /start, чтобы начать подключение.",thread);return;}
+ if(!session||session.state!=="awaiting_name"){await sendModel(env,chat,"Используйте кнопки меню или отправьте /start.",thread,profileKeyboard());return;}
+ const parts=normalizeName(text).split(" ");if(parts.length<3){await sendModel(env,chat,"Введите полное ФИО: фамилию, имя и отчество.",thread);return;}
+ const surname=parts[0],firstName=parts[1],matches=(await getActiveModels(env)).filter(m=>normalizeName(m.last_name)===surname&&normalizeName(m.first_name)===firstName);
+ const candidates=matches.filter(m=>!m.telegram_user_id||m.telegram_user_id===uid);
+ if(!candidates.length){await sendModel(env,chat,matches.length?"Эта анкета уже привязана к другому Telegram-аккаунту. Обратитесь к директору.":"Анкета с таким ФИО не найдена. Проверьте написание.",thread);return;}
+ await createRequest(env,user,"name",text,candidates,chat,thread);
+ await env.DB.prepare("UPDATE bot_sessions SET data_json=? WHERE telegram_user_id=?").bind(JSON.stringify({submitted_patronymic:parts.slice(2).join(" ")}),uid).run();
+ await deleteModelAnswer(env,chat,message.message_id);
 }
-
 async function answerCallback(env: Env, callback: TelegramCallbackQuery, text: string, alert = false): Promise<void> {
   await telegram(env.DIRECTOR_BOT_TOKEN, "answerCallbackQuery", {
     callback_query_id: callback.id, text, show_alert: alert,
