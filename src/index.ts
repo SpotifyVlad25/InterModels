@@ -29,7 +29,7 @@ interface TelegramMessage {
 interface TelegramCallbackQuery { id: string; from: TelegramUser; data?: string; message?: TelegramMessage; }
 interface TelegramUpdate { update_id?: number; message?: TelegramMessage; callback_query?: TelegramCallbackQuery; }
 interface ModelRow { id: string; first_name: string; last_name: string; phone: string | null; telegram_user_id: string | null; }
-interface RegistrationRow { id: string; telegram_user_id: string; candidate_model_ids: string; status: string; }
+interface RegistrationRow { id: string; telegram_user_id: string; candidate_model_ids: string; submitted_value: string; status: string; }
 interface SecretaryModelRow {
   id: string; first_name: string; last_name: string; phone: string | null;
   height_cm: number | null; bust_cm: number | null; waist_cm: number | null; hips_cm: number | null;
@@ -432,7 +432,7 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
 
   if (approve) {
     const [, requestId, modelId] = approve;
-    const req = await env.DB.prepare("SELECT id, telegram_user_id, candidate_model_ids, status FROM registration_requests WHERE id = ?")
+    const req = await env.DB.prepare("SELECT id, telegram_user_id, candidate_model_ids, submitted_value, status FROM registration_requests WHERE id = ?")
       .bind(requestId).first<RegistrationRow>();
     if (!req || req.status !== "pending") { await answerCallback(env, callback, "Заявка уже обработана или не найдена.", true); return; }
     const ids: string[] = JSON.parse(req.candidate_model_ids);
@@ -449,6 +449,8 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
       "UPDATE models SET telegram_user_id = ?, linked_at = CURRENT_TIMESTAMP WHERE id = ? AND (telegram_user_id IS NULL OR telegram_user_id = ?)",
     ).bind(req.telegram_user_id, modelId, req.telegram_user_id).run();
     if ((update.meta?.changes ?? 0) === 0) { await answerCallback(env, callback, "Не удалось привязать анкету.", true); return; }
+    const submittedParts = normalizeName(req.submitted_value).split(" ");
+    if (submittedParts.length >= 3) await env.DB.prepare("UPDATE models SET middle_name=? WHERE id=?").bind(submittedParts.slice(2).join(" "), modelId).run();
     await env.DB.prepare("UPDATE registration_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP, decided_by = ? WHERE id = ? AND status = 'pending'")
       .bind(String(callback.from.id), requestId).run();
     await env.DB.prepare("INSERT INTO model_profiles (model_id) VALUES (?) ON CONFLICT(model_id) DO NOTHING").bind(modelId).run();
