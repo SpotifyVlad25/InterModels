@@ -261,7 +261,7 @@ const MONTHLY_PROFILE_STEPS = [
   { state: "monthly_hips", field: "hips_cm", prompt: "Обхват бёдер в сантиметрах." },
 ] as const;
 function ageFromBirthDate(value:string|null|undefined):number|null{
- if(!value)return null;const m=value.match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);if(!m)return null;
+ if(!value)return null;const m=value.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);if(!m)return null;
  const d=+m[1],mo=+m[2],y=+m[3],dt=new Date(Date.UTC(y,mo-1,d));
  if(dt.getUTCFullYear()!==y||dt.getUTCMonth()!==mo-1||dt.getUTCDate()!==d)return null;
  const now=new Date();let age=now.getUTCFullYear()-y;
