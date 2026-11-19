@@ -3,7 +3,7 @@ import wasm from "@resvg/resvg-wasm/index_bg.wasm";
 import cyrillic from "@fontsource/roboto/files/roboto-cyrillic-400-normal.woff2";
 import latin from "@fontsource/roboto/files/roboto-latin-400-normal.woff2";
 
-type Env = { DB: D1Database; INST_BOT_TOKEN: string };
+type Env = { DB: D1Database; INST_BOT_TOKEN: string; STORY_BUCKET: R2Bucket };
 type Photo = { file_id: string; file_unique_id: string; width: number; height: number };
 type Message = {
   message_id: number; message_thread_id?: number; media_group_id?: string;
