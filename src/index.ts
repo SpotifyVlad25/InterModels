@@ -163,22 +163,29 @@ async function sendModel(env: Env, chatId: string | number, text: string, thread
   let data: Record<string, unknown> = {};
   try { data = JSON.parse(session?.data_json ?? "{}") as Record<string, unknown>; } catch {}
   const previousId = Number(data.model_prompt_message_id);
+  const attachKeyboard = Boolean(replyMarkup && data.model_menu_shown !== true);
   const payload: Record<string, unknown> = { chat_id: chatId, text, disable_web_page_preview: true };
   if (threadId) payload.message_thread_id = threadId;
-  if (replyMarkup) payload.reply_markup = replyMarkup;
+  if (attachKeyboard) payload.reply_markup = replyMarkup;
   let messageId: number | undefined;
-  if (previousId > 0 && !replyMarkup) {
+  if (previousId > 0 && !attachKeyboard) {
     try {
       await telegram(env.MODEL_BOT_TOKEN, "editMessageText", { chat_id: chatId, message_id: previousId, text, disable_web_page_preview: true });
       messageId = previousId;
     } catch {
       if (data.model_prompt_text === text) messageId = previousId;
+      else {
+        try { await telegram(env.MODEL_BOT_TOKEN, "deleteMessage", { chat_id: chatId, message_id: previousId }); } catch {}
+      }
     }
+  } else if (previousId > 0 && attachKeyboard) {
+    try { await telegram(env.MODEL_BOT_TOKEN, "deleteMessage", { chat_id: chatId, message_id: previousId }); } catch {}
   }
   if (!messageId) {
     const sent = await telegram(env.MODEL_BOT_TOKEN, "sendMessage", payload);
     messageId = sent.result?.message_id;
   }
+  if (attachKeyboard) data.model_menu_shown = true;
   data.model_prompt_message_id = messageId;
   data.model_prompt_text = text;
   await env.DB.prepare("INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET data_json = excluded.data_json, updated_at = CURRENT_TIMESTAMP")
@@ -293,8 +300,8 @@ async function showModelProfilePrompt(env: Env, telegramId: string, chatId: numb
   const model = await env.DB.prepare("SELECT lifecycle_status FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(telegramId).first<{lifecycle_status:string}>();
   const keyboard = { keyboard: [[{ text: "Профиль" }, { text: "Отпуск" }]], resize_keyboard: true, is_persistent: true };
   const step = PROFILE_STEPS.find((item) => item.state === session?.state);
-  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\\n\\n" + step.prompt, threadId, keyboard);
-  else if (model?.lifecycle_status === "frozen") await sendModel(env, chatId, "🥶\\n\\nУпс, ваша анкета заморожена и временно не отображается в активной базе.\\nОтправьте /profile, чтобы обновить параметры и восстановить доступ.", threadId, keyboard);
+  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\n\n" + step.prompt, threadId, keyboard);
+  else if (model?.lifecycle_status === "frozen") await sendModel(env, chatId, "🥶\n\nУпс, ваша анкета заморожена и временно не отображается в активной базе.\nОтправьте /profile, чтобы обновить параметры и восстановить доступ.", threadId, keyboard);
   else if (session?.state === "profile_complete") await sendModel(env, chatId, "Ваша анкета подключена и заполнена. Чтобы изменить данные, отправьте /profile.", threadId, keyboard);
   else await beginModelProfile(env, telegramId, chatId, threadId);
 }
