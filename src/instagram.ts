@@ -348,7 +348,25 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
   }
   if (m.photo?.length) {
     const topic = await currentTopic(env, m);
-    if (topic !== "album" && topic !== "greeting") { await send(env, m, "Фотографии загружай в тему «Альбом» или «Fashion привет». Сначала зарегистрируй тему командой /topic album или /topic greeting."); return; }
+    if (topic === "generator") {
+      const storyText = (m.caption ?? "").trim();
+      if (!storyText) {
+        await send(env, m, "Добавь подпись к фотографии прямо при отправке. Я размещу её на изображении и верну готовую Story.");
+        return;
+      }
+      try {
+        const photo = await downloadPhoto(env, m.photo[m.photo.length - 1].file_id);
+        const image = await render(photo, storyText, 0);
+        await publish(env, m, [image]);
+        await send(env, m, "✓ Готово. Фото с подписью обработано. Отправляй следующую фотографию с её текстом.");
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error("Direct Instagram Story render failed", { messageId: m.message_id, reason });
+        await send(env, m, "❌ Не удалось обработать фото: " + reason.slice(0, 400));
+      }
+      return;
+    }
+    if (topic !== "album" && topic !== "greeting") { await send(env, m, "Фотографии с подписью для готовой Story отправляй в тему «Генератор». Для библиотеки фото используй темы «Альбом» и «Fashion привет»."); return; }
     const caption = (m.caption ?? "").trim().toUpperCase();
     const categoryCodes: Record<string, Category> = { "Ф": "FASHION", "Э": "ЭМОЦИИ", "К": "КАТАЛОГ", "Б": "БЬЮТИ", "Т": "ТЕСТЫ" };
     let category: Category | null = topic === "greeting" ? "FASHION_HELLO" : ((categories as string[]).includes(caption) ? caption as Category : categoryCodes[caption] ?? (caption === "FASHION_HELLO" ? "FASHION_HELLO" : null));
