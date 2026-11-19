@@ -147,7 +147,7 @@ async function handleStoryStyleCallback(env: Env, callback: CallbackQuery): Prom
   const [, id, action, value] = match;
   const row = await env.DB.prepare("SELECT chat_id,thread_id,user_id,stage,photo_file_id,story_text,position,fill FROM instagram_story_style_pending WHERE id=?")
     .bind(id).first<{ chat_id:string; thread_id:number; user_id:string; stage:string; photo_file_id:string; story_text:string; position:string|null; fill:string|null }>();
-  if (!row || row.user_id !== String(callback.from.id) || row.chat_id !== String(callback.message.chat.id) || row.thread_id !== (callback.message.message_thread_id ?? 0) || row.stage !== action) {
+  if (!row || row.user_id !== String(callback.from.id) || row.chat_id !== String(callback.message.chat.id) || row.thread_id !== (callback.message.message_thread_id ?? 0) || row.stage !== (action === "pos" ? "position" : action)) {
     await answerInstagramCallback(env, callback, "Настройки уже изменены или принадлежат другому пользователю.");
     return;
   }
