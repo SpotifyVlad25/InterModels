@@ -227,14 +227,14 @@ jobs:
       - name: Configure Instagram Telegram webhook
         shell: bash
         env:
-          INST_BOT_TOKEN: \${{ secrets.INST_BOT_TOKEN }}
+          INST_BOT_TOKEN: ${{ secrets.INST_BOT_TOKEN }}
         run: |
           set -euo pipefail
           expected_url="https://intermodels.spotify-vlad25.workers.dev/webhook/instagram"
           INST_WEBHOOK_SECRET="$(printf '%s' "$INST_BOT_TOKEN" | sha256sum | cut -c1-48)"
-          result="$(curl -fsS -X POST "https://api.telegram.org/bot\${INST_BOT_TOKEN}/setWebhook" \
+          result="$(curl -fsS -X POST "https://api.telegram.org/bot${INST_BOT_TOKEN}/setWebhook" \
             --data-urlencode "url=$expected_url" \
-            --data-urlencode "secret_token=\${INST_WEBHOOK_SECRET}" \
+            --data-urlencode "secret_token=${INST_WEBHOOK_SECRET}" \
             --data-urlencode 'allowed_updates=["message"]')"
           printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok){console.error("Instagram setWebhook failed:",j.description||"unknown error");process.exit(1)}console.log("Instagram webhook configured.")})'
 
