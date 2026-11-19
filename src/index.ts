@@ -275,6 +275,7 @@ function modelMethodKeyboard():Record<string,unknown>{return{inline_keyboard:[[
 function modelProfileActionsKeyboard():Record<string,unknown>{return{inline_keyboard:[
  [{text:"✏️ Редактировать",callback_data:"model:edit"}]
 ]};}
+// Persistent navigation lives in Telegram's bottom reply keyboard.
 function modelBottomKeyboard():Record<string,unknown>{return{keyboard:[
  [{text:"👤 Профиль"},{text:"🌴 Отпуск"}]
 ],resize_keyboard:true,is_persistent:true};}
