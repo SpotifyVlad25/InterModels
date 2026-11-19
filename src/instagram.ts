@@ -11,7 +11,7 @@ type Message = {
   text?: string; caption?: string; photo?: Photo[];
 };
 type Update = { message?: Message; };
-type Category = "FASHION_HELLO" | "FASHION" | "КАТАЛОГ" | "ТЕСТЫ" | "ЭМОЦИИ" | "БЬЮТИ";
+type Category = "FASHION_HELLO" | "FASHION" | "КАТАЛОГ" | "ТЕСТЫ" | "ЭМОЦИИ" | "БЬЮТИ" | "ANY";
 const categories: Category[] = ["FASHION", "КАТАЛОГ", "ТЕСТЫ", "ЭМОЦИИ", "БЬЮТИ"];
 const topicNames = ["greeting", "album", "plan", "generator"] as const;
 let wasmReady: Promise<void> | undefined;
@@ -102,10 +102,10 @@ async function processPlan(env: Env, m: Message): Promise<void> {
   for (const line of lines) {
     const match = line.match(/^(\d+)[.)]\s*(.+)$/); if (!match) continue;
     const n = Number(match[1]), body = match[2].trim();
-    const cat = body.match(/\((FASHION|КАТАЛОГ|ТЕСТЫ|ЭМОЦИИ|БЬЮТИ)\)\s*$/i);
-    const clean = body.replace(/\s*\((FASHION|КАТАЛОГ|ТЕСТЫ|ЭМОЦИИ|БЬЮТИ)\)\s*$/i, "").trim();
-    if (n !== 1 && !cat) { await send(env, m, "Укажи категорию для пункта " + n + " в скобках: (FASHION), (КАТАЛОГ), (ТЕСТЫ), (ЭМОЦИИ) или (БЬЮТИ)."); return; }
-    items.push({ n, text: clean, category: n === 1 ? "FASHION_HELLO" : cat![1].toUpperCase() as Category });
+    const cat = body.match(/\(([ФЭКБТ])\)\s*$/i);
+    const clean = body.replace(/\s*\([ФЭКБТ]\)\s*$/i, "").trim();
+    const categoryMap: Record<string, Category> = { "Ф": "FASHION", "Э": "ЭМОЦИИ", "К": "КАТАЛОГ", "Б": "БЬЮТИ", "Т": "ТЕСТЫ" };
+    items.push({ n, text: clean, category: n === 1 ? "FASHION_HELLO" : cat ? categoryMap[cat[1].toUpperCase()] : "ANY" });
   }
   if (items.length > 10) { await send(env, m, "В одной серии Telegram поддерживает максимум 10 сторис. Раздели сценарий на несколько серий."); return; }
   if (!items.length || items[0].n !== 1) { await send(env, m, "Не вижу сценарий. Отправь пункты в формате:\n1. Фэшн привет!\n2. Текст сторис (БЬЮТИ)\n3. Следующий текст (ЭМОЦИИ)"); return; }
@@ -122,10 +122,13 @@ async function generate(env: Env, m: Message): Promise<void> {
   const output: Uint8Array[] = [];
   const used = new Set<string>();
   for (const item of plan) {
-    const rows = await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? AND day_key=? AND category=? ORDER BY RANDOM()")
-      .bind(k.chat, day, item.category).all<{ telegram_file_id: string; file_unique_id: string }>();
+    const rows = item.category === "ANY"
+      ? await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? AND category!='FASHION_HELLO' ORDER BY RANDOM()")
+          .bind(k.chat).all<{ telegram_file_id: string; file_unique_id: string }>()
+      : await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? AND category=? ORDER BY RANDOM()")
+          .bind(k.chat, item.category).all<{ telegram_file_id: string; file_unique_id: string }>();
     const available = (rows.results ?? []).filter(x => !used.has(x.file_unique_id));
-    if (!available.length) { await send(env, m, "Не хватает фотографий категории " + item.category + " для пункта " + item.n + ". Загрузи фото в теме «Альбом» с подписью-категорией."); return; }
+    if (!available.length) { await send(env, m, "Не хватает фотографий для пункта " + item.n + ". Проверь, что в библиотеке есть фотографии нужной категории."); return; }
     const chosen = available[0]; used.add(chosen.file_unique_id);
     const photo = await downloadPhoto(env, chosen.telegram_file_id);
     output.push(await render(photo, item.n === 1 ? "" : item.text, style));
@@ -152,7 +155,7 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
   const text = (m.text ?? "").trim();
   const command = text.match(/^\/(\w+)(?:@\w+)?(?:\s+(.+))?$/);
   if (command?.[1] === "start" || command?.[1] === "help") {
-    await send(env, m, "Instagram Stories бот готов.\n\nРегистрация тем: /topic greeting, /topic album, /topic plan, /topic generator — по одной команде в каждой теме.\n\nВ «Альбом» загружай фотоальбом с подписью первой фотографии: FASHION, КАТАЛОГ, ТЕСТЫ, ЭМОЦИИ или БЬЮТИ. Для приветствия используй FASHION_HELLO.\nВ «План» отправь сценарий, в «Генератор» — /generate.");
+    await send(env, m, "Instagram Stories бот готов.\n\nРегистрация тем: /topic greeting, /topic album, /topic plan, /topic generator — по одной команде в каждой теме.\n\nВ «Альбом» загружай фотоальбом с подписью первой фотографии: FASHION, КАТАЛОГ, ТЕСТЫ, ЭМОЦИИ или БЬЮТИ. Для приветствия используй FASHION_HELLO.\nВ «План» отправь сценарий: (Ф) — фэшн, (Э) — эмоции, (К) — каталог, (Б) — бьюти, (Т) — тесты. Без буквы — случайное фото из всех категорий. В «Генератор» — /generate.");
     return;
   }
   if (command?.[1] === "topic" && command[2]) {
