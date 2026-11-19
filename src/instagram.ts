@@ -3,7 +3,7 @@ import wasm from "@resvg/resvg-wasm/index_bg.wasm";
 import cyrillic from "@fontsource/roboto/files/roboto-cyrillic-400-normal.woff2";
 import latin from "@fontsource/roboto/files/roboto-latin-400-normal.woff2";
 
-type Env = { DB: D1Database; INST_BOT_TOKEN: string; STORY_BUCKET: R2Bucket };
+type Env = { DB: D1Database; INST_BOT_TOKEN: string };
 type Photo = { file_id: string; file_unique_id: string; width: number; height: number };
 type Message = {
   message_id: number; message_thread_id?: number; media_group_id?: string;
@@ -218,7 +218,6 @@ export async function processInstagramStoryJobs(env: Env): Promise<void> {
   const plan = JSON.parse(job.plan_json) as Array<{ n: number; text: string; category: Category }>;
   const style = job.style === null ? (Math.random() < 0.5 ? 0 : 1) : job.style;
   const used = new Set<string>(JSON.parse(job.used_photo_ids_json || "[]") as string[]);
-  const bucket = env.STORY_BUCKET;
 
   try {
     if (job.next_story_index === 0) {
@@ -242,33 +241,26 @@ export async function processInstagramStoryJobs(env: Env): Promise<void> {
 
       const photo = await downloadPhoto(env, chosen.telegram_file_id);
       const png = await render(photo, item.n === 1 ? "" : item.text, style);
-      const objectKey = "instagram-stories/" + job.job_id + "/" + String(index + 1).padStart(2, "0") + ".png";
-      await bucket.put(objectKey, png, { httpMetadata: { contentType: "image/png" } });
+      const outputMessage: Message = { message_id: 0, message_thread_id: outputThreadId, chat: { id: chatId, type: "supergroup" } };
+      // Publish each Story immediately; no intermediate object storage is needed.
+      await publish(env, outputMessage, [png]);
 
       const nextIndex = index + 1;
+      const completed = nextIndex >= plan.length;
       await env.DB.prepare(
-        "UPDATE instagram_story_jobs SET next_story_index=?,used_photo_ids_json=?,style=?,progress=?,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'",
-      ).bind(nextIndex, JSON.stringify([...used]), style, "Подготовлено " + nextIndex + " из " + plan.length, job.job_id).run();
-      await sendToTopic(env, chatId, outputThreadId, "🖼 Подготовлена Story " + nextIndex + " из " + plan.length + ".");
+        "UPDATE instagram_story_jobs SET next_story_index=?,used_photo_ids_json=?,style=?,status=?,progress=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'",
+      ).bind(nextIndex, JSON.stringify([...used]), style, completed ? "completed" : "processing",
+        completed ? "Готово" : "Отправлено " + nextIndex + " из " + plan.length, job.job_id).run();
+      await sendToTopic(env, chatId, outputThreadId,
+        "🖼 Story " + nextIndex + " из " + plan.length + " отправлена." +
+        (completed ? "\n✅ Все Stories готовы. Каждая отправлена отдельным сообщением." : ""));
       return;
     }
 
-    // All PNGs are durable in R2. Publication is a separate Cron step.
-    const images: Uint8Array[] = [];
-    for (let i = 0; i < plan.length; i++) {
-      const objectKey = "instagram-stories/" + job.job_id + "/" + String(i + 1).padStart(2, "0") + ".png";
-      const object = await bucket.get(objectKey);
-      if (!object) throw new Error("Не найден сохранённый файл Story " + (i + 1) + ". Запусти /generate повторно.");
-      images.push(new Uint8Array(await object.arrayBuffer()));
-    }
-    const outputMessage: Message = { message_id: 0, message_thread_id: outputThreadId, chat: { id: chatId, type: "supergroup" } };
-    await publish(env, outputMessage, images);
-    await env.DB.prepare("UPDATE instagram_story_jobs SET status='completed',progress='Готово',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'")
+    // Recovery path: all Stories were already sent before a previous invocation ended.
+    await env.DB.prepare("UPDATE instagram_story_jobs SET status='completed',progress='Готово',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'")
       .bind(job.job_id).run();
-    for (let i = 0; i < plan.length; i++) {
-      await bucket.delete("instagram-stories/" + job.job_id + "/" + String(i + 1).padStart(2, "0") + ".png");
-    }
-    await sendToTopic(env, chatId, outputThreadId, "✅ Готово! Stories собраны. Вся серия оформлена в одном стиле.");
+    await sendToTopic(env, chatId, outputThreadId, "✅ Все Stories уже отправлены.");
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     await env.DB.prepare("UPDATE instagram_story_jobs SET status='failed',last_error=?,progress='Ошибка',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'")
