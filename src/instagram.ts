@@ -147,7 +147,17 @@ async function handleStoryStyleCallback(env: Env, callback: CallbackQuery): Prom
   const [, id, action, value] = match;
   // Acknowledge immediately so Telegram does not leave the button spinner running
   // while D1 and message-edit requests are processed.
-  await answerInstagramCallback(env, callback, "Обрабатываю выбор…");
+  try {
+    await answerInstagramCallback(env, callback, "Обрабатываю выбор…");
+  } catch (error) {
+    // Callback acknowledgement can expire while Telegram retries a queued update.
+    // Do not let that prevent the actual selection from being processed.
+    console.warn("Instagram callback acknowledgement failed", {
+      callbackId: callback.id,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+  try {
   const row = await env.DB.prepare("SELECT chat_id,thread_id,user_id,stage,photo_file_id,story_text,position,fill FROM instagram_story_style_pending WHERE id=?")
     .bind(id).first<{ chat_id:string; thread_id:number; user_id:string; stage:string; photo_file_id:string; story_text:string; position:string|null; fill:string|null }>();
   if (!row || row.user_id !== String(callback.from.id) || row.chat_id !== String(callback.message.chat.id) || row.thread_id !== (callback.message.message_thread_id ?? 0) || row.stage !== (action === "pos" ? "position" : action)) {
@@ -182,6 +192,18 @@ async function handleStoryStyleCallback(env: Env, callback: CallbackQuery): Prom
     console.error("Instagram Story style render failed", { id, reason });
     await editStoryPrompt(env, callback, "❌ Не удалось обработать фото: " + reason.slice(0,300), { inline_keyboard: [] });
     await env.DB.prepare("DELETE FROM instagram_story_style_pending WHERE id=?").bind(id).run();
+  }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error("Instagram Story style callback failed", { id, action, value, reason });
+    try {
+      await editStoryPrompt(env, callback, "❌ Не удалось применить настройку: " + reason.slice(0, 250), { inline_keyboard: [] });
+    } catch (editError) {
+      console.error("Instagram Story callback error message failed", {
+        id,
+        reason: editError instanceof Error ? editError.message : String(editError),
+      });
+    }
   }
 }
 async function savePhoto(env: Env, m: Message, category: Category): Promise<void> {
