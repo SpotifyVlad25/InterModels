@@ -127,8 +127,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! npx wrangler r2 bucket list --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s);process.exit(Array.isArray(a)&&a.some(x=>x.name==="intermodels-instagram-stories")?0:1)})'; then
+          bucket_list="$(npx wrangler r2 bucket list)"
+          if ! printf '%s\n' "$bucket_list" | grep -Fq 'intermodels-instagram-stories'; then
             npx wrangler r2 bucket create intermodels-instagram-stories
+          else
+            echo "Instagram Stories R2 bucket already exists."
           fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
