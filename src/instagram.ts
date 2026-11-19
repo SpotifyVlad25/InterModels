@@ -97,7 +97,8 @@ async function processPlan(env: Env, m: Message): Promise<void> {
     const n = Number(match[1]), body = match[2].trim();
     const cat = body.match(/\((FASHION|КАТАЛОГ|ТЕСТЫ|ЭМОЦИИ|БЬЮТИ)\)\s*$/i);
     const clean = body.replace(/\s*\((FASHION|КАТАЛОГ|ТЕСТЫ|ЭМОЦИИ|БЬЮТИ)\)\s*$/i, "").trim();
-    items.push({ n, text: clean, category: n === 1 ? "FASHION_HELLO" : (cat?.[1].toUpperCase() as Category) || "FASHION" });
+    if (n !== 1 && !cat) { await send(env, m, "Укажи категорию для пункта " + n + " в скобках: (FASHION), (КАТАЛОГ), (ТЕСТЫ), (ЭМОЦИИ) или (БЬЮТИ)."); return; }
+    items.push({ n, text: clean, category: n === 1 ? "FASHION_HELLO" : cat![1].toUpperCase() as Category });
   }
   if (items.length > 10) { await send(env, m, "В одной серии Telegram поддерживает максимум 10 сторис. Раздели сценарий на несколько серий."); return; }
   if (!items.length || items[0].n !== 1) { await send(env, m, "Не вижу сценарий. Отправь пункты в формате:\n1. Фэшн привет!\n2. Текст сторис (БЬЮТИ)\n3. Следующий текст (ЭМОЦИИ)"); return; }
