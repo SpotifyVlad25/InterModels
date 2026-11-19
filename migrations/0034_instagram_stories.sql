@@ -26,3 +26,13 @@ CREATE TABLE IF NOT EXISTS instagram_plans (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(chat_id, thread_id, day_key)
 );
+
+CREATE TABLE IF NOT EXISTS instagram_upload_context (
+  chat_id TEXT NOT NULL,
+  thread_id INTEGER NOT NULL,
+  uploader_id TEXT NOT NULL,
+  day_key TEXT NOT NULL,
+  category TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(chat_id, thread_id, uploader_id, day_key)
+);
