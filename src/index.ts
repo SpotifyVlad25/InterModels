@@ -3270,7 +3270,7 @@ export default {
       if (isDirector && update.callback_query) await handleDirectorCallback(env, update.callback_query);
       if (isSecretary && update.message) await handleSecretaryMessage(env, update.message);
       if (isSecretary && update.callback_query) await handleSecretaryCallback(env, update.callback_query);
-      if (isInstagram && update.message) await handleInstagramUpdate(env, update);
+      if (isInstagram && (update.message || update.callback_query)) await handleInstagramUpdate(env, update);
       console.info("Telegram webhook update processed", { route, updateId: update.update_id ?? null });
       return json({ ok: true });
     } catch (error) {
