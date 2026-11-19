@@ -260,7 +260,8 @@ async function beginModelProfile(env:Env,telegramId:string,chatId:number,threadI
  await env.DB.prepare("INSERT INTO model_profiles(model_id) SELECT id FROM models WHERE telegram_user_id=? ON CONFLICT(model_id) DO NOTHING").bind(telegramId).run();
  const first=PROFILE_STEPS[0];
  await env.DB.prepare("INSERT INTO bot_sessions(telegram_user_id,state,data_json,updated_at) VALUES(?,?,'{}',CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state=excluded.state,updated_at=CURRENT_TIMESTAMP").bind(telegramId,first.state).run();
- await sendModel(env,chatId,"Подключение подтверждено!\\n\\nСейчас необходимо полностью заполнить анкету. В дальнейшем ежемесячно будут обновляться только параметры, остальные данные можно менять через «Профиль».\\n\\n"+first.prompt,threadId,profileKeyboard());
+ await env.DB.prepare("UPDATE bot_sessions SET state='profile_method',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(telegramId).run();
+ await sendModel(env,chatId,"Подключение подтверждено!\\n\\nСейчас необходимо полностью заполнить анкету. Выберите удобный способ:",threadId,{keyboard:[[{text:"Опрос"},{text:"Анкета"}]],resize_keyboard:true,is_persistent:true});
 }
 async function handleModelProfileStep(env:Env,telegramId:string,chatId:number,text:string,threadId?:number):Promise<boolean>{
  const session=await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id=?").bind(telegramId).first<{state:string}>();
@@ -305,6 +306,8 @@ async function startProfileEdit(env:Env,telegramId:string,chatId:number,threadId
 async function showModelProfilePrompt(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
  const session=await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id=?").bind(telegramId).first<{state:string}>();
  const model=await env.DB.prepare("SELECT lifecycle_status FROM models WHERE telegram_user_id=? AND is_active=1").bind(telegramId).first<{lifecycle_status:string}>();
+ if(session?.state==="profile_method"){await sendModel(env,chatId,"Выберите способ заполнения анкеты:",threadId,{keyboard:[[{text:"Опрос"},{text:"Анкета"}]],resize_keyboard:true,is_persistent:true});return;}
+ if(session?.state==="awaiting_brief"){await sendModel(env,chatId,"Пришлите заполненную анкету одним сообщением. Нужны пункты 2 и 4–10.",threadId,profileKeyboard());return;}
  if(session?.state==="profile_complete"||session?.state==="profile_edit_menu"||session?.state==="profile_edit_value"){await showModelProfile(env,telegramId,chatId,threadId);return;}
  if(model?.lifecycle_status==="frozen"){const ms=MONTHLY_PROFILE_STEPS.find(x=>x.state===session?.state);if(ms){await sendModel(env,chatId,"Продолжим ежемесячное обновление.\\n\\n"+ms.prompt,threadId,profileKeyboard());return;}await startMonthlyProfile(env,telegramId,chatId,threadId);return;}
  const monthly=MONTHLY_PROFILE_STEPS.find(x=>x.state===session?.state);if(monthly){await sendModel(env,chatId,"Продолжим ежемесячное обновление.\\n\\n"+monthly.prompt,threadId,profileKeyboard());return;}
@@ -322,7 +325,29 @@ async function handleModelMessage(env:Env,message:TelegramMessage):Promise<void>
   await sendModel(env,chat,"Добро пожаловать в InterModels!\\n\\nВведите полное ФИО, включая отчество, как в документах.",thread);return;
  }
  const session=await env.DB.prepare("SELECT state,data_json FROM bot_sessions WHERE telegram_user_id=?").bind(uid).first<{state:string;data_json:string}>();
- if(text==="Профиль"){const linked=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=? AND is_active=1").bind(uid).first<{id:string}>();if(!linked){await sendModel(env,chat,"Сначала дождитесь подтверждения директора.",thread);return;}await showModelProfile(env,uid,chat,thread);return;}
+ if(session?.state==="profile_method"&&text==="Опрос"){
+  await env.DB.prepare("UPDATE bot_sessions SET state=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(PROFILE_STEPS[0].state,uid).run();
+  await sendModel(env,chat,PROFILE_STEPS[0].prompt,thread,profileKeyboard());return;
+ }
+ if(session?.state==="profile_method"&&text==="Анкета"){
+  await env.DB.prepare("UPDATE bot_sessions SET state='awaiting_brief',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
+  await sendModel(env,chat,"Отправьте заполненную анкету одним сообщением в формате:\\n1. ФИО\\n2. Дата рождения ДД.ММ.ГГГГ\\n3. Возраст (можно не указывать — рассчитаю сам)\\n4. Рост\\n5. Параметры грудь/талия/бёдра\\n6. Размер одежды\\n7. Размер обуви\\n8. Телефон и оператор\\n9. Цвет волос\\n10. Цвет глаз",thread,profileKeyboard());return;
+ }
+ if(session?.state==="awaiting_brief"&&text){
+  const fields=new Map<number,string>();for(const line of text.split(/\\r?\\n/)){const m=line.match(/^\\s*(\\d{1,2})[.)]\\s*(.+)$/);if(m)fields.set(Number(m[1]),m[2].trim());}
+  const birth=(fields.get(2)??"").match(/\\d{2}\\.\\d{2}\\.\\d{4}/)?.[0]??"";
+  const height=Number((fields.get(4)??"").match(/\\d{2,3}/)?.[0]??0);
+  const measures=(fields.get(5)??"").match(/\\d{2,3}/g)?.map(Number)??[];
+  const clothing=fields.get(6)??"",shoe=fields.get(7)??"",phone=fields.get(8)??"",hair=fields.get(9)??"",eyes=fields.get(10)??"";
+  if(!ageFromBirthDate(birth)||!height||measures.length!==3||!clothing||!shoe||normalizePhone(phone).length<10||!hair||!eyes){
+   await sendModel(env,chat,"Не удалось распознать все поля. Проверьте, что заполнены пункты 2 и 4–10, и отправьте анкету ещё раз.",thread,profileKeyboard());return;
+  }
+  await env.DB.prepare("UPDATE models SET birth_date=?,phone=? WHERE telegram_user_id=?").bind(birth,phone,uid).run();
+  await env.DB.prepare("UPDATE model_profiles SET height_cm=?,bust_cm=?,waist_cm=?,hips_cm=?,clothing_size=?,shoe_size=?,hair_color=?,eye_color=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(height,measures[0],measures[1],measures[2],clothing,shoe,hair,eyes,uid).run();
+  await env.DB.prepare("UPDATE bot_sessions SET state='profile_complete',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
+  await showModelProfile(env,uid,chat,thread);await deleteModelAnswer(env,chat,message.message_id);return;
+ }
+  if(text==="Профиль"){const linked=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=? AND is_active=1").bind(uid).first<{id:string}>();if(!linked){await sendModel(env,chat,"Сначала дождитесь подтверждения директора.",thread);return;}await showModelProfile(env,uid,chat,thread);return;}
  if(text==="Отпуск"){await sendModel(env,chat,"Раздел «Отпуск» будет настроен отдельно.",thread,profileKeyboard());return;}
  if(text==="Редактировать"){await startProfileEdit(env,uid,chat,thread);return;}
  if(text==="⬅️ Назад"){await showModelProfile(env,uid,chat,thread);return;}
