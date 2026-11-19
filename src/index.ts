@@ -289,7 +289,7 @@ async function showModelProfile(env:Env,telegramId:string,chatId:number,threadId
  const age=ageFromBirthDate(r.birth_date),full=[r.last_name,r.first_name,r.middle_name].filter(Boolean).join(" ");
  const lines=["1. "+full,"2. "+(r.birth_date??"—"),"3. "+(age===null?"—":age+" лет"),"4. "+(r.height_cm??"—")+" см","5. "+[r.bust_cm,r.waist_cm,r.hips_cm].map((x:any)=>x??"—").join("/"),"6. Размер одежды "+(r.clothing_size??"—"),"7. Обувь "+(r.shoe_size??"—"),"8. "+(r.phone??"—"),"9. Волосы "+(r.hair_color??"—"),"10. Глаза "+(r.eye_color??"—")];
  const caption="ПРОФИЛЬ МОДЕЛИ\\n\\n"+lines.join("\\n");
- const photo=await env.DB.prepare("SELECT telegram_file_id FROM model_telegram_photo_sets WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?) AND style='basic' AND position=1").bind(telegramId).first<{telegram_file_id:string}>();
+ const photo=await env.DB.prepare("SELECT telegram_file_id FROM model_telegram_photo_sets WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?) undefined").bind(telegramId).first<{telegram_file_id:string}>();
  if(photo?.telegram_file_id)await telegram(env.MODEL_BOT_TOKEN,"sendPhoto",{chat_id:chatId,photo:photo.telegram_file_id,caption});
  else await sendModel(env,chatId,caption,threadId);
  await sendModel(env,chatId,"Выберите действие:",threadId,{keyboard:[[{text:"Редактировать"}],[{text:"Профиль"},{text:"Отпуск"}]],resize_keyboard:true,is_persistent:true});
