@@ -235,7 +235,7 @@ jobs:
           result="$(curl -fsS -X POST "https://api.telegram.org/bot${INST_BOT_TOKEN}/setWebhook" \
             --data-urlencode "url=$expected_url" \
             --data-urlencode "secret_token=${INST_WEBHOOK_SECRET}" \
-            --data-urlencode 'allowed_updates=["message"]')"
+            --data-urlencode 'allowed_updates=["message","callback_query"]')"
           printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok){console.error("Instagram setWebhook failed:",j.description||"unknown error");process.exit(1)}console.log("Instagram webhook configured.")})'
 
       - name: Clear legacy Telegram commands and menu buttons
