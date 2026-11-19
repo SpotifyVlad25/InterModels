@@ -249,7 +249,7 @@ const PROFILE_STEPS = [
 async function beginModelProfile(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
   await env.DB.prepare("INSERT INTO model_profiles (model_id) SELECT id FROM models WHERE telegram_user_id = ? ON CONFLICT(model_id) DO NOTHING").bind(telegramId).run();
   const first = PROFILE_STEPS[0];
-  await env.DB.prepare("INSERT INTO bot_sessions (telegram_user_id,state,data_json,updated_at) VALUES (?, ?, '{}', CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state=excluded.state,data_json='{}',updated_at=CURRENT_TIMESTAMP").bind(telegramId, first.state).run();
+  await env.DB.prepare("INSERT INTO bot_sessions (telegram_user_id,state,data_json,updated_at) VALUES (?, ?, '{}', CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state=excluded.state,updated_at=CURRENT_TIMESTAMP").bind(telegramId, first.state).run();
   await sendModel(env, chatId,
     "Подключение подтверждено!\n\nСейчас необходимо полностью заполнить анкету и указать все параметры.\n\nВ дальнейшем регистрация будет сокращена до трёх основных параметров, а остальные данные можно будет добавлять и изменять через раздел «Профиль».\n\n" + first.prompt,
     threadId,
@@ -291,10 +291,11 @@ async function handleModelProfileStep(env: Env, telegramId: string, chatId: numb
 async function showModelProfilePrompt(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
   const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?").bind(telegramId).first<{state:string}>();
   const model = await env.DB.prepare("SELECT lifecycle_status FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(telegramId).first<{lifecycle_status:string}>();
+  const keyboard = { keyboard: [[{ text: "Профиль" }, { text: "Отпуск" }]], resize_keyboard: true, is_persistent: true };
   const step = PROFILE_STEPS.find((item) => item.state === session?.state);
-  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\n\n" + step.prompt, threadId);
-  else if (model?.lifecycle_status === "frozen") await sendModel(env, chatId, "🥶\n\nУпс, ваша анкета заморожена и временно не отображается в активной базе.\nОтправьте /profile, чтобы обновить параметры и восстановить доступ.", threadId);
-  else if (session?.state === "profile_complete") await sendModel(env, chatId, "Ваша анкета подключена и заполнена. Чтобы изменить данные, отправьте /profile.", threadId);
+  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\\n\\n" + step.prompt, threadId, keyboard);
+  else if (model?.lifecycle_status === "frozen") await sendModel(env, chatId, "🥶\\n\\nУпс, ваша анкета заморожена и временно не отображается в активной базе.\\nОтправьте /profile, чтобы обновить параметры и восстановить доступ.", threadId, keyboard);
+  else if (session?.state === "profile_complete") await sendModel(env, chatId, "Ваша анкета подключена и заполнена. Чтобы изменить данные, отправьте /profile.", threadId, keyboard);
   else await beginModelProfile(env, telegramId, chatId, threadId);
 }
 
@@ -318,7 +319,7 @@ async function handleModelMessage(env: Env, message: TelegramMessage): Promise<v
     if (linked) { await showModelProfilePrompt(env, String(user.id), replyChatId, replyThreadId); return; }
     await env.DB.prepare(`INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
       VALUES (?, 'awaiting_name', '{}', CURRENT_TIMESTAMP)
-      ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', data_json = '{}', updated_at = CURRENT_TIMESTAMP`).bind(String(user.id)).run();
+      ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', updated_at = CURRENT_TIMESTAMP`).bind(String(user.id)).run();
     await sendModel(env, replyChatId, "Добро пожаловать в InterModels!\n\nВведите имя и фамилию точно так, как они указаны в агентстве.", replyThreadId);
     return;
   }
