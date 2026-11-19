@@ -273,10 +273,23 @@ function modelMethodKeyboard():Record<string,unknown>{return{inline_keyboard:[[
  {text:"Отправить анкету",callback_data:"model:method:brief"}
 ]]};}
 function modelProfileActionsKeyboard():Record<string,unknown>{return{inline_keyboard:[
- [{text:"👤 Профиль",callback_data:"model:profile"}],
- [{text:"✏️ Редактировать",callback_data:"model:edit"}],
- [{text:"🌴 Отпуск",callback_data:"model:vacation"}]
+ [{text:"✏️ Редактировать",callback_data:"model:edit"}]
 ]};}
+// Persistent navigation lives in Telegram's bottom reply keyboard.
+function modelBottomKeyboard():Record<string,unknown>{return{keyboard:[
+ [{text:"👤 Профиль"},{text:"🌴 Отпуск"}]
+],resize_keyboard:true,is_persistent:true};}
+async function ensureModelBottomKeyboard(env:Env,chatId:number,threadId?:number):Promise<void>{
+ const uid=String(chatId);
+ const row=await env.DB.prepare("SELECT data_json FROM bot_sessions WHERE telegram_user_id=?").bind(uid).first<{data_json:string}>();
+ let data:Record<string,any>={};try{data=JSON.parse(row?.data_json??"{}");}catch{}
+ if(data.model_bottom_keyboard_shown)return;
+ const payload:Record<string,unknown>={chat_id:chatId,text:"\u2060",reply_markup:modelBottomKeyboard()};
+ if(threadId)payload.message_thread_id=threadId;
+ await telegram(env.MODEL_BOT_TOKEN,"sendMessage",payload);
+ data.model_bottom_keyboard_shown=true;
+ await env.DB.prepare("UPDATE bot_sessions SET data_json=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(JSON.stringify(data),uid).run();
+}
 function modelProfileEditKeyboard():Record<string,unknown>{return{inline_keyboard:[
  [{text:"Возраст",callback_data:"model:edit:age"},{text:"Рост",callback_data:"model:edit:height"}],
  [{text:"Параметры",callback_data:"model:edit:measurements"},{text:"Размер одежды",callback_data:"model:edit:clothing"}],
@@ -313,7 +326,7 @@ async function handleModelProfileStep(env:Env,telegramId:string,chatId:number,te
  return true;
 }
 
-async function getModelProfileThumbnail(env:Env,modelId:string,chatId:number,caption:string):Promise<{fileId:string;alreadySent:boolean}|null>{
+async function getModelProfileThumbnail(env:Env,modelId:string,chatId:number,caption:string,replyMarkup:Record<string,unknown>):Promise<{fileId:string;alreadySent:boolean}|null>{
  const source=await env.DB.prepare("SELECT telegram_file_id,telegram_file_unique_id FROM model_telegram_photo_sets WHERE model_id=? AND position=1 ORDER BY CASE style WHEN 'basic' THEN 0 ELSE 1 END LIMIT 1").bind(modelId).first<{telegram_file_id:string;telegram_file_unique_id:string}>();
  if(!source)return null;
  const cached=await env.DB.prepare("SELECT telegram_file_id,source_file_unique_id FROM model_profile_thumbnails WHERE model_id=?").bind(modelId).first<{telegram_file_id:string;source_file_unique_id:string}>();
@@ -329,7 +342,7 @@ async function getModelProfileThumbnail(env:Env,modelId:string,chatId:number,cap
  if(!rendered.ok)throw new Error("Thumbnail renderer returned HTTP "+rendered.status);
  const output=await rendered.json() as {image?:string};if(!output.image)throw new Error("Thumbnail renderer returned no image");
  const raw=atob(output.image),out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);
- const form=new FormData();form.set("chat_id",String(chatId));form.set("caption",caption);form.set("photo",new Blob([out],{type:"image/jpeg"}),"model-thumbnail.jpg");
+ const form=new FormData();form.set("chat_id",String(chatId));form.set("caption",caption);form.set("reply_markup",JSON.stringify(replyMarkup));form.set("photo",new Blob([out],{type:"image/jpeg"}),"model-thumbnail.jpg");
  const uploaded=await fetch("https://api.telegram.org/bot"+env.MODEL_BOT_TOKEN+"/sendPhoto",{method:"POST",body:form});
  const result=await uploaded.json() as any;if(!uploaded.ok||!result.ok)throw new Error("Telegram could not store profile thumbnail");
  const fileId=result.result?.photo?.at(-1)?.file_id;if(typeof fileId!=="string")throw new Error("Telegram did not return thumbnail file_id");
@@ -340,13 +353,31 @@ async function showModelProfile(env:Env,telegramId:string,chatId:number,threadId
  const r=await env.DB.prepare("SELECT m.first_name,m.last_name,m.middle_name,m.birth_date,m.phone,p.height_cm,p.bust_cm,p.waist_cm,p.hips_cm,p.clothing_size,p.shoe_size,p.hair_color,p.eye_color FROM models m LEFT JOIN model_profiles p ON p.model_id=m.id WHERE m.telegram_user_id=? AND m.is_active=1").bind(telegramId).first<any>();
  if(!r){await sendModel(env,chatId,"Профиль пока недоступен.",threadId,profileKeyboard());return;}
  const age=ageFromBirthDate(r.birth_date),full=[r.last_name,r.first_name,r.middle_name].filter(Boolean).join(" ");
- const lines=["1. "+full,"2. "+(r.birth_date??"—"),"3. "+(age===null?"—":age+" лет"),"4. "+(r.height_cm??"—")+" см","5. "+[r.bust_cm,r.waist_cm,r.hips_cm].map((x:any)=>x??"—").join("/"),"6. Размер одежды "+(r.clothing_size??"—"),"7. Обувь "+(r.shoe_size??"—"),"8. "+(r.phone??"—"),"9. Волосы "+(r.hair_color??"—"),"10. Глаза "+(r.eye_color??"—")];
- const caption="ПРОФИЛЬ МОДЕЛИ\\n\\n"+lines.join("\\n");
+ const lines=[
+  "ФИО: "+full,
+  "Дата рождения: "+(r.birth_date??"—"),
+  "Возраст: "+(age===null?"—":age+" лет"),
+  "Рост: "+(r.height_cm??"—")+" см",
+  "Параметры: "+[r.bust_cm,r.waist_cm,r.hips_cm].map((x:any)=>x??"—").join(" / "),
+  "Размер одежды: "+(r.clothing_size??"—"),
+  "Размер обуви: "+(r.shoe_size??"—"),
+  "Телефон: "+(r.phone??"—"),
+  "Цвет волос: "+(r.hair_color??"—"),
+  "Цвет глаз: "+(r.eye_color??"—")
+ ];
+ const caption="👤 ПРОФИЛЬ МОДЕЛИ\n\n"+lines.join("\n");
+ const editMarkup=modelProfileActionsKeyboard();
  const modelRow=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=?").bind(telegramId).first<{id:string}>();
- let thumbnail:{fileId:string;alreadySent:boolean}|null=null;try{if(modelRow)thumbnail=await getModelProfileThumbnail(env,modelRow.id,chatId,caption);}catch(error){console.error("Model profile thumbnail generation failed",error);}
- if(thumbnail&&!thumbnail.alreadySent)await telegram(env.MODEL_BOT_TOKEN,"sendPhoto",{chat_id:chatId,photo:thumbnail.fileId,caption});
- else if(!thumbnail)await sendModel(env,chatId,caption,threadId);
- await sendModel(env,chatId,"Выберите действие:",threadId,modelProfileActionsKeyboard());
+ let thumbnail:{fileId:string;alreadySent:boolean}|null=null;try{if(modelRow)thumbnail=await getModelProfileThumbnail(env,modelRow.id,chatId,caption,editMarkup);}catch(error){console.error("Model profile thumbnail generation failed",error);}
+ if(thumbnail&&!thumbnail.alreadySent)await telegram(env.MODEL_BOT_TOKEN,"sendPhoto",{chat_id:chatId,photo:thumbnail.fileId,caption,reply_markup:editMarkup});
+ else if(!thumbnail)await sendModel(env,chatId,caption,threadId,editMarkup);
+ if(thumbnail){
+  const session=await env.DB.prepare("SELECT data_json FROM bot_sessions WHERE telegram_user_id=?").bind(telegramId).first<{data_json:string}>();
+  let data:Record<string,any>={};try{data=JSON.parse(session?.data_json??"{}");}catch{}
+  delete data.model_prompt_message_id;delete data.model_prompt_text;
+  await env.DB.prepare("UPDATE bot_sessions SET data_json=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(JSON.stringify(data),telegramId).run();
+ }
+ await ensureModelBottomKeyboard(env,chatId,threadId);
 }
 async function startMonthlyProfile(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
  const first=MONTHLY_PROFILE_STEPS[0];await env.DB.prepare("UPDATE bot_sessions SET state=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(first.state,telegramId).run();
@@ -413,11 +444,18 @@ async function handleModelMessage(env:Env,message:TelegramMessage):Promise<void>
  if(text.startsWith("/start")){
   await saveTopic(env,"model",message);
   const linked=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=? AND is_active=1").bind(uid).first<{id:string}>();
-  if(linked){await showModelProfilePrompt(env,uid,chat,thread);return;}
+  if(linked){await showModelProfilePrompt(env,uid,chat,thread);await ensureModelBottomKeyboard(env,chat,thread);return;}
   await env.DB.prepare("INSERT INTO bot_sessions(telegram_user_id,state,data_json,updated_at) VALUES(?,'awaiting_name','{}',CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state='awaiting_name',data_json='{}',updated_at=CURRENT_TIMESTAMP").bind(uid).run();
   await sendModel(env,chat,"Добро пожаловать в InterModels!\\n\\nВведите полное ФИО, включая отчество, как в документах.",thread);return;
  }
  const session=await env.DB.prepare("SELECT state,data_json FROM bot_sessions WHERE telegram_user_id=?").bind(uid).first<{state:string;data_json:string}>();
+ if(text==="👤 Профиль"||text==="Профиль"){
+  await env.DB.prepare("UPDATE bot_sessions SET state='profile_complete',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
+  await showModelProfile(env,uid,chat,thread);return;
+ }
+ if(text==="🌴 Отпуск"||text==="Отпуск"){
+  await sendModel(env,chat,"Раздел «Отпуск» будет настроен отдельно.",thread);return;
+ }
  if(session?.state==="profile_method"&&text==="Опрос"){
   await env.DB.prepare("UPDATE bot_sessions SET state=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(PROFILE_STEPS[0].state,uid).run();
   await sendModel(env,chat,PROFILE_STEPS[0].prompt,thread,profileKeyboard());return;
