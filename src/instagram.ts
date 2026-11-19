@@ -82,8 +82,8 @@ async function savePhoto(env: Env, m: Message, category: Category): Promise<void
   const p = m.photo?.[m.photo.length - 1]; if (!p) return;
   const k = key(m), uploader = String(m.from?.id ?? 0), day = dayKey();
   await env.DB.prepare(
-    "INSERT INTO instagram_upload_context(chat_id,thread_id,uploader_id,day_key,category,updated_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(chat_id,thread_id,uploader_id,day_key) DO UPDATE SET category=excluded.category,updated_at=CURRENT_TIMESTAMP",
-  ).bind(k.chat, k.thread, uploader, day, category).run();
+    "INSERT INTO instagram_upload_context(chat_id,thread_id,uploader_id,day_key,media_group_id,category,updated_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(chat_id,thread_id,uploader_id,day_key) DO UPDATE SET media_group_id=excluded.media_group_id,category=excluded.category,updated_at=CURRENT_TIMESTAMP",
+  ).bind(k.chat, k.thread, uploader, day, m.media_group_id ?? null, category).run();
   await env.DB.prepare(
     "INSERT OR IGNORE INTO instagram_photos(chat_id,thread_id,category,telegram_file_id,file_unique_id,uploaded_by,day_key,source_message_id) VALUES(?,?,?,?,?,?,?,?)",
   ).bind(k.chat, k.thread, category, p.file_id, p.file_unique_id, uploader, day, m.message_id).run();
@@ -151,8 +151,8 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
     const caption = (m.caption ?? "").trim().toUpperCase();
     let category: Category | null = (categories as string[]).includes(caption) ? caption as Category : caption === "FASHION_HELLO" ? "FASHION_HELLO" : null;
     if (!category && !m.caption && m.from) {
-      const context = await env.DB.prepare("SELECT category FROM instagram_upload_context WHERE chat_id=? AND thread_id=? AND uploader_id=? AND day_key=?")
-        .bind(String(m.chat.id), m.message_thread_id ?? 0, String(m.from.id), dayKey()).first<{ category: Category }>();
+      const context = await env.DB.prepare("SELECT category FROM instagram_upload_context WHERE chat_id=? AND thread_id=? AND uploader_id=? AND day_key=? AND media_group_id=?")
+        .bind(String(m.chat.id), m.message_thread_id ?? 0, String(m.from.id), dayKey(), m.media_group_id ?? null).first<{ category: Category }>();
       category = context?.category ?? null;
     }
     if (!category) { await send(env, m, "Не удалось определить категорию. В подписи к первому фото альбома укажи FASHION, КАТАЛОГ, ТЕСТЫ, ЭМОЦИИ, БЬЮТИ или FASHION_HELLO."); return; }
