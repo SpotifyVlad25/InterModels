@@ -172,15 +172,16 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
     const topic = await currentTopic(env, m);
     if (topic !== "album" && topic !== "greeting") { await send(env, m, "Фотографии загружай в тему «Альбом» или «Fashion привет». Сначала зарегистрируй тему командой /topic album или /topic greeting."); return; }
     const caption = (m.caption ?? "").trim().toUpperCase();
-    let category: Category | null = (categories as string[]).includes(caption) ? caption as Category : caption === "FASHION_HELLO" ? "FASHION_HELLO" : null;
+    const categoryCodes: Record<string, Category> = { "Ф": "FASHION", "Э": "ЭМОЦИИ", "К": "КАТАЛОГ", "Б": "БЬЮТИ", "Т": "ТЕСТЫ" };
+    let category: Category | null = (categories as string[]).includes(caption) ? caption as Category : categoryCodes[caption] ?? (caption === "FASHION_HELLO" ? "FASHION_HELLO" : null);
     if (!category && !m.caption && m.from) {
       const context = await env.DB.prepare("SELECT category FROM instagram_upload_context WHERE chat_id=? AND thread_id=? AND uploader_id=? AND day_key=? AND media_group_id=?")
         .bind(String(m.chat.id), m.message_thread_id ?? 0, String(m.from.id), dayKey(), m.media_group_id ?? null).first<{ category: Category }>();
       category = context?.category ?? null;
     }
     if (category === "FASHION_HELLO" && topic !== "greeting") { await send(env, m, "Категорию FASHION_HELLO загружай в тему «Fashion привет»."); return; }
-    if (category && category !== "FASHION_HELLO" && topic !== "album") { await send(env, m, "Категории FASHION, КАТАЛОГ, ТЕСТЫ, ЭМОЦИИ и БЬЮТИ загружай в тему «Альбом»."); return; }
-    if (!category) { await send(env, m, "Не удалось определить категорию. В подписи к первому фото альбома укажи FASHION, КАТАЛОГ, ТЕСТЫ, ЭМОЦИИ, БЬЮТИ или FASHION_HELLO."); return; }
+    if (category && category !== "FASHION_HELLO" && topic !== "album") { await send(env, m, "Категории Ф, Э, К, Б и Т загружай в тему «Альбом»."); return; }
+    if (!category) { await send(env, m, "Не удалось определить категорию. В подписи к первому фото укажи Ф, Э, К, Б или Т. Для приветствия — FASHION_HELLO."); return; }
     await savePhoto(env, m, category);
     if (m.caption) await send(env, m, "Фотоальбом принят: категория " + category + ". Остальные фото альбома сохраняются автоматически.");
     return;
