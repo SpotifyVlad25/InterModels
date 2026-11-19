@@ -69,19 +69,26 @@ async function render(photo: Uint8Array, text: string, style: number): Promise<U
   // resvg-wasm does not load CSS @font-face data URLs. Register font bytes
   // through its font.fontBuffers option so SVG text is actually rendered.
   const fontBuffers = [new Uint8Array(cyrillic), new Uint8Array(latin)];
-  const baseSize = style === 0 ? 58 : 52;
-  const lines = text.trim() ? wrap(text, 26) : [];
-  const size = Math.max(34, baseSize - Math.max(0, lines.length - 2) * 4);
+  // Double the original type size and align the text to the left.
+  // Long captions are fitted vertically so the final lines remain inside the image.
+  const baseSize = style === 0 ? 116 : 104;
+  const lines = text.trim() ? wrap(text, 16) : [];
+  const paddingY = 42;
+  const maxPanelHeight = 1680;
+  const fittedSize = lines.length
+    ? Math.floor((maxPanelHeight - paddingY * 2) / (lines.length * 1.2))
+    : baseSize;
+  const size = Math.max(48, Math.min(baseSize, fittedSize));
   const lineHeight = Math.round(size * 1.2);
-  const paddingY = 34;
   const panelHeight = lines.length * lineHeight + paddingY * 2;
   const panelY = Math.round((1920 - panelHeight) / 2);
-  const firstBaseline = panelY + paddingY + Math.round(size * 0.82);
-  const tspans = lines.map((line, i) => '<tspan x="540" dy="' + (i ? lineHeight : 0) + '">' + esc(line) + "</tspan>").join("");
+  const textX = 100;
+  const firstBaseline = panelY + paddingY + Math.round(size * 0.9);
+  const tspans = lines.map((line, i) => '<tspan x="' + textX + '" dy="' + (i ? lineHeight : 0) + '">' + esc(line) + "</tspan>").join("");
   const color = style === 0 ? "#fff" : "#171717";
   const panel = style === 0 ? "rgba(0,0,0,.46)" : "rgba(255,255,255,.74)";
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1080" height="1920"><image width="1080" height="1920" preserveAspectRatio="xMidYMid slice" xlink:href="data:image/jpeg;base64,' + b64(photo) + '"/>' +
-    (lines.length ? '<rect x="108" y="' + panelY + '" width="864" height="' + panelHeight + '" rx="22" fill="' + panel + '"/><text x="540" y="' + firstBaseline + '" text-anchor="middle" fill="' + color + '" font-family="Roboto" font-size="' + size + '" font-weight="400">' + tspans + "</text>" : "") + "</svg>";
+    (lines.length ? '<rect x="48" y="' + panelY + '" width="984" height="' + panelHeight + '" rx="22" fill="' + panel + '"/><text x="' + textX + '" y="' + firstBaseline + '" text-anchor="start" fill="' + color + '" font-family="Roboto" font-size="' + size + '" font-weight="400">' + tspans + "</text>" : "") + "</svg>";
   return new Resvg(svg, { fitTo: { mode: "width", value: 1080 }, font: { fontBuffers, defaultFontFamily: "Roboto", sansSerifFamily: "Roboto" } }).render().asPng();
 }
 async function publish(env: Env, m: Message, images: Uint8Array[]): Promise<void> {
