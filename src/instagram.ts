@@ -66,7 +66,7 @@ function wrap(text: string, maxChars: number): string[] {
 }
 async function render(photo: Uint8Array, text: string, style: number): Promise<Uint8Array> {
   wasmReady ??= initWasm(wasm); await wasmReady;
-  const fonts = "@font-face{font-family:R;src:url(data:font/woff2;base64," + b64(new Uint8Array(cyrillic)) + ");font-weight:400}@font-face{font-family:R;src:url(data:font/woff2;base64," + b64(new Uint8Array(latin)) + ");font-weight:400}";
+  const fonts = "@font-face{font-family:RC;src:url(data:font/woff2;base64," + b64(new Uint8Array(cyrillic)) + ");font-weight:400}@font-face{font-family:RL;src:url(data:font/woff2;base64," + b64(new Uint8Array(latin)) + ");font-weight:400}";
   const baseSize = style === 0 ? 58 : 52;
   const lines = text.trim() ? wrap(text, 26) : [];
   const size = Math.max(34, baseSize - Math.max(0, lines.length - 2) * 4);
@@ -79,7 +79,7 @@ async function render(photo: Uint8Array, text: string, style: number): Promise<U
   const color = style === 0 ? "#fff" : "#171717";
   const panel = style === 0 ? "rgba(0,0,0,.46)" : "rgba(255,255,255,.74)";
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1080" height="1920"><style>' + fonts + '</style><image width="1080" height="1920" preserveAspectRatio="xMidYMid slice" xlink:href="data:image/jpeg;base64,' + b64(photo) + '"/>' +
-    (lines.length ? '<rect x="108" y="' + panelY + '" width="864" height="' + panelHeight + '" rx="22" fill="' + panel + '"/><text x="540" y="' + firstBaseline + '" text-anchor="middle" fill="' + color + '" font-family="R,Arial" font-size="' + size + '" font-weight="400">' + tspans + "</text>" : "") + "</svg>";
+    (lines.length ? '<rect x="108" y="' + panelY + '" width="864" height="' + panelHeight + '" rx="22" fill="' + panel + '"/><text x="540" y="' + firstBaseline + '" text-anchor="middle" fill="' + color + '" font-family="RC,RL,Arial" font-size="' + size + '" font-weight="400">' + tspans + "</text>" : "") + "</svg>";
   return new Resvg(svg, { fitTo: { mode: "width", value: 1080 } }).render().asPng();
 }
 async function publish(env: Env, m: Message, images: Uint8Array[]): Promise<void> {
