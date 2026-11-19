@@ -29,7 +29,7 @@ interface TelegramMessage {
 interface TelegramCallbackQuery { id: string; from: TelegramUser; data?: string; message?: TelegramMessage; }
 interface TelegramUpdate { update_id?: number; message?: TelegramMessage; callback_query?: TelegramCallbackQuery; }
 interface ModelRow { id: string; first_name: string; last_name: string; phone: string | null; telegram_user_id: string | null; }
-interface RegistrationRow { id: string; telegram_user_id: string; candidate_model_ids: string; status: string; }
+interface RegistrationRow { id: string; telegram_user_id: string; candidate_model_ids: string; submitted_value: string; status: string; }
 interface SecretaryModelRow {
   id: string; first_name: string; last_name: string; phone: string | null;
   height_cm: number | null; bust_cm: number | null; waist_cm: number | null; hips_cm: number | null;
@@ -157,10 +157,28 @@ async function telegram(token: string, method: string, payload: Record<string, u
   }
   return result;
 }
-async function sendModel(env: Env, chatId: string | number, text: string, threadId?: number): Promise<void> {
-  const payload: Record<string, unknown> = { chat_id: chatId, text, disable_web_page_preview: true };
-  if (threadId) payload.message_thread_id = threadId;
-  await telegram(env.MODEL_BOT_TOKEN, "sendMessage", payload);
+async function sendModel(env: Env, chatId: string | number, text: string, threadId?: number, replyMarkup?: Record<string,unknown>): Promise<void> {
+  const uid=String(chatId);
+  const session=await env.DB.prepare("SELECT state,data_json FROM bot_sessions WHERE telegram_user_id=?").bind(uid).first<{state:string;data_json:string}>();
+  let data:Record<string,any>={};try{data=JSON.parse(session?.data_json??"{}");}catch{}
+  const previous=Number(data.model_prompt_message_id);
+  const payload:Record<string,unknown>={chat_id:chatId,text,disable_web_page_preview:true};
+  if(threadId)payload.message_thread_id=threadId;
+  if(replyMarkup&&!data.model_menu_shown)payload.reply_markup=replyMarkup;
+  let messageId:number|undefined;
+  if(previous>0){
+    try{await telegram(env.MODEL_BOT_TOKEN,"editMessageText",{chat_id:chatId,message_id:previous,text,disable_web_page_preview:true});messageId=previous;}
+    catch{if(data.model_prompt_text===text)messageId=previous;else{try{await telegram(env.MODEL_BOT_TOKEN,"deleteMessage",{chat_id:chatId,message_id:previous});}catch{}messageId=undefined;}}
+  }
+  if(!messageId){const sent=await telegram(env.MODEL_BOT_TOKEN,"sendMessage",payload);messageId=sent.result?.message_id;}
+  if(replyMarkup)data.model_menu_shown=true;
+  data.model_prompt_message_id=messageId;data.model_prompt_text=text;
+  await env.DB.prepare("INSERT INTO bot_sessions(telegram_user_id,state,data_json,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET data_json=excluded.data_json,updated_at=CURRENT_TIMESTAMP")
+    .bind(uid,session?.state??"model_idle",JSON.stringify(data)).run();
+}
+async function deleteModelAnswer(env:Env,chatId:number,messageId:number):Promise<void>{
+  try{await telegram(env.MODEL_BOT_TOKEN,"deleteMessage",{chat_id:chatId,message_id:messageId});}
+  catch(error){console.warn("Unable to delete model answer after processing",{chatId,messageId,error:compositeErrorText(error)});}
 }
 async function sendDirector(env: Env, text: string, replyMarkup?: Record<string, unknown>): Promise<void> {
   const topic = await env.DB.prepare("SELECT chat_id, thread_id FROM bot_topics WHERE bot_key = ?").bind("director").first<{ chat_id: string; thread_id: number }>();
@@ -214,138 +232,181 @@ async function createRequest(
 
 
 const PROFILE_STEPS = [
-  { state: "profile_height", field: "height_cm", prompt: "Укажите рост в сантиметрах (например, 183). Можно отправить «пропустить».", numeric: true },
-  { state: "profile_weight", field: "weight_kg", prompt: "Укажите вес в килограммах (например, 72). Можно отправить «пропустить».", numeric: true },
-  { state: "profile_bust", field: "bust_cm", prompt: "Обхват груди в сантиметрах. Можно отправить «пропустить».", numeric: true },
-  { state: "profile_waist", field: "waist_cm", prompt: "Обхват талии в сантиметрах. Можно отправить «пропустить».", numeric: true },
-  { state: "profile_hips", field: "hips_cm", prompt: "Обхват бёдер в сантиметрах. Можно отправить «пропустить».", numeric: true },
-  { state: "profile_clothing", field: "clothing_size", prompt: "Укажите размер одежды (например, 46 / M). Можно отправить «пропустить».", numeric: false },
-  { state: "profile_shoe", field: "shoe_size", prompt: "Укажите размер обуви (например, 42). Можно отправить «пропустить».", numeric: false },
-  { state: "profile_hair", field: "hair_color", prompt: "Укажите цвет волос. Можно отправить «пропустить».", numeric: false },
-  { state: "profile_eyes", field: "eye_color", prompt: "Укажите цвет глаз. Можно отправить «пропустить».", numeric: false },
+  { state: "profile_birthdate", field: "birth_date", prompt: "Укажите дату рождения в формате ДД.ММ.ГГГГ.", numeric: false },
+  { state: "profile_height", field: "height_cm", prompt: "Укажите рост в сантиметрах (например, 190).", numeric: true },
+  { state: "profile_bust", field: "bust_cm", prompt: "Укажите обхват груди в сантиметрах.", numeric: true },
+  { state: "profile_waist", field: "waist_cm", prompt: "Укажите обхват талии в сантиметрах.", numeric: true },
+  { state: "profile_hips", field: "hips_cm", prompt: "Укажите обхват бёдер в сантиметрах.", numeric: true },
+  { state: "profile_clothing", field: "clothing_size", prompt: "Укажите размер одежды (например, 46 (M) или M).", numeric: false },
+  { state: "profile_shoe", field: "shoe_size", prompt: "Укажите размер обуви (например, 45–46).", numeric: false },
+  { state: "profile_phone", field: "phone", prompt: "Укажите номер телефона и оператора.", numeric: false },
+  { state: "profile_hair", field: "hair_color", prompt: "Укажите цвет волос.", numeric: false },
+  { state: "profile_eyes", field: "eye_color", prompt: "Укажите цвет глаз.", numeric: false },
 ] as const;
-async function beginModelProfile(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
-  await env.DB.prepare("INSERT INTO model_profiles (model_id) SELECT id FROM models WHERE telegram_user_id = ? ON CONFLICT(model_id) DO NOTHING").bind(telegramId).run();
-  const first = PROFILE_STEPS[0];
-  await env.DB.prepare("INSERT INTO bot_sessions (telegram_user_id,state,data_json,updated_at) VALUES (?, ?, '{}', CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state=excluded.state,data_json='{}',updated_at=CURRENT_TIMESTAMP").bind(telegramId, first.state).run();
-  await sendModel(env, chatId, "Подключение подтверждено! Давайте заполним вашу анкету. Это займёт несколько коротких шагов.\n\n" + first.prompt, threadId);
+const MONTHLY_PROFILE_STEPS = [
+  { state: "monthly_bust", field: "bust_cm", prompt: "Обхват груди в сантиметрах." },
+  { state: "monthly_waist", field: "waist_cm", prompt: "Обхват талии в сантиметрах." },
+  { state: "monthly_hips", field: "hips_cm", prompt: "Обхват бёдер в сантиметрах." },
+] as const;
+function ageFromBirthDate(value:string|null|undefined):number|null{
+ if(!value)return null;const m=value.match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);if(!m)return null;
+ const d=+m[1],mo=+m[2],y=+m[3],dt=new Date(Date.UTC(y,mo-1,d));
+ if(dt.getUTCFullYear()!==y||dt.getUTCMonth()!==mo-1||dt.getUTCDate()!==d)return null;
+ const now=new Date();let age=now.getUTCFullYear()-y;
+ if(now.getUTCMonth()<mo-1||(now.getUTCMonth()===mo-1&&now.getUTCDate()<d))age--;return age>=0?age:null;
 }
-async function handleModelProfileStep(env: Env, telegramId: string, chatId: number, text: string, threadId?: number): Promise<boolean> {
-  const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?").bind(telegramId).first<{state:string}>();
-  const index = PROFILE_STEPS.findIndex((step) => step.state === session?.state);
-  if (index < 0) return false;
-  const step = PROFILE_STEPS[index], value = text.trim(), skipped = /^(пропустить|skip|—)$/i.test(value);
-  let stored: string | number | null = skipped ? null : value;
-  if (!skipped && step.numeric) {
-    const number = Number(value.replace(",", "."));
-    if (!Number.isFinite(number) || number <= 0 || number > 300) {
-      await sendModel(env, chatId, "Введите корректное число или отправьте «пропустить».\n\n" + step.prompt, threadId); return true;
-    }
-    stored = number;
-  }
-  await env.DB.prepare("INSERT INTO model_profiles (model_id) SELECT id FROM models WHERE telegram_user_id = ? ON CONFLICT(model_id) DO NOTHING").bind(telegramId).run();
-  await env.DB.prepare(`UPDATE model_profiles SET ${step.field} = ?, updated_at = CURRENT_TIMESTAMP WHERE model_id = (SELECT id FROM models WHERE telegram_user_id = ?)`).bind(stored, telegramId).run();
-  const next = PROFILE_STEPS[index + 1];
-  if (next) {
-    await env.DB.prepare("UPDATE bot_sessions SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE telegram_user_id = ?").bind(next.state, telegramId).run();
-    await sendModel(env, chatId, next.prompt, threadId);
-  } else {
-    await env.DB.prepare("UPDATE bot_sessions SET state = 'profile_complete', updated_at = CURRENT_TIMESTAMP WHERE telegram_user_id = ?").bind(telegramId).run();
-    await env.DB.prepare("UPDATE models SET lifecycle_status = 'active' WHERE telegram_user_id = ? AND is_active = 1").bind(telegramId).run();
-    await env.DB.prepare(
-      `UPDATE profile_refresh_members SET status = 'updated', updated_at = CURRENT_TIMESTAMP
-       WHERE model_id = (SELECT id FROM models WHERE telegram_user_id = ?)
-         AND status = 'pending'
-         AND campaign_id IN (SELECT id FROM profile_refresh_campaigns WHERE status = 'open')`,
-    ).bind(telegramId).run();
-    await sendModel(env, chatId, "Спасибо! Параметры обновлены. Ваша анкета снова активна в базе InterModels.", threadId);
-  }
-  return true;
+function profileKeyboard():Record<string,unknown>{return{keyboard:[[{text:"Профиль"},{text:"Отпуск"}]],resize_keyboard:true,is_persistent:true};}
+async function beginModelProfile(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
+ await env.DB.prepare("INSERT INTO model_profiles(model_id) SELECT id FROM models WHERE telegram_user_id=? ON CONFLICT(model_id) DO NOTHING").bind(telegramId).run();
+ const first=PROFILE_STEPS[0];
+ await env.DB.prepare("INSERT INTO bot_sessions(telegram_user_id,state,data_json,updated_at) VALUES(?,?,'{}',CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state=excluded.state,updated_at=CURRENT_TIMESTAMP").bind(telegramId,first.state).run();
+ await env.DB.prepare("UPDATE bot_sessions SET state='profile_method',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(telegramId).run();
+ await sendModel(env,chatId,"Подключение подтверждено!\\n\\nСейчас необходимо полностью заполнить анкету. Выберите удобный способ:",threadId,{keyboard:[[{text:"Опрос"},{text:"Анкета"}]],resize_keyboard:true,is_persistent:true});
 }
-async function showModelProfilePrompt(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
-  const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?").bind(telegramId).first<{state:string}>();
-  const model = await env.DB.prepare("SELECT lifecycle_status FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(telegramId).first<{lifecycle_status:string}>();
-  const step = PROFILE_STEPS.find((item) => item.state === session?.state);
-  if (step) await sendModel(env, chatId, "Продолжим заполнение анкеты.\n\n" + step.prompt, threadId);
-  else if (model?.lifecycle_status === "frozen") await sendModel(env, chatId, "🥶\n\nУпс, ваша анкета заморожена и временно не отображается в активной базе.\nОтправьте /profile, чтобы обновить параметры и восстановить доступ.", threadId);
-  else if (session?.state === "profile_complete") await sendModel(env, chatId, "Ваша анкета подключена и заполнена. Чтобы изменить данные, отправьте /profile.", threadId);
-  else await beginModelProfile(env, telegramId, chatId, threadId);
+async function handleModelProfileStep(env:Env,telegramId:string,chatId:number,text:string,threadId?:number):Promise<boolean>{
+ const session=await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id=?").bind(telegramId).first<{state:string}>();
+ const mi=MONTHLY_PROFILE_STEPS.findIndex(x=>x.state===session?.state),pi=PROFILE_STEPS.findIndex(x=>x.state===session?.state),monthly=mi>=0;
+ if(!monthly&&pi<0)return false;
+ const step:any=monthly?MONTHLY_PROFILE_STEPS[mi]:PROFILE_STEPS[pi],value=text.trim();let stored:any=value;
+ if(monthly||step.numeric){const n=Number(value.replace(",","."));if(!Number.isFinite(n)||n<=0||n>300){await sendModel(env,chatId,"Введите корректное число.\\n\\n"+step.prompt,threadId);return true;}stored=n;}
+ if(step.field==="birth_date"){const m=value.match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);if(!m||!ageFromBirthDate(value)){await sendModel(env,chatId,"Введите дату в формате ДД.ММ.ГГГГ.\\n\\n"+step.prompt,threadId);return true;}}
+ if(step.field==="phone"&&normalizePhone(value).length<10){await sendModel(env,chatId,"Проверьте номер телефона.\\n\\n"+step.prompt,threadId);return true;}
+ if(step.field==="birth_date")await env.DB.prepare("UPDATE models SET birth_date=? WHERE telegram_user_id=?").bind(value,telegramId).run();
+ else if(step.field==="phone")await env.DB.prepare("UPDATE models SET phone=? WHERE telegram_user_id=?").bind(value,telegramId).run();
+ else await env.DB.prepare("UPDATE model_profiles SET "+step.field+"=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(stored,telegramId).run();
+ const next=monthly?MONTHLY_PROFILE_STEPS[mi+1]:PROFILE_STEPS[pi+1];
+ if(next){await env.DB.prepare("UPDATE bot_sessions SET state=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(next.state,telegramId).run();await sendModel(env,chatId,next.prompt,threadId,profileKeyboard());}
+ else{
+  await env.DB.prepare("UPDATE bot_sessions SET state='profile_complete',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(telegramId).run();
+  await env.DB.prepare("UPDATE models SET lifecycle_status='active' WHERE telegram_user_id=? AND is_active=1").bind(telegramId).run();
+  await env.DB.prepare("UPDATE profile_refresh_members SET status='updated',updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?) AND status='pending' AND campaign_id IN (SELECT id FROM profile_refresh_campaigns WHERE status='open')").bind(telegramId).run();
+  await showModelProfile(env,telegramId,chatId,threadId);
+ }
+ return true;
 }
 
-async function handleModelMessage(env: Env, message: TelegramMessage): Promise<void> {
-  // Model onboarding and profile updates are private-chat only.
-  // Group updates must never be answered or persisted as model topics.
-  if (message.chat.type !== "private") return;
-  const user = message.from;
-  if (!user) return;
-  console.info("Model private update", {
-    chatId: message.chat.id,
-    chatType: message.chat.type,
-    senderId: user.id,
-    command: (message.text ?? "").trim().slice(0, 80),
-  });
-  const replyChatId = message.chat.id;
-  const replyThreadId = message.message_thread_id;
-  if (message.text?.startsWith("/start")) {
-    await saveTopic(env, "model", message);
-    const linked = await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(String(user.id)).first<{id:string}>();
-    if (linked) { await showModelProfilePrompt(env, String(user.id), replyChatId, replyThreadId); return; }
-    await env.DB.prepare(`INSERT INTO bot_sessions (telegram_user_id, state, data_json, updated_at)
-      VALUES (?, 'awaiting_name', '{}', CURRENT_TIMESTAMP)
-      ON CONFLICT(telegram_user_id) DO UPDATE SET state = 'awaiting_name', data_json = '{}', updated_at = CURRENT_TIMESTAMP`).bind(String(user.id)).run();
-    await telegram(env.MODEL_BOT_TOKEN, "sendMessage", {
-      chat_id: replyChatId, ...(replyThreadId ? { message_thread_id: replyThreadId } : {}),
-      text: "Добро пожаловать в InterModels!\n\nВведите имя и фамилию точно так, как они указаны в агентстве. Либо отправьте свой номер телефона кнопкой ниже.",
-      reply_markup: { keyboard: [[{ text: "Поделиться контактом", request_contact: true }]], resize_keyboard: true, one_time_keyboard: true },
-    });
-    return;
-  }
-  if (message.text === "/profile") {
-    const linked = await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id = ? AND is_active = 1").bind(String(user.id)).first<{id:string}>();
-    if (!linked) { await sendModel(env, replyChatId, "Сначала дождитесь подтверждения подключения директором.", replyThreadId); return; }
-    await beginModelProfile(env, String(user.id), replyChatId, replyThreadId); return;
-  }
-  if (message.text && await handleModelProfileStep(env, String(user.id), replyChatId, message.text, replyThreadId)) return;
-  if (message.contact) {
-    if (message.contact.user_id !== user.id) {
-      await sendModel(env, replyChatId, "Отправьте именно свой контакт через кнопку Telegram, а не контакт другого человека.", replyThreadId);
-      return;
-    }
-    const phone = normalizePhone(message.contact.phone_number);
-    if (!phone) { await sendModel(env, replyChatId, "Не удалось прочитать номер. Попробуйте ещё раз или введите ФИО.", replyThreadId); return; }
-    const models = await getActiveModels(env);
-    const matches = models.filter((m) => m.phone && normalizePhone(m.phone) === phone);
-    const candidates = matches.filter((m) => !m.telegram_user_id || m.telegram_user_id === String(user.id));
-    if (!candidates.length) {
-      await sendModel(env, replyChatId, matches.length
-        ? "Эта анкета уже привязана к другому Telegram-аккаунту. Обратитесь к директору агентства."
-        : "Анкета с таким номером не найдена. Проверьте номер или обратитесь к директору агентства.", replyThreadId);
-      return;
-    }
-    await createRequest(env, user, "phone", message.contact.phone_number, candidates, replyChatId, replyThreadId);
-    return;
-  }
-  if (!message.text) return;
-  if (message.text.startsWith("/")) { await sendModel(env, replyChatId, "Для начала регистрации отправьте /start.", replyThreadId); return; }
-  const session = await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id = ?")
-    .bind(String(user.id)).first<{ state: string }>();
-  if (!session || session.state !== "awaiting_name") {
-    await sendModel(env, replyChatId, "Отправьте /start, чтобы начать подключение.", replyThreadId); return;
-  }
-  const target = normalizeName(message.text);
-  if (target.length < 3) { await sendModel(env, replyChatId, "Введите полные имя и фамилию.", replyThreadId); return; }
-  const models = await getActiveModels(env);
-  const matches = models.filter((m) => normalizeName(`${m.first_name} ${m.last_name}`) === target);
-  const candidates = matches.filter((m) => !m.telegram_user_id || m.telegram_user_id === String(user.id));
-  if (!candidates.length) {
-    await sendModel(env, replyChatId, matches.length
-      ? "Эта анкета уже привязана к другому Telegram-аккаунту. Обратитесь к директору агентства."
-      : "Анкета с таким ФИО не найдена. Проверьте написание или обратитесь к директору агентства.", replyThreadId);
-    return;
-  }
-  await createRequest(env, user, "name", message.text.trim(), candidates, replyChatId, replyThreadId);
+async function getModelProfileThumbnail(env:Env,modelId:string,chatId:number,caption:string):Promise<{fileId:string;alreadySent:boolean}|null>{
+ const source=await env.DB.prepare("SELECT telegram_file_id,telegram_file_unique_id FROM model_telegram_photo_sets WHERE model_id=? AND position=1 ORDER BY CASE style WHEN 'basic' THEN 0 ELSE 1 END LIMIT 1").bind(modelId).first<{telegram_file_id:string;telegram_file_unique_id:string}>();
+ if(!source)return null;
+ const cached=await env.DB.prepare("SELECT telegram_file_id,source_file_unique_id FROM model_profile_thumbnails WHERE model_id=?").bind(modelId).first<{telegram_file_id:string;source_file_unique_id:string}>();
+ if(cached?.source_file_unique_id===source.telegram_file_unique_id)return {fileId:cached.telegram_file_id,alreadySent:false};
+ if(!env.COMPOSITE_RENDERER_URL||!env.COMPOSITE_RENDERER_TOKEN)throw new Error("Thumbnail renderer is not configured");
+ const file=await telegram(env.SECRETARY_BOT_TOKEN,"getFile",{file_id:source.telegram_file_id});
+ const path=file.result?.file_path;if(typeof path!=="string"||!path)throw new Error("Original model photo path missing");
+ const download=await fetch("https://api.telegram.org/file/bot"+env.SECRETARY_BOT_TOKEN+"/"+path);
+ if(!download.ok)throw new Error("Could not download original model photo");
+ const bytes=new Uint8Array(await download.arrayBuffer());if(bytes.length>20*1024*1024)throw new Error("Original model photo exceeds 20 MB");
+ let binary="";for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,Math.min(i+0x8000,bytes.length)));
+ const rendered=await fetch(env.COMPOSITE_RENDERER_URL.replace(/\/+$/g,"")+"/thumbnail",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+env.COMPOSITE_RENDERER_TOKEN},body:JSON.stringify({image:btoa(binary)}),signal:AbortSignal.timeout(45000)});
+ if(!rendered.ok)throw new Error("Thumbnail renderer returned HTTP "+rendered.status);
+ const output=await rendered.json() as {image?:string};if(!output.image)throw new Error("Thumbnail renderer returned no image");
+ const raw=atob(output.image),out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);
+ const form=new FormData();form.set("chat_id",String(chatId));form.set("caption",caption);form.set("photo",new Blob([out],{type:"image/jpeg"}),"model-thumbnail.jpg");
+ const uploaded=await fetch("https://api.telegram.org/bot"+env.MODEL_BOT_TOKEN+"/sendPhoto",{method:"POST",body:form});
+ const result=await uploaded.json() as any;if(!uploaded.ok||!result.ok)throw new Error("Telegram could not store profile thumbnail");
+ const fileId=result.result?.photo?.at(-1)?.file_id;if(typeof fileId!=="string")throw new Error("Telegram did not return thumbnail file_id");
+ await env.DB.prepare("INSERT INTO model_profile_thumbnails(model_id,telegram_file_id,source_file_unique_id,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(model_id) DO UPDATE SET telegram_file_id=excluded.telegram_file_id,source_file_unique_id=excluded.source_file_unique_id,updated_at=CURRENT_TIMESTAMP").bind(modelId,fileId,source.telegram_file_unique_id).run();
+ return {fileId,alreadySent:true};
 }
-
+async function showModelProfile(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
+ const r=await env.DB.prepare("SELECT m.first_name,m.last_name,m.middle_name,m.birth_date,m.phone,p.height_cm,p.bust_cm,p.waist_cm,p.hips_cm,p.clothing_size,p.shoe_size,p.hair_color,p.eye_color FROM models m LEFT JOIN model_profiles p ON p.model_id=m.id WHERE m.telegram_user_id=? AND m.is_active=1").bind(telegramId).first<any>();
+ if(!r){await sendModel(env,chatId,"Профиль пока недоступен.",threadId,profileKeyboard());return;}
+ const age=ageFromBirthDate(r.birth_date),full=[r.last_name,r.first_name,r.middle_name].filter(Boolean).join(" ");
+ const lines=["1. "+full,"2. "+(r.birth_date??"—"),"3. "+(age===null?"—":age+" лет"),"4. "+(r.height_cm??"—")+" см","5. "+[r.bust_cm,r.waist_cm,r.hips_cm].map((x:any)=>x??"—").join("/"),"6. Размер одежды "+(r.clothing_size??"—"),"7. Обувь "+(r.shoe_size??"—"),"8. "+(r.phone??"—"),"9. Волосы "+(r.hair_color??"—"),"10. Глаза "+(r.eye_color??"—")];
+ const caption="ПРОФИЛЬ МОДЕЛИ\\n\\n"+lines.join("\\n");
+ const modelRow=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=?").bind(telegramId).first<{id:string}>();
+ let thumbnail:{fileId:string;alreadySent:boolean}|null=null;try{if(modelRow)thumbnail=await getModelProfileThumbnail(env,modelRow.id,chatId,caption);}catch(error){console.error("Model profile thumbnail generation failed",error);}
+ if(thumbnail&&!thumbnail.alreadySent)await telegram(env.MODEL_BOT_TOKEN,"sendPhoto",{chat_id:chatId,photo:thumbnail.fileId,caption});
+ else if(!thumbnail)await sendModel(env,chatId,caption,threadId);
+ await sendModel(env,chatId,"Выберите действие:",threadId,{keyboard:[[{text:"Редактировать"}],[{text:"Профиль"},{text:"Отпуск"}]],resize_keyboard:true,is_persistent:true});
+}
+async function startMonthlyProfile(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
+ const first=MONTHLY_PROFILE_STEPS[0];await env.DB.prepare("UPDATE bot_sessions SET state=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(first.state,telegramId).run();
+ await sendModel(env,chatId,"Ежемесячное обновление параметров.\\n\\n"+first.prompt,threadId,profileKeyboard());
+}
+async function startProfileEdit(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
+ await env.DB.prepare("UPDATE bot_sessions SET state='profile_edit_menu',data_json='{}',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(telegramId).run();
+ await sendModel(env,chatId,"Какой пункт хотите изменить?",threadId,{keyboard:[[{text:"Возраст"},{text:"Рост"}],[{text:"Параметры"},{text:"Размер одежды"}],[{text:"Размер обуви"},{text:"Телефон"}],[{text:"Цвет волос"},{text:"Цвет глаз"}],[{text:"⬅️ Назад"}]],resize_keyboard:true,is_persistent:true});
+}
+async function showModelProfilePrompt(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
+ const session=await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id=?").bind(telegramId).first<{state:string}>();
+ const model=await env.DB.prepare("SELECT lifecycle_status FROM models WHERE telegram_user_id=? AND is_active=1").bind(telegramId).first<{lifecycle_status:string}>();
+ if(session?.state==="profile_method"){await sendModel(env,chatId,"Выберите способ заполнения анкеты:",threadId,{keyboard:[[{text:"Опрос"},{text:"Анкета"}]],resize_keyboard:true,is_persistent:true});return;}
+ if(session?.state==="awaiting_brief"){await sendModel(env,chatId,"Пришлите заполненную анкету одним сообщением. Нужны пункты 2 и 4–10.",threadId,profileKeyboard());return;}
+ if(session?.state==="profile_complete"||session?.state==="profile_edit_menu"||session?.state==="profile_edit_value"){await showModelProfile(env,telegramId,chatId,threadId);return;}
+ if(model?.lifecycle_status==="frozen"){const ms=MONTHLY_PROFILE_STEPS.find(x=>x.state===session?.state);if(ms){await sendModel(env,chatId,"Продолжим ежемесячное обновление.\\n\\n"+ms.prompt,threadId,profileKeyboard());return;}await startMonthlyProfile(env,telegramId,chatId,threadId);return;}
+ const monthly=MONTHLY_PROFILE_STEPS.find(x=>x.state===session?.state);if(monthly){await sendModel(env,chatId,"Продолжим ежемесячное обновление.\\n\\n"+monthly.prompt,threadId,profileKeyboard());return;}
+ const step=PROFILE_STEPS.find(x=>x.state===session?.state);if(step){await sendModel(env,chatId,"Продолжим заполнение анкеты.\\n\\n"+step.prompt,threadId,profileKeyboard());return;}
+ await beginModelProfile(env,telegramId,chatId,threadId);
+}
+async function handleModelMessage(env:Env,message:TelegramMessage):Promise<void>{
+ if(message.chat.type!=="private"||!message.from)return;
+ const user=message.from,uid=String(user.id),chat=message.chat.id,thread=message.message_thread_id,text=(message.text??"").trim();
+ if(text.startsWith("/start")){
+  await saveTopic(env,"model",message);
+  const linked=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=? AND is_active=1").bind(uid).first<{id:string}>();
+  if(linked){await showModelProfilePrompt(env,uid,chat,thread);return;}
+  await env.DB.prepare("INSERT INTO bot_sessions(telegram_user_id,state,data_json,updated_at) VALUES(?,'awaiting_name','{}',CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET state='awaiting_name',data_json='{}',updated_at=CURRENT_TIMESTAMP").bind(uid).run();
+  await sendModel(env,chat,"Добро пожаловать в InterModels!\\n\\nВведите полное ФИО, включая отчество, как в документах.",thread);return;
+ }
+ const session=await env.DB.prepare("SELECT state,data_json FROM bot_sessions WHERE telegram_user_id=?").bind(uid).first<{state:string;data_json:string}>();
+ if(session?.state==="profile_method"&&text==="Опрос"){
+  await env.DB.prepare("UPDATE bot_sessions SET state=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(PROFILE_STEPS[0].state,uid).run();
+  await sendModel(env,chat,PROFILE_STEPS[0].prompt,thread,profileKeyboard());return;
+ }
+ if(session?.state==="profile_method"&&text==="Анкета"){
+  await env.DB.prepare("UPDATE bot_sessions SET state='awaiting_brief',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
+  await sendModel(env,chat,"Отправьте заполненную анкету одним сообщением в формате:\\n1. ФИО\\n2. Дата рождения ДД.ММ.ГГГГ\\n3. Возраст (можно не указывать — рассчитаю сам)\\n4. Рост\\n5. Параметры грудь/талия/бёдра\\n6. Размер одежды\\n7. Размер обуви\\n8. Телефон и оператор\\n9. Цвет волос\\n10. Цвет глаз",thread,profileKeyboard());return;
+ }
+ if(session?.state==="awaiting_brief"&&text){
+  const fields=new Map<number,string>();for(const line of text.split(/\\r?\\n/)){const m=line.match(/^\\s*(\\d{1,2})[.)]\\s*(.+)$/);if(m)fields.set(Number(m[1]),m[2].trim());}
+  const birth=(fields.get(2)??"").match(/\\d{2}\\.\\d{2}\\.\\d{4}/)?.[0]??"";
+  const height=Number((fields.get(4)??"").match(/\\d{2,3}/)?.[0]??0);
+  const measures=(fields.get(5)??"").match(/\\d{2,3}/g)?.map(Number)??[];
+  const clothing=fields.get(6)??"",shoe=fields.get(7)??"",phone=fields.get(8)??"",hair=fields.get(9)??"",eyes=fields.get(10)??"";
+  if(!ageFromBirthDate(birth)||!height||measures.length!==3||!clothing||!shoe||normalizePhone(phone).length<10||!hair||!eyes){
+   await sendModel(env,chat,"Не удалось распознать все поля. Проверьте, что заполнены пункты 2 и 4–10, и отправьте анкету ещё раз.",thread,profileKeyboard());return;
+  }
+  await env.DB.prepare("UPDATE models SET birth_date=?,phone=? WHERE telegram_user_id=?").bind(birth,phone,uid).run();
+  await env.DB.prepare("UPDATE model_profiles SET height_cm=?,bust_cm=?,waist_cm=?,hips_cm=?,clothing_size=?,shoe_size=?,hair_color=?,eye_color=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(height,measures[0],measures[1],measures[2],clothing,shoe,hair,eyes,uid).run();
+  await env.DB.prepare("UPDATE bot_sessions SET state='profile_complete',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
+  await showModelProfile(env,uid,chat,thread);await deleteModelAnswer(env,chat,message.message_id);return;
+ }
+  if(text==="Профиль"){const linked=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=? AND is_active=1").bind(uid).first<{id:string}>();if(!linked){await sendModel(env,chat,"Сначала дождитесь подтверждения директора.",thread);return;}await showModelProfile(env,uid,chat,thread);return;}
+ if(text==="Отпуск"){await sendModel(env,chat,"Раздел «Отпуск» будет настроен отдельно.",thread,profileKeyboard());return;}
+ if(text==="Редактировать"){await startProfileEdit(env,uid,chat,thread);return;}
+ if(text==="⬅️ Назад"){await showModelProfile(env,uid,chat,thread);return;}
+ if(session?.state==="profile_edit_menu"){
+  const labels=["Возраст","Рост","Параметры","Размер одежды","Размер обуви","Телефон","Цвет волос","Цвет глаз"],keys=["age","height","measurements","clothing","shoe","phone","hair","eyes"],i=labels.indexOf(text);
+  if(i<0){await sendModel(env,chat,"Выберите пункт из меню.",thread);return;}
+  if(keys[i]==="age"){const r=await env.DB.prepare("SELECT birth_date FROM models WHERE telegram_user_id=?").bind(uid).first<{birth_date:string|null}>();await sendModel(env,chat,"Возраст рассчитывается автоматически: "+(ageFromBirthDate(r?.birth_date)??"не указан")+" лет.",thread);return;}
+  await env.DB.prepare("UPDATE bot_sessions SET state='profile_edit_value',data_json=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(JSON.stringify({field:keys[i]}),uid).run();
+  const prompts=["","Укажите рост в сантиметрах.","Укажите параметры грудь/талия/бёдра, например 95/70/95.","Укажите размер одежды.","Укажите размер обуви.","Укажите телефон и оператора.","Укажите цвет волос.","Укажите цвет глаз."];
+  await sendModel(env,chat,prompts[i],thread);return;
+ }
+ if(session?.state==="profile_edit_value"){
+  let d:any={};try{d=JSON.parse(session.data_json??"{}");}catch{}const key=d.field;
+  if(key==="height"&&!/^\\d{2,3}$/.test(text)||key==="measurements"&&!/^\\d{2,3}\\s*[/ ]\\s*\\d{2,3}\\s*[/ ]\\s*\\d{2,3}$/.test(text)){await sendModel(env,chat,"Неверный формат. Попробуйте ещё раз.",thread);return;}
+  if(key==="height")await env.DB.prepare("UPDATE model_profiles SET height_cm=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(Number(text),uid).run();
+  else if(key==="measurements"){const n=(text.match(/\\d+/g)??[]).map(Number);await env.DB.prepare("UPDATE model_profiles SET bust_cm=?,waist_cm=?,hips_cm=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(n[0],n[1],n[2],uid).run();}
+  else if(key==="phone")await env.DB.prepare("UPDATE models SET phone=? WHERE telegram_user_id=?").bind(text,uid).run();
+  else{const col=key==="clothing"?"clothing_size":key==="shoe"?"shoe_size":key==="hair"?"hair_color":"eye_color";await env.DB.prepare("UPDATE model_profiles SET "+col+"=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(text,uid).run();}
+  await env.DB.prepare("UPDATE bot_sessions SET state='profile_complete',data_json='{}',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
+  await showModelProfile(env,uid,chat,thread);await deleteModelAnswer(env,chat,message.message_id);return;
+ }
+ if(text==="/profile"){await showModelProfile(env,uid,chat,thread);return;}
+ if(text&&await handleModelProfileStep(env,uid,chat,text,thread)){await deleteModelAnswer(env,chat,message.message_id);return;}
+ if(!text)return;
+ if(text.startsWith("/")){await sendModel(env,chat,"Отправьте /start, чтобы начать подключение.",thread);return;}
+ if(!session||session.state!=="awaiting_name"){await sendModel(env,chat,"Используйте кнопки меню или отправьте /start.",thread,profileKeyboard());return;}
+ const parts=normalizeName(text).split(" ");if(parts.length<3){await sendModel(env,chat,"Введите полное ФИО: фамилию, имя и отчество.",thread);return;}
+ const surname=parts[0],firstName=parts[1],matches=(await getActiveModels(env)).filter(m=>normalizeName(m.last_name)===surname&&normalizeName(m.first_name)===firstName);
+ const candidates=matches.filter(m=>!m.telegram_user_id||m.telegram_user_id===uid);
+ if(!candidates.length){await sendModel(env,chat,matches.length?"Эта анкета уже привязана к другому Telegram-аккаунту. Обратитесь к директору.":"Анкета с таким ФИО не найдена. Проверьте написание.",thread);return;}
+ await createRequest(env,user,"name",text,candidates,chat,thread);
+ await env.DB.prepare("UPDATE bot_sessions SET data_json=? WHERE telegram_user_id=?").bind(JSON.stringify({submitted_patronymic:parts.slice(2).join(" ")}),uid).run();
+ await deleteModelAnswer(env,chat,message.message_id);
+}
 async function answerCallback(env: Env, callback: TelegramCallbackQuery, text: string, alert = false): Promise<void> {
   await telegram(env.DIRECTOR_BOT_TOKEN, "answerCallbackQuery", {
     callback_query_id: callback.id, text, show_alert: alert,
@@ -435,7 +496,7 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
 
   if (approve) {
     const [, requestId, modelId] = approve;
-    const req = await env.DB.prepare("SELECT id, telegram_user_id, candidate_model_ids, status FROM registration_requests WHERE id = ?")
+    const req = await env.DB.prepare("SELECT id, telegram_user_id, candidate_model_ids, submitted_value, status FROM registration_requests WHERE id = ?")
       .bind(requestId).first<RegistrationRow>();
     if (!req || req.status !== "pending") { await answerCallback(env, callback, "Заявка уже обработана или не найдена.", true); return; }
     const ids: string[] = JSON.parse(req.candidate_model_ids);
@@ -452,6 +513,8 @@ async function handleDirectorCallback(env: Env, callback: TelegramCallbackQuery)
       "UPDATE models SET telegram_user_id = ?, linked_at = CURRENT_TIMESTAMP WHERE id = ? AND (telegram_user_id IS NULL OR telegram_user_id = ?)",
     ).bind(req.telegram_user_id, modelId, req.telegram_user_id).run();
     if ((update.meta?.changes ?? 0) === 0) { await answerCallback(env, callback, "Не удалось привязать анкету.", true); return; }
+    const submittedParts = normalizeName(req.submitted_value).split(" ");
+    if (submittedParts.length >= 3) await env.DB.prepare("UPDATE models SET middle_name=? WHERE id=?").bind(submittedParts.slice(2).join(" "), modelId).run();
     await env.DB.prepare("UPDATE registration_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP, decided_by = ? WHERE id = ? AND status = 'pending'")
       .bind(String(callback.from.id), requestId).run();
     await env.DB.prepare("INSERT INTO model_profiles (model_id) VALUES (?) ON CONFLICT(model_id) DO NOTHING").bind(modelId).run();
@@ -2908,8 +2971,7 @@ async function processRefreshCampaigns(env: Env): Promise<void> {
     ).bind(campaign.id).all<{ id: string; telegram_user_id: string; model_id: string }>();
     for (const model of pendingNotifications.results ?? []) {
       try {
-        await sendModel(env, model.telegram_user_id,
-          "Настало время ежемесячного обновления параметров InterModels.\n\nУ вас есть 48 часов, чтобы проверить и обновить анкету. Отправьте /profile, чтобы начать.");
+        await startMonthlyProfile(env, model.telegram_user_id, Number(model.telegram_user_id));
         await env.DB.prepare("UPDATE profile_refresh_members SET notified_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND model_id = ? AND notified_at IS NULL")
           .bind(campaign.id, model.model_id).run();
       } catch (error) { console.error("Unable to notify model about monthly profile refresh", { modelId: model.model_id, error: compositeErrorText(error) }); }

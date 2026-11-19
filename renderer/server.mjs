@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { Resvg } from "@resvg/resvg-js";
+import sharp from "sharp";
 
 const port = Number(process.env.PORT || 8080);
 const token = process.env.COMPOSITE_RENDERER_TOKEN || "";
@@ -35,7 +36,7 @@ const server = createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     return sendJson(res, token ? 200 : 503, { ok: Boolean(token), service: "intermodels-composite-renderer" });
   }
-  if (req.method !== "POST" || req.url !== "/render") {
+  if (req.method !== "POST" || !["/render", "/thumbnail"].includes(req.url)) {
     return sendJson(res, 404, { error: "Not found" });
   }
   if (!authorized(req.headers.authorization)) {
@@ -48,6 +49,17 @@ const server = createServer(async (req, res) => {
     const raw = await readBody(req);
     let payload;
     try { payload = JSON.parse(raw); } catch { return sendJson(res, 400, { error: "Invalid JSON" }); }
+    if (req.url === "/thumbnail") {
+      if (!payload || typeof payload.image !== "string" || payload.image.length < 100 || payload.image.length > 28 * 1024 * 1024) return sendJson(res, 400, { error: "Image payload is invalid or too large" });
+      const input = Buffer.from(payload.image, "base64");
+      if (!input.length || input.length > 20 * 1024 * 1024) return sendJson(res, 413, { error: "Source image exceeds 20 MB" });
+      const metadata = await sharp(input, { limitInputPixels: 40_000_000 }).metadata();
+      if (!["jpeg", "png", "webp", "heif", "tiff"].includes(metadata.format || "")) return sendJson(res, 415, { error: "Unsupported image format" });
+      const jpeg = await sharp(input, { limitInputPixels: 40_000_000 }).rotate().resize(320, 420, { fit: "cover", position: sharp.strategy.attention }).jpeg({ quality: 84, mozjpeg: true }).toBuffer();
+      if (!jpeg.length || jpeg.length > 500 * 1024) return sendJson(res, 413, { error: "Thumbnail exceeds 500 KB" });
+      console.info("Model thumbnail created", { durationMs: Date.now() - startedAt, sourceBytes: input.length, thumbnailBytes: jpeg.length });
+      return sendJson(res, 200, { image: jpeg.toString("base64"), width: 320, height: 420, format: "jpeg" });
+    }
     if (!payload || typeof payload.svg !== "string" || payload.svg.length < 100 || payload.svg.length > maxSvgCharacters) {
       return sendJson(res, 400, { error: "SVG payload is invalid or too large" });
     }
