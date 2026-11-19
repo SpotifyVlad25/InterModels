@@ -292,8 +292,9 @@ async function startProfileEdit(env:Env,telegramId:string,chatId:number,threadId
 async function showModelProfilePrompt(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
  const session=await env.DB.prepare("SELECT state FROM bot_sessions WHERE telegram_user_id=?").bind(telegramId).first<{state:string}>();
  const model=await env.DB.prepare("SELECT lifecycle_status FROM models WHERE telegram_user_id=? AND is_active=1").bind(telegramId).first<{lifecycle_status:string}>();
- if(session?.state==="profile_complete"){await showModelProfile(env,telegramId,chatId,threadId);return;}
- if(model?.lifecycle_status==="frozen"){await startMonthlyProfile(env,telegramId,chatId,threadId);return;}
+ if(session?.state==="profile_complete"||session?.state==="profile_edit_menu"||session?.state==="profile_edit_value"){await showModelProfile(env,telegramId,chatId,threadId);return;}
+ if(model?.lifecycle_status==="frozen"){const ms=MONTHLY_PROFILE_STEPS.find(x=>x.state===session?.state);if(ms){await sendModel(env,chatId,"Продолжим ежемесячное обновление.\\n\\n"+ms.prompt,threadId,profileKeyboard());return;}await startMonthlyProfile(env,telegramId,chatId,threadId);return;}
+ const monthly=MONTHLY_PROFILE_STEPS.find(x=>x.state===session?.state);if(monthly){await sendModel(env,chatId,"Продолжим ежемесячное обновление.\\n\\n"+monthly.prompt,threadId,profileKeyboard());return;}
  const step=PROFILE_STEPS.find(x=>x.state===session?.state);if(step){await sendModel(env,chatId,"Продолжим заполнение анкеты.\\n\\n"+step.prompt,threadId,profileKeyboard());return;}
  await beginModelProfile(env,telegramId,chatId,threadId);
 }
@@ -324,7 +325,7 @@ async function handleModelMessage(env:Env,message:TelegramMessage):Promise<void>
   let d:any={};try{d=JSON.parse(session.data_json??"{}");}catch{}const key=d.field;
   if(key==="height"&&!/^\\d{2,3}$/.test(text)||key==="measurements"&&!/^\\d{2,3}\\s*[/ ]\\s*\\d{2,3}\\s*[/ ]\\s*\\d{2,3}$/.test(text)){await sendModel(env,chat,"Неверный формат. Попробуйте ещё раз.",thread);return;}
   if(key==="height")await env.DB.prepare("UPDATE model_profiles SET height_cm=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(Number(text),uid).run();
-  else if(key==="measurements"){const n=text.split(/[/ ]+/).map(Number);await env.DB.prepare("UPDATE model_profiles SET bust_cm=?,waist_cm=?,hips_cm=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(n[0],n[1],n[2],uid).run();}
+  else if(key==="measurements"){const n=(text.match(/\\d+/g)??[]).map(Number);await env.DB.prepare("UPDATE model_profiles SET bust_cm=?,waist_cm=?,hips_cm=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(n[0],n[1],n[2],uid).run();}
   else if(key==="phone")await env.DB.prepare("UPDATE models SET phone=? WHERE telegram_user_id=?").bind(text,uid).run();
   else{const col=key==="clothing"?"clothing_size":key==="shoe"?"shoe_size":key==="hair"?"hair_color":"eye_color";await env.DB.prepare("UPDATE model_profiles SET "+col+"=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(text,uid).run();}
   await env.DB.prepare("UPDATE bot_sessions SET state='profile_complete',data_json='{}',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
