@@ -162,6 +162,14 @@ async function sendModel(env: Env, chatId: string | number, text: string, thread
   const session=await env.DB.prepare("SELECT state,data_json FROM bot_sessions WHERE telegram_user_id=?").bind(uid).first<{state:string;data_json:string}>();
   let data:Record<string,any>={};try{data=JSON.parse(session?.data_json??"{}");}catch{}
   const previous=Number(data.model_prompt_message_id);
+  if(!data.model_reply_keyboard_removed){
+    try{
+      const removed=await telegram(env.MODEL_BOT_TOKEN,"sendMessage",{chat_id:chatId,text:"\\u2060",reply_markup:{remove_keyboard:true}});
+      const cleanupId=removed.result?.message_id;
+      if(cleanupId)try{await telegram(env.MODEL_BOT_TOKEN,"deleteMessage",{chat_id:chatId,message_id:cleanupId});}catch{}
+      data.model_reply_keyboard_removed=true;
+    }catch(error){console.warn("Unable to remove legacy Model Bot reply keyboard",{chatId,error:compositeErrorText(error)});}
+  }
   const markup=replyMarkup??{inline_keyboard:[]};
   const payload:Record<string,unknown>={chat_id:chatId,text,disable_web_page_preview:true,reply_markup:markup};
   if(threadId)payload.message_thread_id=threadId;
@@ -265,6 +273,7 @@ function modelMethodKeyboard():Record<string,unknown>{return{inline_keyboard:[[
  {text:"Отправить анкету",callback_data:"model:method:brief"}
 ]]};}
 function modelProfileActionsKeyboard():Record<string,unknown>{return{inline_keyboard:[
+ [{text:"👤 Профиль",callback_data:"model:profile"}],
  [{text:"✏️ Редактировать",callback_data:"model:edit"}],
  [{text:"🌴 Отпуск",callback_data:"model:vacation"}]
 ]};}
