@@ -164,7 +164,7 @@ async function sendModel(env: Env, chatId: string | number, text: string, thread
   const previous=Number(data.model_prompt_message_id);
   if(!data.model_reply_keyboard_removed){
     try{
-      const removed=await telegram(env.MODEL_BOT_TOKEN,"sendMessage",{chat_id:chatId,text:"\\u2060",reply_markup:{remove_keyboard:true}});
+      const removed=await telegram(env.MODEL_BOT_TOKEN,"sendMessage",{chat_id:chatId,text:"\u2060",reply_markup:{remove_keyboard:true}});
       const cleanupId=removed.result?.message_id;
       if(cleanupId)try{await telegram(env.MODEL_BOT_TOKEN,"deleteMessage",{chat_id:chatId,message_id:cleanupId});}catch{}
       data.model_reply_keyboard_removed=true;
