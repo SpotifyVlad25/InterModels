@@ -285,11 +285,11 @@ async function handleModelProfileStep(env:Env,telegramId:string,chatId:number,te
  return true;
 }
 
-async function getModelProfileThumbnail(env:Env,modelId:string,chatId:number):Promise<string|null>{
+async function getModelProfileThumbnail(env:Env,modelId:string,chatId:number,caption:string):Promise<{fileId:string;alreadySent:boolean}|null>{
  const source=await env.DB.prepare("SELECT telegram_file_id,telegram_file_unique_id FROM model_telegram_photo_sets WHERE model_id=? AND position=1 ORDER BY CASE style WHEN 'basic' THEN 0 ELSE 1 END LIMIT 1").bind(modelId).first<{telegram_file_id:string;telegram_file_unique_id:string}>();
  if(!source)return null;
  const cached=await env.DB.prepare("SELECT telegram_file_id,source_file_unique_id FROM model_profile_thumbnails WHERE model_id=?").bind(modelId).first<{telegram_file_id:string;source_file_unique_id:string}>();
- if(cached?.source_file_unique_id===source.telegram_file_unique_id)return cached.telegram_file_id;
+ if(cached?.source_file_unique_id===source.telegram_file_unique_id)return {fileId:cached.telegram_file_id,alreadySent:false};
  if(!env.COMPOSITE_RENDERER_URL||!env.COMPOSITE_RENDERER_TOKEN)throw new Error("Thumbnail renderer is not configured");
  const file=await telegram(env.SECRETARY_BOT_TOKEN,"getFile",{file_id:source.telegram_file_id});
  const path=file.result?.file_path;if(typeof path!=="string"||!path)throw new Error("Original model photo path missing");
@@ -301,12 +301,12 @@ async function getModelProfileThumbnail(env:Env,modelId:string,chatId:number):Pr
  if(!rendered.ok)throw new Error("Thumbnail renderer returned HTTP "+rendered.status);
  const output=await rendered.json() as {image?:string};if(!output.image)throw new Error("Thumbnail renderer returned no image");
  const raw=atob(output.image),out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);
- const form=new FormData();form.set("chat_id",String(chatId));form.set("photo",new Blob([out],{type:"image/jpeg"}),"model-thumbnail.jpg");
+ const form=new FormData();form.set("chat_id",String(chatId));form.set("caption",caption);form.set("photo",new Blob([out],{type:"image/jpeg"}),"model-thumbnail.jpg");
  const uploaded=await fetch("https://api.telegram.org/bot"+env.MODEL_BOT_TOKEN+"/sendPhoto",{method:"POST",body:form});
  const result=await uploaded.json() as any;if(!uploaded.ok||!result.ok)throw new Error("Telegram could not store profile thumbnail");
  const fileId=result.result?.photo?.at(-1)?.file_id;if(typeof fileId!=="string")throw new Error("Telegram did not return thumbnail file_id");
  await env.DB.prepare("INSERT INTO model_profile_thumbnails(model_id,telegram_file_id,source_file_unique_id,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(model_id) DO UPDATE SET telegram_file_id=excluded.telegram_file_id,source_file_unique_id=excluded.source_file_unique_id,updated_at=CURRENT_TIMESTAMP").bind(modelId,fileId,source.telegram_file_unique_id).run();
- return fileId;
+ return {fileId,alreadySent:true};
 }
 async function showModelProfile(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
  const r=await env.DB.prepare("SELECT m.first_name,m.last_name,m.middle_name,m.birth_date,m.phone,p.height_cm,p.bust_cm,p.waist_cm,p.hips_cm,p.clothing_size,p.shoe_size,p.hair_color,p.eye_color FROM models m LEFT JOIN model_profiles p ON p.model_id=m.id WHERE m.telegram_user_id=? AND m.is_active=1").bind(telegramId).first<any>();
@@ -315,9 +315,9 @@ async function showModelProfile(env:Env,telegramId:string,chatId:number,threadId
  const lines=["1. "+full,"2. "+(r.birth_date??"—"),"3. "+(age===null?"—":age+" лет"),"4. "+(r.height_cm??"—")+" см","5. "+[r.bust_cm,r.waist_cm,r.hips_cm].map((x:any)=>x??"—").join("/"),"6. Размер одежды "+(r.clothing_size??"—"),"7. Обувь "+(r.shoe_size??"—"),"8. "+(r.phone??"—"),"9. Волосы "+(r.hair_color??"—"),"10. Глаза "+(r.eye_color??"—")];
  const caption="ПРОФИЛЬ МОДЕЛИ\\n\\n"+lines.join("\\n");
  const modelRow=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=?").bind(telegramId).first<{id:string}>();
- let thumbnailId:string|null=null;try{if(modelRow)thumbnailId=await getModelProfileThumbnail(env,modelRow.id,chatId);}catch(error){console.error("Model profile thumbnail generation failed",error);}
- if(thumbnailId)await telegram(env.MODEL_BOT_TOKEN,"sendPhoto",{chat_id:chatId,photo:thumbnailId,caption});
- else await sendModel(env,chatId,caption,threadId);
+ let thumbnail:{fileId:string;alreadySent:boolean}|null=null;try{if(modelRow)thumbnail=await getModelProfileThumbnail(env,modelRow.id,chatId,caption);}catch(error){console.error("Model profile thumbnail generation failed",error);}
+ if(thumbnail&&!thumbnail.alreadySent)await telegram(env.MODEL_BOT_TOKEN,"sendPhoto",{chat_id:chatId,photo:thumbnail.fileId,caption});
+ else if(!thumbnail)await sendModel(env,chatId,caption,threadId);
  await sendModel(env,chatId,"Выберите действие:",threadId,{keyboard:[[{text:"Редактировать"}],[{text:"Профиль"},{text:"Отпуск"}]],resize_keyboard:true,is_persistent:true});
 }
 async function startMonthlyProfile(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
