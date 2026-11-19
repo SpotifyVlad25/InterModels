@@ -3,7 +3,7 @@ import wasm from "@resvg/resvg-wasm/index_bg.wasm";
 import cyrillic from "@fontsource/roboto/files/roboto-cyrillic-400-normal.woff2";
 import latin from "@fontsource/roboto/files/roboto-latin-400-normal.woff2";
 
-type Env = { DB: D1Database; INST_BOT_TOKEN: string };
+type Env = { DB: D1Database; INST_BOT_TOKEN: string; OWNER_TELEGRAM_ID?: string };
 type Photo = { file_id: string; file_unique_id: string; width: number; height: number };
 type Message = {
   message_id: number; message_thread_id?: number; media_group_id?: string;
@@ -414,6 +414,25 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
   if (m.chat.type !== "group" && m.chat.type !== "supergroup") return;
   const text = (m.text ?? "").trim();
   const command = text.match(/^\/(\w+)(?:@\w+)?(?:\s+(.+))?$/);
+  if (command?.[1] === "igstatus") {
+    if (!m.from || !env.OWNER_TELEGRAM_ID || String(m.from.id) !== String(env.OWNER_TELEGRAM_ID)) return;
+    try {
+      const info = await api(env, "getWebhookInfo", {});
+      const me = await api(env, "getMe", {});
+      await send(env, m,
+        "Instagram bot webhook diagnostic\\n" +
+        "Bot: @" + (me.username ?? "unknown") + " (id " + me.id + ")\\n" +
+        "URL: " + (info.url || "NOT SET") + "\\n" +
+        "Allowed updates: " + JSON.stringify(info.allowed_updates ?? "default") + "\\n" +
+        "Pending updates: " + (info.pending_update_count ?? "unknown") + "\\n" +
+        "Last error: " + (info.last_error_message ?? "none") + "\\n" +
+        "Last error date: " + (info.last_error_date ? new Date(info.last_error_date * 1000).toISOString() : "none")
+      );
+    } catch (error) {
+      await send(env, m, "Не удалось получить статус webhook: " + (error instanceof Error ? error.message : String(error)));
+    }
+    return;
+  }
   if (command?.[1] === "start" || command?.[1] === "help") {
     await send(env, m, "Instagram Stories бот готов.\n\nРегистрация тем: /topic greeting, /topic album, /topic plan, /topic generator — по одной команде в каждой теме.\n\nВ «Fashion привет» просто загружай фото без подписи — бот автоматически сохранит их как FASHION_HELLO. В «Альбом» указывай в подписи первого фото категорию: Ф, Э, К, Б или Т.\nВ «План» отправляй каждый пункт отдельным сообщением. В конце /finish (необязательно), затем /generate можно отправить здесь или в «Генератор». Категории: (Ф) — фэшн, (Э) — эмоции, (К) — каталог, (Б) — бьюти, (Т) — тесты. Без буквы — случайное фото. Все статусы и готовые Stories приходят в «Генератор».");
     return;
