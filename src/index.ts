@@ -2907,8 +2907,7 @@ async function processRefreshCampaigns(env: Env): Promise<void> {
     ).bind(campaign.id).all<{ id: string; telegram_user_id: string; model_id: string }>();
     for (const model of pendingNotifications.results ?? []) {
       try {
-        await sendModel(env, model.telegram_user_id,
-          "Настало время ежемесячного обновления параметров InterModels.\n\nУ вас есть 48 часов, чтобы проверить и обновить анкету. Отправьте /profile, чтобы начать.");
+        await startMonthlyProfile(env, model.telegram_user_id, Number(model.telegram_user_id));
         await env.DB.prepare("UPDATE profile_refresh_members SET notified_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND model_id = ? AND notified_at IS NULL")
           .bind(campaign.id, model.model_id).run();
       } catch (error) { console.error("Unable to notify model about monthly profile refresh", { modelId: model.model_id, error: compositeErrorText(error) }); }
