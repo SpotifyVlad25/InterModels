@@ -3213,7 +3213,7 @@ async function processPendingSecretaryAlbums(env: Env): Promise<void> {
   }
 }
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "intermodels" });
     if (url.pathname === "/app" && request.method === "GET") return appHtml();
@@ -3253,6 +3253,15 @@ export default {
       textCommand: update.message?.text?.trim().match(/^\/[A-Za-z0-9_]+/)?.[0] ?? (update.message?.text ? "plain_text" : null),
       callbackData: (update.callback_query?.data ?? "").slice(0, 80),
     });
+    if (isInstagram && update.message) {
+      ctx.waitUntil(handleInstagramUpdate(env, update).catch((error) => {
+        console.error("Instagram webhook background handler failed", {
+          updateId: update.update_id ?? null,
+          error: compositeErrorText(error),
+        });
+      }));
+      return json({ ok: true });
+    }
     try {
       const isCompositeUpdate = isSecretary && (
         Boolean(update.message?.message_thread_id && update.message?.text && (update.message?.chat.type==="group"||update.message?.chat.type==="supergroup")) ||
