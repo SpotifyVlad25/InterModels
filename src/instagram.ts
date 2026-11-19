@@ -123,7 +123,7 @@ async function generate(env: Env, m: Message): Promise<void> {
   const used = new Set<string>();
   for (const item of plan) {
     const rows = item.category === "ANY"
-      ? await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? AND category!='FASHION_HELLO' ORDER BY RANDOM()")
+      ? await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? ORDER BY RANDOM()")
           .bind(k.chat).all<{ telegram_file_id: string; file_unique_id: string }>()
       : await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? AND category=? ORDER BY RANDOM()")
           .bind(k.chat, item.category).all<{ telegram_file_id: string; file_unique_id: string }>();
