@@ -166,7 +166,15 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
   }
   if (command?.[1] === "generate") {
     if (await currentTopic(env, m) !== "generator") { await send(env, m, "Команду /generate отправь в теме «Генератор». Сначала зарегистрируй её командой /topic generator."); return; }
-    await generate(env, m); return;
+    await send(env, m, "⏳ Начинаю собирать Stories. Проверяю план и фотографии…");
+    try {
+      await generate(env, m);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error("Instagram Stories generation failed", { chatId: m.chat.id, threadId: m.message_thread_id ?? null, reason });
+      await send(env, m, "❌ Не удалось собрать Stories. Причина: " + reason.slice(0, 700));
+    }
+    return;
   }
   if (m.photo?.length) {
     const topic = await currentTopic(env, m);
