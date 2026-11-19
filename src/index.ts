@@ -364,7 +364,7 @@ async function showModelProfile(env:Env,telegramId:string,chatId:number,threadId
   "Цвет волос: "+(r.hair_color??"—"),
   "Цвет глаз: "+(r.eye_color??"—")
  ];
- const caption="👤 ПРОФИЛЬ МОДЕЛИ\\n\\n"+lines.join("\\n");
+ const caption="👤 ПРОФИЛЬ МОДЕЛИ\n\n"+lines.join("\n");
  const editMarkup=modelProfileActionsKeyboard();
  const modelRow=await env.DB.prepare("SELECT id FROM models WHERE telegram_user_id=?").bind(telegramId).first<{id:string}>();
  let thumbnail:{fileId:string;alreadySent:boolean}|null=null;try{if(modelRow)thumbnail=await getModelProfileThumbnail(env,modelRow.id,chatId,caption,editMarkup);}catch(error){console.error("Model profile thumbnail generation failed",error);}
