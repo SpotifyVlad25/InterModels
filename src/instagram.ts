@@ -71,8 +71,8 @@ async function render(photo: Uint8Array, text: string, style: number): Promise<U
   const fontBuffers = [new Uint8Array(cyrillic), new Uint8Array(latin)];
   // Double the original type size and align the text to the left.
   // Long captions are fitted vertically so the final lines remain inside the image.
-  const baseSize = style === 0 ? 116 : 104;
-  const lines = text.trim() ? wrap(text, 16) : [];
+  const baseSize = 80;
+  const lines = text.trim() ? wrap(text, 23) : [];
   const paddingY = 42;
   const maxPanelHeight = 1680;
   const fittedSize = lines.length
