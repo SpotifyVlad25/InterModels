@@ -380,7 +380,7 @@ async function handleModelCallback(env:Env,callback:TelegramCallbackQuery):Promi
  }
  if(data==="model:method:brief"&&session?.state==="profile_method"){
   await env.DB.prepare("UPDATE bot_sessions SET state='awaiting_brief',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
-  await sendModel(env,chat,"Пришлите заполненную анкету одним сообщением:\\n\\n2. Дата рождения (ДД.ММ.ГГГГ)\\n4. Рост (см)\\n5. Параметры (грудь / талия / бёдра)\\n6. Размер одежды\\n7. Размер обуви\\n8. Телефон и оператор\\n9. Цвет волос\\n10. Цвет глаз",thread);
+  await sendModel(env,chat,"Отправь анкету агентства одним сообщением.",thread);
   await answerModelCallback(env,callback,"Жду заполненную анкету.");return;
  }
  if(data==="model:edit"){
@@ -424,22 +424,40 @@ async function handleModelMessage(env:Env,message:TelegramMessage):Promise<void>
  }
  if(session?.state==="profile_method"&&text==="Анкета"){
   await env.DB.prepare("UPDATE bot_sessions SET state='awaiting_brief',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
-  await sendModel(env,chat,"Пришлите заполненную анкету одним сообщением:\\n\\n2. Дата рождения (ДД.ММ.ГГГГ)\\n4. Рост (см)\\n5. Параметры (грудь / талия / бёдра)\\n6. Размер одежды\\n7. Размер обуви\\n8. Телефон и оператор\\n9. Цвет волос\\n10. Цвет глаз",thread,profileKeyboard());return;
+  await sendModel(env,chat,"Отправь анкету агентства одним сообщением.",thread,profileKeyboard());return;
  }
  if(session?.state==="awaiting_brief"&&text){
   const fields=new Map<number,string>();
+  const labels:Record<number,RegExp>={
+   1:/^\s*(?:фио|ф\.?\s*и\.?\s*о\.?)\s*[:：\-–—]?\s*/i,
+   2:/^\s*(?:дата\s+рождения)\s*[:：\-–—]?\s*/i,
+   3:/^\s*(?:возраст)\s*[:：\-–—]?\s*/i,
+   4:/^\s*(?:рост)\s*[:：\-–—]?\s*/i,
+   5:/^\s*(?:параметры|грудь\s*[/,]\s*талия\s*[/,]\s*б[её]дра)\s*[:：\-–—]?\s*/i,
+   6:/^\s*(?:размер\s+одежды|одежда)\s*[:：\-–—]?\s*/i,
+   7:/^\s*(?:размер\s+обуви|обувь)\s*[:：\-–—]?\s*/i,
+   8:/^\s*(?:телефон(?:\s+и\s+оператор)?|номер\s+телефона)\s*[:：\-–—]?\s*/i,
+   9:/^\s*(?:цвет\s+волос|волосы)\s*[:：\-–—]?\s*/i,
+   10:/^\s*(?:цвет\s+глаз|глаза)\s*[:：\-–—]?\s*/i
+  };
   for(const rawLine of text.split(/\r?\n/)){
    const line=rawLine.replace(/^\s*[*_]+|[*_]+\s*$/g,"").trim();
-   const m=line.match(/^\s*(?:пункт\s*)?(\d{1,2})\s*(?:[.)\]:：\-–—]\s*|\s+)(.+?)\s*$/i);
-   if(m)fields.set(Number(m[1]),m[2].replace(/^\s*(?:дата рождения|рост|параметры|размер одежды|размер обуви|телефон(?: и оператор)?|цвет волос|цвет глаз)\s*[:：\-–—]?\s*/i,"").trim());
+   const m=line.match(/^\s*(?:пункт\s*)?(\d{1,2})\s*[.)\]:：\-–—]\s*(.+?)\s*$/i);
+   if(m){const n=Number(m[1]);if(n>=1&&n<=10)fields.set(n,m[2].replace(labels[n]??/^$/,"").trim());}
   }
   const get=(n:number)=>fields.get(n)??"";
+  const fullName=normalizeName(get(1)),nameParts=fullName.split(" ").filter(Boolean);
   const birth=get(2).match(/\b\d{2}[./-]\d{2}[./-]\d{4}\b/)?.[0]?.replace(/[/-]/g,".")??"";
+  const calculatedAge=ageFromBirthDate(birth);
   const height=Number(get(4).match(/\b\d{2,3}\b/)?.[0]??0);
   const measures=get(5).match(/\d{2,3}/g)?.map(Number)??[];
   const clothing=get(6),shoe=get(7),phone=get(8),hair=get(9),eyes=get(10);
+  const identity=await env.DB.prepare("SELECT first_name,last_name FROM models WHERE telegram_user_id=?").bind(uid).first<{first_name:string;last_name:string}>();
+  const nameMatches=!!identity&&nameParts.length>=2&&nameParts[0]===normalizeName(identity.last_name)&&nameParts[1]===normalizeName(identity.first_name);
   const missing:string[]=[];
-  if(!ageFromBirthDate(birth))missing.push("2 — дата рождения");
+  for(let n=1;n<=10;n++)if(!get(n))missing.push(n+" — пункт анкеты");
+  if(!nameMatches)missing.push("1 — ФИО должно совпадать с данными регистрации");
+  if(!calculatedAge)missing.push("2 — корректная дата рождения");
   if(!height||height>250)missing.push("4 — рост");
   if(measures.length!==3||measures.some(n=>n<30||n>200))missing.push("5 — параметры");
   if(!clothing)missing.push("6 — размер одежды");
@@ -448,9 +466,9 @@ async function handleModelMessage(env:Env,message:TelegramMessage):Promise<void>
   if(!hair)missing.push("9 — цвет волос");
   if(!eyes)missing.push("10 — цвет глаз");
   if(missing.length){
-   await sendModel(env,chat,"Не получилось распознать анкету. Проверьте заполнение этих пунктов:\n"+missing.join("\n")+"\n\nКаждый пункт укажите с новой строки, например: «4. Рост: 180». Отправьте анкету ещё раз.",thread,profileKeyboard());return;
+   await sendModel(env,chat,"Не удалось принять анкету. Проверь, пожалуйста, пункты:\\n"+[...new Set(missing)].join("\\n")+"\\n\\nОтправь полную анкету агентства одним сообщением ещё раз.",thread,profileKeyboard());return;
   }
-  await env.DB.prepare("UPDATE models SET birth_date=?,phone=? WHERE telegram_user_id=?").bind(birth,phone,uid).run();
+  await env.DB.prepare("UPDATE models SET middle_name=?,birth_date=?,phone=? WHERE telegram_user_id=?").bind(nameParts.slice(2).join(" "),birth,phone,uid).run();
   await env.DB.prepare("UPDATE model_profiles SET height_cm=?,bust_cm=?,waist_cm=?,hips_cm=?,clothing_size=?,shoe_size=?,hair_color=?,eye_color=?,updated_at=CURRENT_TIMESTAMP WHERE model_id=(SELECT id FROM models WHERE telegram_user_id=?)").bind(height,measures[0],measures[1],measures[2],clothing,shoe,hair,eyes,uid).run();
   await env.DB.prepare("UPDATE bot_sessions SET state='profile_complete',data_json='{}',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
   await showModelProfile(env,uid,chat,thread);await deleteModelAnswer(env,chat,message.message_id);return;
