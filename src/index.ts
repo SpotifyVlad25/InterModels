@@ -157,10 +157,15 @@ async function telegram(token: string, method: string, payload: Record<string, u
   }
   return result;
 }
-async function sendModel(env: Env, chatId: string | number, text: string, threadId?: number): Promise<void> {
+async function sendModel(env: Env, chatId: string | number, text: string, threadId?: number, replyMarkup?: Record<string,unknown>): Promise<void> {
   const payload: Record<string, unknown> = { chat_id: chatId, text, disable_web_page_preview: true };
   if (threadId) payload.message_thread_id = threadId;
+  if(replyMarkup)payload.reply_markup=replyMarkup;
   await telegram(env.MODEL_BOT_TOKEN, "sendMessage", payload);
+}
+async function deleteModelAnswer(env:Env,chatId:number,messageId:number):Promise<void>{
+  try{await telegram(env.MODEL_BOT_TOKEN,"deleteMessage",{chat_id:chatId,message_id:messageId});}
+  catch(error){console.warn("Unable to delete model answer after processing",{chatId,messageId,error:compositeErrorText(error)});}
 }
 async function sendDirector(env: Env, text: string, replyMarkup?: Record<string, unknown>): Promise<void> {
   const topic = await env.DB.prepare("SELECT chat_id, thread_id FROM bot_topics WHERE bot_key = ?").bind("director").first<{ chat_id: string; thread_id: number }>();
@@ -214,16 +219,30 @@ async function createRequest(
 
 
 const PROFILE_STEPS = [
-  { state: "profile_height", field: "height_cm", prompt: "Укажите рост в сантиметрах (например, 183). Можно отправить «пропустить».", numeric: true },
-  { state: "profile_weight", field: "weight_kg", prompt: "Укажите вес в килограммах (например, 72). Можно отправить «пропустить».", numeric: true },
-  { state: "profile_bust", field: "bust_cm", prompt: "Обхват груди в сантиметрах. Можно отправить «пропустить».", numeric: true },
-  { state: "profile_waist", field: "waist_cm", prompt: "Обхват талии в сантиметрах. Можно отправить «пропустить».", numeric: true },
-  { state: "profile_hips", field: "hips_cm", prompt: "Обхват бёдер в сантиметрах. Можно отправить «пропустить».", numeric: true },
-  { state: "profile_clothing", field: "clothing_size", prompt: "Укажите размер одежды (например, 46 / M). Можно отправить «пропустить».", numeric: false },
-  { state: "profile_shoe", field: "shoe_size", prompt: "Укажите размер обуви (например, 42). Можно отправить «пропустить».", numeric: false },
-  { state: "profile_hair", field: "hair_color", prompt: "Укажите цвет волос. Можно отправить «пропустить».", numeric: false },
-  { state: "profile_eyes", field: "eye_color", prompt: "Укажите цвет глаз. Можно отправить «пропустить».", numeric: false },
+  { state: "profile_birthdate", field: "birth_date", prompt: "Укажите дату рождения в формате ДД.ММ.ГГГГ.", numeric: false },
+  { state: "profile_height", field: "height_cm", prompt: "Укажите рост в сантиметрах (например, 190).", numeric: true },
+  { state: "profile_bust", field: "bust_cm", prompt: "Укажите обхват груди в сантиметрах.", numeric: true },
+  { state: "profile_waist", field: "waist_cm", prompt: "Укажите обхват талии в сантиметрах.", numeric: true },
+  { state: "profile_hips", field: "hips_cm", prompt: "Укажите обхват бёдер в сантиметрах.", numeric: true },
+  { state: "profile_clothing", field: "clothing_size", prompt: "Укажите размер одежды (например, 46 (M) или M).", numeric: false },
+  { state: "profile_shoe", field: "shoe_size", prompt: "Укажите размер обуви (например, 45–46).", numeric: false },
+  { state: "profile_phone", field: "phone", prompt: "Укажите номер телефона и оператора.", numeric: false },
+  { state: "profile_hair", field: "hair_color", prompt: "Укажите цвет волос.", numeric: false },
+  { state: "profile_eyes", field: "eye_color", prompt: "Укажите цвет глаз.", numeric: false },
 ] as const;
+const MONTHLY_PROFILE_STEPS = [
+  { state: "monthly_bust", field: "bust_cm", prompt: "Обхват груди в сантиметрах." },
+  { state: "monthly_waist", field: "waist_cm", prompt: "Обхват талии в сантиметрах." },
+  { state: "monthly_hips", field: "hips_cm", prompt: "Обхват бёдер в сантиметрах." },
+] as const;
+function ageFromBirthDate(value:string|null|undefined):number|null{
+ if(!value)return null;const m=value.match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);if(!m)return null;
+ const d=+m[1],mo=+m[2],y=+m[3],dt=new Date(Date.UTC(y,mo-1,d));
+ if(dt.getUTCFullYear()!==y||dt.getUTCMonth()!==mo-1||dt.getUTCDate()!==d)return null;
+ const now=new Date();let age=now.getUTCFullYear()-y;
+ if(now.getUTCMonth()<mo-1||(now.getUTCMonth()===mo-1&&now.getUTCDate()<d))age--;return age>=0?age:null;
+}
+function profileKeyboard():Record<string,unknown>{return{keyboard:[[{text:"Профиль"},{text:"Отпуск"}]],resize_keyboard:true,is_persistent:true};}
 async function beginModelProfile(env: Env, telegramId: string, chatId: number, threadId?: number): Promise<void> {
   await env.DB.prepare("INSERT INTO model_profiles (model_id) SELECT id FROM models WHERE telegram_user_id = ? ON CONFLICT(model_id) DO NOTHING").bind(telegramId).run();
   const first = PROFILE_STEPS[0];
