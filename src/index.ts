@@ -424,7 +424,7 @@ async function handleModelMessage(env:Env,message:TelegramMessage):Promise<void>
  }
  if(session?.state==="profile_method"&&text==="Анкета"){
   await env.DB.prepare("UPDATE bot_sessions SET state='awaiting_brief',updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(uid).run();
-  await sendModel(env,chat,"Отправьте заполненную анкету одним сообщением в формате:\\n1. ФИО\\n2. Дата рождения ДД.ММ.ГГГГ\\n3. Возраст (можно не указывать — рассчитаю сам)\\n4. Рост\\n5. Параметры грудь/талия/бёдра\\n6. Размер одежды\\n7. Размер обуви\\n8. Телефон и оператор\\n9. Цвет волос\\n10. Цвет глаз",thread,profileKeyboard());return;
+  await sendModel(env,chat,"Пришлите заполненную анкету одним сообщением:\\n\\n2. Дата рождения (ДД.ММ.ГГГГ)\\n4. Рост (см)\\n5. Параметры (грудь / талия / бёдра)\\n6. Размер одежды\\n7. Размер обуви\\n8. Телефон и оператор\\n9. Цвет волос\\n10. Цвет глаз",thread,profileKeyboard());return;
  }
  if(session?.state==="awaiting_brief"&&text){
   const fields=new Map<number,string>();
