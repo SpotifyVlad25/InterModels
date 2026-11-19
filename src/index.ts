@@ -370,6 +370,7 @@ async function showModelProfile(env:Env,telegramId:string,chatId:number,threadId
  let thumbnail:{fileId:string;alreadySent:boolean}|null=null;try{if(modelRow)thumbnail=await getModelProfileThumbnail(env,modelRow.id,chatId,caption,editMarkup);}catch(error){console.error("Model profile thumbnail generation failed",error);}
  if(thumbnail&&!thumbnail.alreadySent)await telegram(env.MODEL_BOT_TOKEN,"sendPhoto",{chat_id:chatId,photo:thumbnail.fileId,caption,reply_markup:editMarkup});
  else if(!thumbnail)await sendModel(env,chatId,caption,threadId,editMarkup);
+ await ensureModelBottomKeyboard(env,chatId,threadId);
 }
 async function startMonthlyProfile(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
  const first=MONTHLY_PROFILE_STEPS[0];await env.DB.prepare("UPDATE bot_sessions SET state=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(first.state,telegramId).run();
