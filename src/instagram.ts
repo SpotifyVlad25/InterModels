@@ -69,7 +69,7 @@ type StoryRenderOptions = { position?: "1" | "2" | "3" | "4" | "5"; fill?: "whit
 async function render(photo: Uint8Array, text: string, style: number, options: StoryRenderOptions = {}): Promise<Uint8Array> {
   wasmReady ??= initWasm(wasm); await wasmReady;
   const fontBuffers = [new Uint8Array(cyrillic), new Uint8Array(latin)];
-  const position = options.position ?? "center";
+  const position = options.position ?? "3";
   const fill = options.fill ?? (style === 0 ? "trans_black" : "trans_white");
   const mode = options.mode ?? "pill";
   const zoneHeight = 384;
@@ -177,8 +177,7 @@ async function handleStoryStyleCallback(env: Env, callback: CallbackQuery): Prom
     await env.DB.prepare("UPDATE instagram_story_style_pending SET fill=?,stage='mode',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(value,id).run();
     await editStoryPrompt(env, callback, "Шаг 3/3. Выбери вид заливки:", storyKeyboard(id,"mode"));
     return;
-  }
-  try {
+  }  try {
     // Show immediate progress so a slow download/render never looks like a dead button.
     await editStoryPrompt(env, callback, "⏳ Выбор принят. Скачиваю фотографию…", { inline_keyboard: [] });
     const photo = await downloadPhoto(env, row.photo_file_id);
@@ -357,8 +356,7 @@ export async function processInstagramStoryJobs(env: Env): Promise<void> {
         throw new Error("В плане для Story " + item.n + " нет текста. Добавь текстовый пункт и запусти новую серию.");
       }
       const rows = item.category === "ANY"
-        ? await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? ORDER BY RANDOM()")
-            .bind(job.chat_id).all<{ telegram_file_id: string; file_unique_id: string }>()
+        ? await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? ORDER BY RANDOM()")            .bind(job.chat_id).all<{ telegram_file_id: string; file_unique_id: string }>()
         : await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? AND category=? ORDER BY RANDOM()")
             .bind(job.chat_id, item.category).all<{ telegram_file_id: string; file_unique_id: string }>();
       const available = (rows.results ?? []).filter(x => !used.has(x.file_unique_id));
