@@ -370,6 +370,12 @@ async function showModelProfile(env:Env,telegramId:string,chatId:number,threadId
  let thumbnail:{fileId:string;alreadySent:boolean}|null=null;try{if(modelRow)thumbnail=await getModelProfileThumbnail(env,modelRow.id,chatId,caption,editMarkup);}catch(error){console.error("Model profile thumbnail generation failed",error);}
  if(thumbnail&&!thumbnail.alreadySent)await telegram(env.MODEL_BOT_TOKEN,"sendPhoto",{chat_id:chatId,photo:thumbnail.fileId,caption,reply_markup:editMarkup});
  else if(!thumbnail)await sendModel(env,chatId,caption,threadId,editMarkup);
+ if(thumbnail){
+  const session=await env.DB.prepare("SELECT data_json FROM bot_sessions WHERE telegram_user_id=?").bind(telegramId).first<{data_json:string}>();
+  let data:Record<string,any>={};try{data=JSON.parse(session?.data_json??"{}");}catch{}
+  delete data.model_prompt_message_id;delete data.model_prompt_text;
+  await env.DB.prepare("UPDATE bot_sessions SET data_json=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_user_id=?").bind(JSON.stringify(data),telegramId).run();
+ }
  await ensureModelBottomKeyboard(env,chatId,threadId);
 }
 async function startMonthlyProfile(env:Env,telegramId:string,chatId:number,threadId?:number):Promise<void>{
