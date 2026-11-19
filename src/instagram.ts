@@ -155,7 +155,7 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
   const text = (m.text ?? "").trim();
   const command = text.match(/^\/(\w+)(?:@\w+)?(?:\s+(.+))?$/);
   if (command?.[1] === "start" || command?.[1] === "help") {
-    await send(env, m, "Instagram Stories бот готов.\n\nРегистрация тем: /topic greeting, /topic album, /topic plan, /topic generator — по одной команде в каждой теме.\n\nВ «Альбом» загружай фотоальбом с подписью первой фотографии: FASHION, КАТАЛОГ, ТЕСТЫ, ЭМОЦИИ или БЬЮТИ. Для приветствия используй FASHION_HELLO.\nВ «План» отправь сценарий: (Ф) — фэшн, (Э) — эмоции, (К) — каталог, (Б) — бьюти, (Т) — тесты. Без буквы — случайное фото из всех категорий. В «Генератор» — /generate.");
+    await send(env, m, "Instagram Stories бот готов.\n\nРегистрация тем: /topic greeting, /topic album, /topic plan, /topic generator — по одной команде в каждой теме.\n\nВ «Fashion привет» просто загружай фото без подписи — бот автоматически сохранит их как FASHION_HELLO. В «Альбом» указывай в подписи первого фото категорию: Ф, Э, К, Б или Т.\nВ «План» отправь сценарий: (Ф) — фэшн, (Э) — эмоции, (К) — каталог, (Б) — бьюти, (Т) — тесты. Без буквы — случайное фото из всех категорий. В «Генератор» — /generate.");
     return;
   }
   if (command?.[1] === "topic" && command[2]) {
@@ -173,7 +173,7 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
     if (topic !== "album" && topic !== "greeting") { await send(env, m, "Фотографии загружай в тему «Альбом» или «Fashion привет». Сначала зарегистрируй тему командой /topic album или /topic greeting."); return; }
     const caption = (m.caption ?? "").trim().toUpperCase();
     const categoryCodes: Record<string, Category> = { "Ф": "FASHION", "Э": "ЭМОЦИИ", "К": "КАТАЛОГ", "Б": "БЬЮТИ", "Т": "ТЕСТЫ" };
-    let category: Category | null = (categories as string[]).includes(caption) ? caption as Category : categoryCodes[caption] ?? (caption === "FASHION_HELLO" ? "FASHION_HELLO" : null);
+    let category: Category | null = topic === "greeting" ? "FASHION_HELLO" : ((categories as string[]).includes(caption) ? caption as Category : categoryCodes[caption] ?? (caption === "FASHION_HELLO" ? "FASHION_HELLO" : null));
     if (!category && !m.caption && m.from) {
       const context = await env.DB.prepare("SELECT category FROM instagram_upload_context WHERE chat_id=? AND thread_id=? AND uploader_id=? AND day_key=? AND media_group_id=?")
         .bind(String(m.chat.id), m.message_thread_id ?? 0, String(m.from.id), dayKey(), m.media_group_id ?? null).first<{ category: Category }>();
