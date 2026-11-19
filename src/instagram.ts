@@ -73,6 +73,13 @@ async function publish(env: Env, m: Message, images: Uint8Array[]): Promise<void
   const form = new FormData();
   form.set("chat_id", String(m.chat.id));
   if (m.message_thread_id) form.set("message_thread_id", String(m.message_thread_id));
+  if (images.length === 1) {
+    form.set("photo", new Blob([images[0]], { type: "image/png" }), "story.png");
+    const single = await fetch("https://api.telegram.org/bot" + env.INST_BOT_TOKEN + "/sendPhoto", { method: "POST", body: form });
+    const singleResult: any = await single.json();
+    if (!single.ok || !singleResult.ok) throw new Error(singleResult.description || "Не удалось отправить Story.");
+    return;
+  }
   form.set("media", JSON.stringify(images.map((_, i) => ({ type: "photo", media: "attach://story" + i + ".png" }))));
   images.forEach((v, i) => form.set("story" + i + ".png", new Blob([v], { type: "image/png" }), "story" + i + ".png"));
   const r = await fetch("https://api.telegram.org/bot" + env.INST_BOT_TOKEN + "/sendMediaGroup", { method: "POST", body: form });
