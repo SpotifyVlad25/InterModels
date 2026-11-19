@@ -65,19 +65,19 @@ function wrap(text: string, maxChars: number): string[] {
   if (line) lines.push(line);
   return lines;
 }
-type StoryRenderOptions = { position?: "top" | "center" | "bottom"; fill?: "white" | "black" | "trans_black" | "trans_white" | "pink"; mode?: "pill" | "full" };
+type StoryRenderOptions = { position?: "1" | "2" | "3" | "4" | "5"; fill?: "white" | "black" | "trans_black" | "trans_white" | "pink"; mode?: "pill" | "full" };
 async function render(photo: Uint8Array, text: string, style: number, options: StoryRenderOptions = {}): Promise<Uint8Array> {
   wasmReady ??= initWasm(wasm); await wasmReady;
   const fontBuffers = [new Uint8Array(cyrillic), new Uint8Array(latin)];
   const position = options.position ?? "center";
   const fill = options.fill ?? (style === 0 ? "trans_black" : "trans_white");
   const mode = options.mode ?? "pill";
-  const zoneHeight = 640;
-  const zoneY = position === "top" ? 0 : position === "center" ? 640 : 1280;
+  const zoneHeight = 384;
+  const zoneY = (Number(position) - 1) * zoneHeight;
   const lines = text.trim() ? wrap(text, 22) : [];
   const paddingY = 34;
-  const fittedSize = lines.length ? Math.floor((zoneHeight - paddingY * 2) / (lines.length * 1.2)) : 80;
-  const size = Math.max(30, Math.min(80, fittedSize));
+  const fittedSize = lines.length ? Math.floor((zoneHeight - paddingY * 2) / (lines.length * 1.2)) : 70;
+  const size = Math.max(30, Math.min(70, fittedSize));
   const lineHeight = Math.round(size * 1.2);
   const textHeight = lines.length * lineHeight;
   const panelHeight = Math.min(zoneHeight, textHeight + paddingY * 2);
@@ -85,14 +85,10 @@ async function render(photo: Uint8Array, text: string, style: number, options: S
   const firstBaseline = mode === "full"
     ? zoneY + Math.round((zoneHeight - textHeight) / 2) + Math.round(size * 0.9)
     : panelY + paddingY + Math.round(size * 0.9);
-  // Keep a safe 72px inset on both sides in either background mode.
-  // Stretch every non-final line to the same measure for true justified alignment.
+  // Keep equal side margins and natural word spacing; align every line to the left.
   const textX = 72;
-  const textWidth = 936;
   const tspans = lines.map((line, i) =>
-    '<tspan x="' + textX + '" dy="' + (i ? lineHeight : 0) + '"' +
-    (i < lines.length - 1 ? ' textLength="' + textWidth + '" lengthAdjust="spacing"' : "") +
-    '>' + esc(line) + "</tspan>"
+    '<tspan x="' + textX + '" dy="' + (i ? lineHeight : 0) + '">' + esc(line) + "</tspan>"
   ).join("");
   const fills: Record<string, { background: string; foreground: string }> = {
     white: { background: "#FFFFFF", foreground: "#171717" },
@@ -130,11 +126,11 @@ async function answerInstagramCallback(env: Env, callback: CallbackQuery, text: 
   await api(env, "answerCallbackQuery", { callback_query_id: callback.id, text });
 }
 function storyKeyboard(id: string, stage: "position" | "fill" | "mode"): Record<string, unknown> {
-  if (stage === "position") return { inline_keyboard: [[
-    { text: "⬆️ Верх", callback_data: "story:" + id + ":pos:top" },
-    { text: "↕️ Центр", callback_data: "story:" + id + ":pos:center" },
-    { text: "⬇️ Низ", callback_data: "story:" + id + ":pos:bottom" },
-  ]] };
+  if (stage === "position") return { inline_keyboard: [
+    [{ text: "1 · Самый верх", callback_data: "story:" + id + ":pos:1" }],
+    [{ text: "2", callback_data: "story:" + id + ":pos:2" }, { text: "3 · Центр", callback_data: "story:" + id + ":pos:3" }],
+    [{ text: "4", callback_data: "story:" + id + ":pos:4" }, { text: "5 · Самый низ", callback_data: "story:" + id + ":pos:5" }],
+  ] };
   if (stage === "fill") return { inline_keyboard: [
     [{ text: "Белый", callback_data: "story:" + id + ":fill:white" }, { text: "Чёрный", callback_data: "story:" + id + ":fill:black" }],
     [{ text: "Прозрачный чёрный", callback_data: "story:" + id + ":fill:trans_black" }],
@@ -151,7 +147,7 @@ async function editStoryPrompt(env: Env, callback: CallbackQuery, text: string, 
   await api(env, "editMessageText", { chat_id: msg.chat.id, message_id: msg.message_id, text, reply_markup: markup });
 }
 async function handleStoryStyleCallback(env: Env, callback: CallbackQuery): Promise<void> {
-  const match = (callback.data ?? "").match(/^story:([a-f0-9]{12}):(pos|fill|mode):(top|center|bottom|white|black|trans_black|trans_white|pink|pill|full)$/);
+  const match = (callback.data ?? "").match(/^story:([a-f0-9]{12}):(pos|fill|mode):(1|2|3|4|5|white|black|trans_black|trans_white|pink|pill|full)$/);
   if (!match || !callback.message) { await answerInstagramCallback(env, callback, "Эта кнопка устарела."); return; }
   const [, id, action, value] = match;
   // Acknowledge immediately so Telegram does not leave the button spinner running
@@ -177,8 +173,7 @@ async function handleStoryStyleCallback(env: Env, callback: CallbackQuery): Prom
     await env.DB.prepare("UPDATE instagram_story_style_pending SET position=?,stage='fill',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(value,id).run();
     await editStoryPrompt(env, callback, "Шаг 2/3. Выбери цвет заливки:", storyKeyboard(id,"fill"));
     return;
-  }
-  if (action === "fill") {
+  }  if (action === "fill") {
     await env.DB.prepare("UPDATE instagram_story_style_pending SET fill=?,stage='mode',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(value,id).run();
     await editStoryPrompt(env, callback, "Шаг 3/3. Выбери вид заливки:", storyKeyboard(id,"mode"));
     return;
@@ -189,7 +184,7 @@ async function handleStoryStyleCallback(env: Env, callback: CallbackQuery): Prom
     const photo = await downloadPhoto(env, row.photo_file_id);
     await editStoryPrompt(env, callback, "⏳ Фото получено. Накладываю текст и готовлю Story…", { inline_keyboard: [] });
     const image = await render(photo, row.story_text, 0, {
-      position: row.position as "top"|"center"|"bottom",
+      position: row.position as "1"|"2"|"3"|"4"|"5",
       fill: row.fill as "white"|"black"|"trans_black"|"trans_white"|"pink",
       mode: value as "pill"|"full",
     });
@@ -357,8 +352,7 @@ export async function processInstagramStoryJobs(env: Env): Promise<void> {
     }
 
     if (job.next_story_index < plan.length) {
-      const index = job.next_story_index;
-      const item = plan[index];
+      const index = job.next_story_index;      const item = plan[index];
       if (index > 0 && !item.text?.trim()) {
         throw new Error("В плане для Story " + item.n + " нет текста. Добавь текстовый пункт и запусти новую серию.");
       }
@@ -499,7 +493,7 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
         const prompt = await api(env, "sendMessage", {
           chat_id: m.chat.id,
           ...(m.message_thread_id ? { message_thread_id: m.message_thread_id } : {}),
-          text: "Шаг 1/3. В какой части фотографии разместить текст?",
+          text: "Шаг 1/3. Выбери один из пяти участков фотографии:",
           reply_markup: storyKeyboard(id, "position"),
         });
         await env.DB.prepare("UPDATE instagram_story_style_pending SET prompt_message_id=? WHERE id=?")
