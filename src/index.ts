@@ -1,4 +1,4 @@
-import { handleInstagramUpdate } from "./instagram";
+import { handleInstagramUpdate, processInstagramStoryJobs } from "./instagram";
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
 import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
 import robotoCyrillic from "@fontsource/roboto/files/roboto-cyrillic-400-normal.woff2";
@@ -3253,15 +3253,6 @@ export default {
       textCommand: update.message?.text?.trim().match(/^\/[A-Za-z0-9_]+/)?.[0] ?? (update.message?.text ? "plain_text" : null),
       callbackData: (update.callback_query?.data ?? "").slice(0, 80),
     });
-    if (isInstagram && update.message) {
-      ctx.waitUntil(handleInstagramUpdate(env, update).catch((error) => {
-        console.error("Instagram webhook background handler failed", {
-          updateId: update.update_id ?? null,
-          error: compositeErrorText(error),
-        });
-      }));
-      return json({ ok: true });
-    }
     try {
       const isCompositeUpdate = isSecretary && (
         Boolean(update.message?.message_thread_id && update.message?.text && (update.message?.chat.type==="group"||update.message?.chat.type==="supergroup")) ||
@@ -3288,6 +3279,9 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(processInstagramStoryJobs(env).catch((error) => {
+      console.error("Instagram Stories queue processor failed", compositeErrorText(error));
+    }));
     ctx.waitUntil((async () => {
       await processRefreshCampaigns(env);
       await processCompositeRefreshJobs(env);

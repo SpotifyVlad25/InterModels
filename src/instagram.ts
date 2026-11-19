@@ -95,23 +95,150 @@ async function savePhoto(env: Env, m: Message, category: Category): Promise<void
     "INSERT OR IGNORE INTO instagram_photos(chat_id,thread_id,category,telegram_file_id,file_unique_id,uploaded_by,day_key,source_message_id) VALUES(?,?,?,?,?,?,?,?)",
   ).bind(k.chat, k.thread, category, p.file_id, p.file_unique_id, uploader, day, m.message_id).run();
 }
-async function processPlan(env: Env, m: Message): Promise<void> {
-  const k = key(m), text = (m.text ?? "").trim();
-  const lines = text.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-  const items: Array<{ n: number; text: string; category: Category }> = [];
-  for (const line of lines) {
-    const match = line.match(/^(\d+)[.)]\s*(.+)$/); if (!match) continue;
-    const n = Number(match[1]), body = match[2].trim();
-    const cat = body.match(/\(([ФЭКБТ])\)\s*$/i);
-    const clean = body.replace(/\s*\([ФЭКБТ]\)\s*$/i, "").trim();
-    const categoryMap: Record<string, Category> = { "Ф": "FASHION", "Э": "ЭМОЦИИ", "К": "КАТАЛОГ", "Б": "БЬЮТИ", "Т": "ТЕСТЫ" };
-    items.push({ n, text: clean, category: n === 1 ? "FASHION_HELLO" : cat ? categoryMap[cat[1].toUpperCase()] : "ANY" });
+async function processPlanItem(env: Env, m: Message): Promise<void> {
+  const k = key(m), day = dayKey();
+  let body = (m.text ?? "").trim().replace(/^\d+[.)]\s*/, "").trim();
+  const cat = body.match(/\(([ФЭКБТ])\)\s*$/i);
+  body = body.replace(/\s*\([ФЭКБТ]\)\s*$/i, "").trim();
+  const categoryMap: Record<string, Category> = { "Ф": "FASHION", "Э": "ЭМОЦИИ", "К": "КАТАЛОГ", "Б": "БЬЮТИ", "Т": "ТЕСТЫ" };
+  const state = await env.DB.prepare("SELECT finished FROM instagram_plan_sessions WHERE chat_id=? AND thread_id=? AND day_key=?")
+    .bind(k.chat, k.thread, day).first<{ finished: number }>();
+  if (state?.finished) { await send(env, m, "План уже завершён. Чтобы начать заново, отправь /clear."); return; }
+  const countRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM instagram_plan_items WHERE chat_id=? AND thread_id=? AND day_key=?")
+    .bind(k.chat, k.thread, day).first<{ count: number }>();
+  const count = countRow?.count ?? 0;
+  if (count >= 10) { await send(env, m, "В одной серии максимум 10 Stories. Отправь /finish, чтобы завершить план."); return; }
+  if (!body && !cat) { await send(env, m, "Отправь текст одного пункта. Категорию можно добавить в конце: (Ф), (Э), (К), (Б) или (Т)."); return; }
+  if (count === 0) await env.DB.prepare("DELETE FROM instagram_plans WHERE chat_id=? AND thread_id=? AND day_key=?").bind(k.chat, k.thread, day).run();
+  const category: Category = count === 0 ? "FASHION_HELLO" : cat ? categoryMap[cat[1].toUpperCase()] : "ANY";
+  await env.DB.prepare("INSERT OR IGNORE INTO instagram_plan_items(chat_id,thread_id,day_key,story_text,category,source_message_id) VALUES(?,?,?,?,?,?)")
+    .bind(k.chat, k.thread, day, body, category, m.message_id).run();
+  const inserted = await env.DB.prepare("SELECT id FROM instagram_plan_items WHERE chat_id=? AND thread_id=? AND day_key=? AND source_message_id=?")
+    .bind(k.chat, k.thread, day, m.message_id).first<{ id: number }>();
+  const position = inserted ? await env.DB.prepare("SELECT COUNT(*) AS count FROM instagram_plan_items WHERE chat_id=? AND thread_id=? AND day_key=? AND id<=?")
+    .bind(k.chat, k.thread, day, inserted.id).first<{ count: number }>() : null;
+  await send(env, m, "✓ Пункт " + (position?.count ?? count + 1) + "/10 сохранён" + (category === "FASHION_HELLO" ? " · приветствие" : category === "ANY" ? " · случайная категория" : " · " + category) + ".\nСледующий пункт можно отправлять отдельным сообщением.");
+}
+async function finishPlan(env: Env, m: Message): Promise<void> {
+  const k = key(m), day = dayKey();
+  const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM instagram_plan_items WHERE chat_id=? AND thread_id=? AND day_key=?")
+    .bind(k.chat, k.thread, day).first<{ count: number }>();
+  let total = count?.count ?? 0;
+  if (!total) {
+    const legacy = await env.DB.prepare("SELECT plan_json FROM instagram_plans WHERE chat_id=? AND thread_id=? AND day_key=?")
+      .bind(k.chat, k.thread, day).first<{ plan_json: string }>();
+    if (legacy) { try { total = (JSON.parse(legacy.plan_json) as unknown[]).length; } catch { total = 0; } }
   }
-  if (items.length > 10) { await send(env, m, "В одной серии Telegram поддерживает максимум 10 сторис. Раздели сценарий на несколько серий."); return; }
-  if (!items.length || items[0].n !== 1) { await send(env, m, "Не вижу сценарий. Отправь пункты в формате:\n1. Фэшн привет!\n2. Текст сторис (БЬЮТИ)\n3. Следующий текст (ЭМОЦИИ)"); return; }
-  await env.DB.prepare("INSERT INTO instagram_plans(chat_id,thread_id,day_key,plan_json,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(chat_id,thread_id,day_key) DO UPDATE SET plan_json=excluded.plan_json,updated_at=CURRENT_TIMESTAMP")
-    .bind(k.chat, k.thread, dayKey(), JSON.stringify(items)).run();
-  await send(env, m, "Сценарий сохранён: " + items.length + " сторис. Для генерации отправь /generate в теме «Генератор».");
+  if (!total) { await send(env, m, "План пока пуст. Сначала отправь пункты отдельными сообщениями."); return; }
+  await env.DB.prepare("INSERT INTO instagram_plan_sessions(chat_id,thread_id,day_key,finished) VALUES(?,?,?,1) ON CONFLICT(chat_id,thread_id,day_key) DO UPDATE SET finished=1")
+    .bind(k.chat, k.thread, day).run();
+  await send(env, m, "План завершён: " + total + " пункт(ов). Отправь /generate здесь или в теме «Генератор».");
+}
+async function clearPlan(env: Env, m: Message): Promise<void> {
+  const k = key(m), day = dayKey();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM instagram_plan_items WHERE chat_id=? AND thread_id=? AND day_key=?").bind(k.chat,k.thread,day),
+    env.DB.prepare("DELETE FROM instagram_plan_sessions WHERE chat_id=? AND thread_id=? AND day_key=?").bind(k.chat,k.thread,day),
+    env.DB.prepare("DELETE FROM instagram_plans WHERE chat_id=? AND thread_id=? AND day_key=?").bind(k.chat,k.thread,day),
+  ]);
+  await send(env, m, "План очищен. Можно собирать новую серию.");
+}
+async function loadPlan(env: Env, chatId: string, threadId: number, day: string): Promise<Array<{ n: number; text: string; category: Category }>> {
+  const rows = await env.DB.prepare("SELECT story_text,category FROM instagram_plan_items WHERE chat_id=? AND thread_id=? AND day_key=? ORDER BY id")
+    .bind(chatId, threadId, day).all<{ story_text: string; category: Category }>();
+  if (rows.results?.length) return rows.results.map((x, i) => ({ n: i + 1, text: x.story_text, category: x.category }));
+  const legacy = await env.DB.prepare("SELECT plan_json FROM instagram_plans WHERE chat_id=? AND thread_id=? AND day_key=?")
+    .bind(chatId, threadId, day).first<{ plan_json: string }>();
+  if (!legacy) return [];
+  try { return JSON.parse(legacy.plan_json) as Array<{ n: number; text: string; category: Category }>; } catch { return []; }
+}
+async function enqueueGeneration(env: Env, m: Message): Promise<void> {
+  const topic = await currentTopic(env, m);
+  if (topic !== "plan" && topic !== "generator") { await send(env, m, "Команду /generate отправь в теме «План» или «Генератор»."); return; }
+  const chatId = String(m.chat.id), day = dayKey();
+  const planTopic = await env.DB.prepare("SELECT thread_id FROM instagram_topics WHERE chat_id=? AND topic_key='plan'")
+    .bind(chatId).first<{ thread_id: number }>();
+  const generatorTopic = await env.DB.prepare("SELECT thread_id FROM instagram_topics WHERE chat_id=? AND topic_key='generator'")
+    .bind(chatId).first<{ thread_id: number }>();
+  if (!generatorTopic) { await send(env, m, "Не найдена тема «Генератор». Зарегистрируй её командой /topic generator."); return; }
+  const planThreadId = planTopic?.thread_id ?? (topic === "plan" ? (m.message_thread_id ?? 0) : 0);
+  if (!planThreadId) { await send(env, m, "Не найдена тема «План». Зарегистрируй её командой /topic plan."); return; }
+  const plan = await loadPlan(env, chatId, planThreadId, day);
+  if (!plan.length) { await send(env, m, "План пуст. Отправь пункты в теме «План», затем /generate."); return; }
+  if (plan.length > 10) { await send(env, m, "В серии может быть не больше 10 Stories."); return; }
+  const planJson = JSON.stringify(plan);
+  const active = await env.DB.prepare("SELECT job_id FROM instagram_story_jobs WHERE chat_id=? AND status IN ('pending','processing') LIMIT 1")
+    .bind(chatId).first<{ job_id: string }>();
+  if (active) { await send(env, m, "Сборка уже стоит в очереди или выполняется. Повторно запускать её не нужно."); return; }
+  const last = await env.DB.prepare("SELECT plan_json,status FROM instagram_story_jobs WHERE chat_id=? AND day_key=? ORDER BY created_at DESC LIMIT 1")
+    .bind(chatId, day).first<{ plan_json: string; status: string }>();
+  if (last?.status === "completed" && last.plan_json === planJson) {
+    await send(env, m, "Эта версия плана уже собрана сегодня. Результат находится в теме «Генератор»."); return;
+  }
+  const jobId = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  try {
+    await env.DB.prepare("INSERT INTO instagram_story_jobs(job_id,chat_id,plan_thread_id,output_thread_id,day_key,plan_json,status,progress) VALUES(?,?,?,?,?,?, 'pending','В очереди')")
+      .bind(jobId, chatId, planThreadId, generatorTopic.thread_id, day, planJson).run();
+  } catch (error) {
+    const duplicate = await env.DB.prepare("SELECT job_id FROM instagram_story_jobs WHERE chat_id=? AND status IN ('pending','processing') LIMIT 1")
+      .bind(chatId).first<{ job_id: string }>();
+    if (duplicate) { await send(env, m, "Сборка уже стоит в очереди или выполняется."); return; }
+    throw error;
+  }
+  await send(env, m, "✓ План принят. Задание #" + jobId + " поставлено в очередь. Статус и результат будут в теме «Генератор».");
+  await sendToTopic(env, m.chat.id, generatorTopic.thread_id, "🕓 Новая серия принята в очередь. Задание #" + jobId + ". Начало обработки — в ближайшую минуту.");
+}
+async function sendToTopic(env: Env, chatId: number, threadId: number, text: string): Promise<void> {
+  await api(env, "sendMessage", { chat_id: chatId, message_thread_id: threadId, text });
+}
+export async function processInstagramStoryJobs(env: Env): Promise<void> {
+  const stale = await env.DB.prepare("SELECT job_id,chat_id,output_thread_id FROM instagram_story_jobs WHERE status='processing' AND updated_at < datetime('now','-15 minutes') LIMIT 5")
+    .all<{ job_id: string; chat_id: string; output_thread_id: number }>();
+  for (const job of stale.results ?? []) {
+    await env.DB.prepare("UPDATE instagram_story_jobs SET status='failed',last_error='Задача прервана: превышено время обработки. Отправь /generate повторно.',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'")
+      .bind(job.job_id).run();
+    await sendToTopic(env, Number(job.chat_id), job.output_thread_id, "❌ Задание #" + job.job_id + " прервано по тайм-ауту. Отправь /generate повторно.");
+  }
+  const job = await env.DB.prepare("SELECT job_id,chat_id,output_thread_id,plan_json,attempts FROM instagram_story_jobs WHERE status='pending' ORDER BY created_at LIMIT 1")
+    .first<{ job_id: string; chat_id: string; output_thread_id: number; plan_json: string; attempts: number }>();
+  if (!job) return;
+  const claim = await env.DB.prepare("UPDATE instagram_story_jobs SET status='processing',attempts=attempts+1,progress='Подготовка фотографий',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='pending'")
+    .bind(job.job_id).run();
+  if (!claim.meta.changes) return;
+  const chatId = Number(job.chat_id), outputThreadId = job.output_thread_id;
+  try {
+    const plan = JSON.parse(job.plan_json) as Array<{ n: number; text: string; category: Category }>;
+    const style = Math.random() < 0.5 ? 0 : 1;
+    const output: Uint8Array[] = [], used = new Set<string>();
+    await sendToTopic(env, chatId, outputThreadId, "⚙️ Начинаю сборку задания #" + job.job_id + ". Stories: " + plan.length + ".");
+    for (let i = 0; i < plan.length; i++) {
+      const item = plan[i];
+      const rows = item.category === "ANY"
+        ? await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? ORDER BY RANDOM()")
+            .bind(job.chat_id).all<{ telegram_file_id: string; file_unique_id: string }>()
+        : await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? AND category=? ORDER BY RANDOM()")
+            .bind(job.chat_id, item.category).all<{ telegram_file_id: string; file_unique_id: string }>();
+      const available = (rows.results ?? []).filter(x => !used.has(x.file_unique_id));
+      if (!available.length) throw new Error("Не хватает фотографий для пункта " + item.n + ". Проверь библиотеку нужной категории.");
+      const chosen = available[0]; used.add(chosen.file_unique_id);
+      const photo = await downloadPhoto(env, chosen.telegram_file_id);
+      output.push(await render(photo, item.n === 1 ? "" : item.text, style));
+      await env.DB.prepare("UPDATE instagram_story_jobs SET progress=?,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'")
+        .bind("Подготовлено " + (i + 1) + " из " + plan.length, job.job_id).run();
+      if ((i + 1) % 3 === 0 && i + 1 < plan.length) await sendToTopic(env, chatId, outputThreadId, "Подготовлено " + (i + 1) + " из " + plan.length + " Stories…");
+    }
+    const outputMessage: Message = { message_id: 0, message_thread_id: outputThreadId, chat: { id: chatId, type: "supergroup" } };
+    await publish(env, outputMessage, output);
+    await env.DB.prepare("UPDATE instagram_story_jobs SET status='completed',progress='Готово',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_id=?")
+      .bind(job.job_id).run();
+    await sendToTopic(env, chatId, outputThreadId, "✅ Готово! Stories собраны. Вся серия оформлена в одном стиле.");
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    await env.DB.prepare("UPDATE instagram_story_jobs SET status='failed',last_error=?,progress='Ошибка',updated_at=CURRENT_TIMESTAMP WHERE job_id=?")
+      .bind(reason.slice(0, 1500), job.job_id).run();
+    console.error("Instagram Stories queued job failed", { jobId: job.job_id, reason });
+    await sendToTopic(env, chatId, outputThreadId, "❌ Не удалось собрать Stories. Причина: " + reason.slice(0, 700));
+  }
 }
 async function generate(env: Env, m: Message): Promise<void> {
   const k = key(m), day = dayKey();
@@ -155,7 +282,7 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
   const text = (m.text ?? "").trim();
   const command = text.match(/^\/(\w+)(?:@\w+)?(?:\s+(.+))?$/);
   if (command?.[1] === "start" || command?.[1] === "help") {
-    await send(env, m, "Instagram Stories бот готов.\n\nРегистрация тем: /topic greeting, /topic album, /topic plan, /topic generator — по одной команде в каждой теме.\n\nВ «Fashion привет» просто загружай фото без подписи — бот автоматически сохранит их как FASHION_HELLO. В «Альбом» указывай в подписи первого фото категорию: Ф, Э, К, Б или Т.\nВ «План» отправь сценарий: (Ф) — фэшн, (Э) — эмоции, (К) — каталог, (Б) — бьюти, (Т) — тесты. Без буквы — случайное фото из всех категорий. В «Генератор» — /generate.");
+    await send(env, m, "Instagram Stories бот готов.\n\nРегистрация тем: /topic greeting, /topic album, /topic plan, /topic generator — по одной команде в каждой теме.\n\nВ «Fashion привет» просто загружай фото без подписи — бот автоматически сохранит их как FASHION_HELLO. В «Альбом» указывай в подписи первого фото категорию: Ф, Э, К, Б или Т.\nВ «План» отправляй каждый пункт отдельным сообщением. В конце /finish (необязательно), затем /generate можно отправить здесь или в «Генератор». Категории: (Ф) — фэшн, (Э) — эмоции, (К) — каталог, (Б) — бьюти, (Т) — тесты. Без буквы — случайное фото. Все статусы и готовые Stories приходят в «Генератор».");
     return;
   }
   if (command?.[1] === "topic" && command[2]) {
@@ -164,17 +291,14 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
     else await send(env, m, "Допустимые темы: greeting, album, plan, generator.");
     return;
   }
-  if (command?.[1] === "generate") {
-    if (await currentTopic(env, m) !== "generator") { await send(env, m, "Команду /generate отправь в теме «Генератор». Сначала зарегистрируй её командой /topic generator."); return; }
-    await send(env, m, "⏳ Начинаю собирать Stories. Проверяю план и фотографии…");
-    try {
-      await generate(env, m);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.error("Instagram Stories generation failed", { chatId: m.chat.id, threadId: m.message_thread_id ?? null, reason });
-      await send(env, m, "❌ Не удалось собрать Stories. Причина: " + reason.slice(0, 700));
-    }
-    return;
+  if (command?.[1] === "generate") { await enqueueGeneration(env, m); return; }
+  if (command?.[1] === "finish") {
+    if (await currentTopic(env, m) !== "plan") { await send(env, m, "/finish отправь в теме «План»."); return; }
+    await finishPlan(env, m); return;
+  }
+  if (command?.[1] === "clear") {
+    if (await currentTopic(env, m) !== "plan") { await send(env, m, "/clear отправь в теме «План»."); return; }
+    await clearPlan(env, m); return;
   }
   if (m.photo?.length) {
     const topic = await currentTopic(env, m);
@@ -194,5 +318,5 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
     if (m.caption) await send(env, m, "Фотоальбом принят: категория " + category + ". Остальные фото альбома сохраняются автоматически.");
     return;
   }
-  if (m.text && /^\s*1[.)]/m.test(text)) { await processPlan(env, m); return; }
+  if (m.text && await currentTopic(env, m) === "plan" && !text.startsWith("/")) { await processPlanItem(env, m); return; }
 }
