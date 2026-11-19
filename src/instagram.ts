@@ -82,8 +82,10 @@ async function render(photo: Uint8Array, text: string, style: number, options: S
   const textHeight = lines.length * lineHeight;
   const panelHeight = Math.min(zoneHeight, textHeight + paddingY * 2);
   const panelY = zoneY + Math.round((zoneHeight - panelHeight) / 2);
-  const firstBaseline = panelY + paddingY + Math.round(size * 0.9);
-  const textX = 84;
+  const firstBaseline = mode === "full"
+    ? zoneY + Math.round((zoneHeight - textHeight) / 2) + Math.round(size * 0.9)
+    : panelY + paddingY + Math.round(size * 0.9);
+  const textX = 540;
   const tspans = lines.map((line, i) => '<tspan x="' + textX + '" dy="' + (i ? lineHeight : 0) + '">' + esc(line) + "</tspan>").join("");
   const fills: Record<string, { background: string; foreground: string }> = {
     white: { background: "#FFFFFF", foreground: "#171717" },
@@ -98,7 +100,7 @@ async function render(photo: Uint8Array, text: string, style: number, options: S
   const actualPanelY = mode === "full" ? zoneY : panelY;
   const actualPanelHeight = mode === "full" ? zoneHeight : panelHeight;
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1080" height="1920"><image width="1080" height="1920" preserveAspectRatio="xMidYMid slice" xlink:href="data:image/jpeg;base64,' + b64(photo) + '"/>' +
-    (lines.length ? '<rect x="' + panelX + '" y="' + actualPanelY + '" width="' + panelWidth + '" height="' + actualPanelHeight + '" rx="' + (mode === "full" ? 0 : 22) + '" fill="' + palette.background + '"/><text x="' + textX + '" y="' + firstBaseline + '" text-anchor="start" fill="' + palette.foreground + '" font-family="Roboto" font-size="' + size + '" font-weight="400">' + tspans + "</text>" : "") + "</svg>";
+    (lines.length ? '<rect x="' + panelX + '" y="' + actualPanelY + '" width="' + panelWidth + '" height="' + actualPanelHeight + '" rx="' + (mode === "full" ? 0 : 22) + '" fill="' + palette.background + '"/><text x="' + textX + '" y="' + firstBaseline + '" text-anchor="middle" fill="' + palette.foreground + '" font-family="Roboto" font-size="' + size + '" font-weight="400">' + tspans + "</text>" : "") + "</svg>";
   return new Resvg(svg, { fitTo: { mode: "width", value: 1080 }, font: { fontBuffers, defaultFontFamily: "Roboto", sansSerifFamily: "Roboto" } }).render().asPng();
 }
 async function publish(env: Env, m: Message, images: Uint8Array[]): Promise<void> {
