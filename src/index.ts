@@ -297,7 +297,7 @@ async function getModelProfileThumbnail(env:Env,modelId:string,chatId:number,cap
  if(!download.ok)throw new Error("Could not download original model photo");
  const bytes=new Uint8Array(await download.arrayBuffer());if(bytes.length>20*1024*1024)throw new Error("Original model photo exceeds 20 MB");
  let binary="";for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,Math.min(i+0x8000,bytes.length)));
- const rendered=await fetch(env.COMPOSITE_RENDERER_URL.replace(/\\/+$/,"")+"/thumbnail",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+env.COMPOSITE_RENDERER_TOKEN},body:JSON.stringify({image: btoa(binary)}),signal:AbortSignal.timeout(45000)});
+ const rendered=await fetch(env.COMPOSITE_RENDERER_URL.replace(/\/+$/g,"")+"/thumbnail",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+env.COMPOSITE_RENDERER_TOKEN},body:JSON.stringify({image:btoa(binary)}),signal:AbortSignal.timeout(45000)});
  if(!rendered.ok)throw new Error("Thumbnail renderer returned HTTP "+rendered.status);
  const output=await rendered.json() as {image?:string};if(!output.image)throw new Error("Thumbnail renderer returned no image");
  const raw=atob(output.image),out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);
