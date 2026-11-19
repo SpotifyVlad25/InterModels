@@ -165,7 +165,10 @@ async function handleStoryStyleCallback(env: Env, callback: CallbackQuery): Prom
     return;
   }
   try {
+    // Show immediate progress so a slow download/render never looks like a dead button.
+    await editStoryPrompt(env, callback, "⏳ Выбор принят. Скачиваю фотографию…", { inline_keyboard: [] });
     const photo = await downloadPhoto(env, row.photo_file_id);
+    await editStoryPrompt(env, callback, "⏳ Фото получено. Накладываю текст и готовлю Story…", { inline_keyboard: [] });
     const image = await render(photo, row.story_text, 0, {
       position: row.position as "top"|"center"|"bottom",
       fill: row.fill as "white"|"black"|"trans_black"|"trans_white"|"pink",
