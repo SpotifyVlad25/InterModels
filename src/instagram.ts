@@ -76,8 +76,8 @@ async function render(photo: Uint8Array, text: string, style: number, options: S
   const zoneY = (Number(position) - 1) * zoneHeight;
   const lines = text.trim() ? wrap(text, 22) : [];
   const paddingY = 34;
-  const fittedSize = lines.length ? Math.floor((zoneHeight - paddingY * 2) / (lines.length * 1.2)) : 70;
-  const size = Math.max(30, Math.min(70, fittedSize));
+  const fittedSize = lines.length ? Math.floor((zoneHeight - paddingY * 2) / (lines.length * 1.2)) : 80;
+  const size = Math.max(30, Math.min(80, fittedSize));
   const lineHeight = Math.round(size * 1.2);
   const textHeight = lines.length * lineHeight;
   const panelHeight = Math.min(zoneHeight, textHeight + paddingY * 2);
