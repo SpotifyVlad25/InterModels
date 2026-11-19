@@ -192,27 +192,44 @@ async function sendToTopic(env: Env, chatId: number, threadId: number, text: str
   await api(env, "sendMessage", { chat_id: chatId, message_thread_id: threadId, text });
 }
 export async function processInstagramStoryJobs(env: Env): Promise<void> {
+  // A single invocation renders at most one Story. The next Cron tick resumes this job.
   const stale = await env.DB.prepare("SELECT job_id,chat_id,output_thread_id FROM instagram_story_jobs WHERE status='processing' AND updated_at < datetime('now','-15 minutes') LIMIT 5")
     .all<{ job_id: string; chat_id: string; output_thread_id: number }>();
-  for (const job of stale.results ?? []) {
+  for (const item of stale.results ?? []) {
     await env.DB.prepare("UPDATE instagram_story_jobs SET status='failed',last_error='Задача прервана: превышено время обработки. Отправь /generate повторно.',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'")
-      .bind(job.job_id).run();
-    await sendToTopic(env, Number(job.chat_id), job.output_thread_id, "❌ Задание #" + job.job_id + " прервано по тайм-ауту. Отправь /generate повторно.");
+      .bind(item.job_id).run();
+    await sendToTopic(env, Number(item.chat_id), item.output_thread_id, "❌ Задание #" + item.job_id + " прервано по тайм-ауту. Отправь /generate повторно.");
   }
-  const job = await env.DB.prepare("SELECT job_id,chat_id,output_thread_id,plan_json,attempts FROM instagram_story_jobs WHERE status='pending' ORDER BY created_at LIMIT 1")
-    .first<{ job_id: string; chat_id: string; output_thread_id: number; plan_json: string; attempts: number }>();
+
+  const job = await env.DB.prepare(
+    "SELECT job_id,chat_id,output_thread_id,plan_json,attempts,next_story_index,style,used_photo_ids_json FROM instagram_story_jobs WHERE status='pending' OR (status='processing' AND updated_at < datetime('now','-45 seconds')) ORDER BY CASE WHEN status='processing' THEN 0 ELSE 1 END,created_at LIMIT 1",
+  ).first<{
+    job_id: string; chat_id: string; output_thread_id: number; plan_json: string; attempts: number;
+    next_story_index: number; style: number | null; used_photo_ids_json: string;
+  }>();
   if (!job) return;
-  const claim = await env.DB.prepare("UPDATE instagram_story_jobs SET status='processing',attempts=attempts+1,progress='Подготовка фотографий',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='pending'")
-    .bind(job.job_id).run();
+
+  const claim = await env.DB.prepare(
+    "UPDATE instagram_story_jobs SET status='processing',attempts=attempts+1,progress='Подготовка Story',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND (status='pending' OR (status='processing' AND updated_at < datetime('now','-45 seconds')))",
+  ).bind(job.job_id).run();
   if (!claim.meta.changes) return;
+
   const chatId = Number(job.chat_id), outputThreadId = job.output_thread_id;
+  const plan = JSON.parse(job.plan_json) as Array<{ n: number; text: string; category: Category }>;
+  const style = job.style === null ? (Math.random() < 0.5 ? 0 : 1) : job.style;
+  const used = new Set<string>(JSON.parse(job.used_photo_ids_json || "[]") as string[]);
+  const bucket = env.STORY_BUCKET;
+
   try {
-    const plan = JSON.parse(job.plan_json) as Array<{ n: number; text: string; category: Category }>;
-    const style = Math.random() < 0.5 ? 0 : 1;
-    const output: Uint8Array[] = [], used = new Set<string>();
-    await sendToTopic(env, chatId, outputThreadId, "⚙️ Начинаю сборку задания #" + job.job_id + ". Stories: " + plan.length + ".");
-    for (let i = 0; i < plan.length; i++) {
-      const item = plan[i];
+    if (job.next_story_index === 0) {
+      await sendToTopic(env, chatId, outputThreadId, "⚙️ Начинаю сборку задания #" + job.job_id + ". Stories: " + plan.length + ". Буду готовить по одной фотографии.");
+      await env.DB.prepare("UPDATE instagram_story_jobs SET style=?,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'")
+        .bind(style, job.job_id).run();
+    }
+
+    if (job.next_story_index < plan.length) {
+      const index = job.next_story_index;
+      const item = plan[index];
       const rows = item.category === "ANY"
         ? await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? ORDER BY RANDOM()")
             .bind(job.chat_id).all<{ telegram_file_id: string; file_unique_id: string }>()
@@ -220,26 +237,47 @@ export async function processInstagramStoryJobs(env: Env): Promise<void> {
             .bind(job.chat_id, item.category).all<{ telegram_file_id: string; file_unique_id: string }>();
       const available = (rows.results ?? []).filter(x => !used.has(x.file_unique_id));
       if (!available.length) throw new Error("Не хватает фотографий для пункта " + item.n + ". Проверь библиотеку нужной категории.");
-      const chosen = available[0]; used.add(chosen.file_unique_id);
+      const chosen = available[0];
+      used.add(chosen.file_unique_id);
+
       const photo = await downloadPhoto(env, chosen.telegram_file_id);
-      output.push(await render(photo, item.n === 1 ? "" : item.text, style));
-      await env.DB.prepare("UPDATE instagram_story_jobs SET progress=?,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'")
-        .bind("Подготовлено " + (i + 1) + " из " + plan.length, job.job_id).run();
-      if ((i + 1) % 3 === 0 && i + 1 < plan.length) await sendToTopic(env, chatId, outputThreadId, "Подготовлено " + (i + 1) + " из " + plan.length + " Stories…");
+      const png = await render(photo, item.n === 1 ? "" : item.text, style);
+      const objectKey = "instagram-stories/" + job.job_id + "/" + String(index + 1).padStart(2, "0") + ".png";
+      await bucket.put(objectKey, png, { httpMetadata: { contentType: "image/png" } });
+
+      const nextIndex = index + 1;
+      await env.DB.prepare(
+        "UPDATE instagram_story_jobs SET next_story_index=?,used_photo_ids_json=?,style=?,progress=?,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'",
+      ).bind(nextIndex, JSON.stringify([...used]), style, "Подготовлено " + nextIndex + " из " + plan.length, job.job_id).run();
+      await sendToTopic(env, chatId, outputThreadId, "🖼 Подготовлена Story " + nextIndex + " из " + plan.length + ".");
+      return;
+    }
+
+    // All PNGs are durable in R2. Publication is a separate Cron step.
+    const images: Uint8Array[] = [];
+    for (let i = 0; i < plan.length; i++) {
+      const objectKey = "instagram-stories/" + job.job_id + "/" + String(i + 1).padStart(2, "0") + ".png";
+      const object = await bucket.get(objectKey);
+      if (!object) throw new Error("Не найден сохранённый файл Story " + (i + 1) + ". Запусти /generate повторно.");
+      images.push(new Uint8Array(await object.arrayBuffer()));
     }
     const outputMessage: Message = { message_id: 0, message_thread_id: outputThreadId, chat: { id: chatId, type: "supergroup" } };
-    await publish(env, outputMessage, output);
-    await env.DB.prepare("UPDATE instagram_story_jobs SET status='completed',progress='Готово',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_id=?")
+    await publish(env, outputMessage, images);
+    await env.DB.prepare("UPDATE instagram_story_jobs SET status='completed',progress='Готово',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'")
       .bind(job.job_id).run();
+    for (let i = 0; i < plan.length; i++) {
+      await bucket.delete("instagram-stories/" + job.job_id + "/" + String(i + 1).padStart(2, "0") + ".png");
+    }
     await sendToTopic(env, chatId, outputThreadId, "✅ Готово! Stories собраны. Вся серия оформлена в одном стиле.");
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    await env.DB.prepare("UPDATE instagram_story_jobs SET status='failed',last_error=?,progress='Ошибка',updated_at=CURRENT_TIMESTAMP WHERE job_id=?")
+    await env.DB.prepare("UPDATE instagram_story_jobs SET status='failed',last_error=?,progress='Ошибка',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='processing'")
       .bind(reason.slice(0, 1500), job.job_id).run();
-    console.error("Instagram Stories queued job failed", { jobId: job.job_id, reason });
-    await sendToTopic(env, chatId, outputThreadId, "❌ Не удалось собрать Stories. Причина: " + reason.slice(0, 700));
+    console.error("Instagram Stories queued job failed", { jobId: job.job_id, storyIndex: job.next_story_index, reason });
+    await sendToTopic(env, chatId, outputThreadId, "❌ Не удалось собрать Stories (этап " + (job.next_story_index + 1) + " из " + plan.length + "). Причина: " + reason.slice(0, 500));
   }
 }
+
 async function generate(env: Env, m: Message): Promise<void> {
   const k = key(m), day = dayKey();
   const planRow = await env.DB.prepare("SELECT plan_json FROM instagram_plans WHERE chat_id=? AND day_key=? ORDER BY updated_at DESC LIMIT 1").bind(k.chat, day).first<{ plan_json: string }>();
