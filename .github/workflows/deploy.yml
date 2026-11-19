@@ -38,12 +38,14 @@ jobs:
           MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
           DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
           SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
+          INST_BOT_TOKEN: ${{ secrets.INST_BOT_TOKEN }}
         run: |
           node <<'NODE'
           const bots = [
             ["MODEL_BOT_TOKEN", process.env.MODEL_BOT_TOKEN],
             ["DIRECTOR_BOT_TOKEN", process.env.DIRECTOR_BOT_TOKEN],
             ["SECRETARY_BOT_TOKEN", process.env.SECRETARY_BOT_TOKEN],
+            ["INST_BOT_TOKEN", process.env.INST_BOT_TOKEN],
           ];
           const identities = [];
           const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -93,6 +95,7 @@ jobs:
             ["MODEL_BOT_TOKEN", "intermodels_model_bot"],
             ["DIRECTOR_BOT_TOKEN", "intermodels_director_bot"],
             ["SECRETARY_BOT_TOKEN", "intermodels_bot"],
+            ["INST_BOT_TOKEN", "intermodels_inst_bot"],
           ];
           for (const [label, username] of expected) {
             const actual = identities.find(([key]) => key === label)?.[1];
@@ -100,8 +103,8 @@ jobs:
               throw new Error(`${label} must belong to @${username}. Deployment stopped before changing production.`);
             }
           }
-          if (new Set(identities.map(([, username]) => username)).size !== 3) {
-            throw new Error("The three bot token secrets must belong to three different Telegram bots. Deployment stopped.");
+          if (new Set(identities.map(([, username]) => username)).size !== 4) {
+            throw new Error("The four bot token secrets must belong to four different Telegram bots. Deployment stopped.");
           }
           NODE
 
@@ -129,16 +132,20 @@ jobs:
       - name: Upload Worker secrets
         shell: bash
         run: |
-          for name in MODEL_BOT_TOKEN DIRECTOR_BOT_TOKEN SECRETARY_BOT_TOKEN MODEL_WEBHOOK_SECRET DIRECTOR_WEBHOOK_SECRET SECRETARY_WEBHOOK_SECRET OWNER_TELEGRAM_ID DIRECTOR_TELEGRAM_ID COMPOSITE_RENDERER_URL COMPOSITE_RENDERER_TOKEN; do
+          for name in MODEL_BOT_TOKEN DIRECTOR_BOT_TOKEN SECRETARY_BOT_TOKEN INST_BOT_TOKEN MODEL_WEBHOOK_SECRET DIRECTOR_WEBHOOK_SECRET SECRETARY_WEBHOOK_SECRET OWNER_TELEGRAM_ID DIRECTOR_TELEGRAM_ID COMPOSITE_RENDERER_URL COMPOSITE_RENDERER_TOKEN; do
             if [ -z "${!name}" ]; then
               echo "::error::Missing GitHub Actions secret: $name"
               exit 1
             fi
           done
+          INST_WEBHOOK_SECRET="$(printf '%s' "$INST_BOT_TOKEN" | sha256sum | cut -c1-48)"
+          export INST_WEBHOOK_SECRET
           node -e 'process.stdout.write(JSON.stringify({
             MODEL_BOT_TOKEN: process.env.MODEL_BOT_TOKEN,
             DIRECTOR_BOT_TOKEN: process.env.DIRECTOR_BOT_TOKEN,
             SECRETARY_BOT_TOKEN: process.env.SECRETARY_BOT_TOKEN,
+            INST_BOT_TOKEN: process.env.INST_BOT_TOKEN,
+            INST_WEBHOOK_SECRET: process.env.INST_WEBHOOK_SECRET,
             MODEL_WEBHOOK_SECRET: process.env.MODEL_WEBHOOK_SECRET,
             DIRECTOR_WEBHOOK_SECRET: process.env.DIRECTOR_WEBHOOK_SECRET,
             SECRETARY_WEBHOOK_SECRET: process.env.SECRETARY_WEBHOOK_SECRET,
@@ -153,6 +160,7 @@ jobs:
           MODEL_BOT_TOKEN: ${{ secrets.MODEL_BOT_TOKEN }}
           DIRECTOR_BOT_TOKEN: ${{ secrets.DIRECTOR_BOT_TOKEN }}
           SECRETARY_BOT_TOKEN: ${{ secrets.SECRETARY_BOT_TOKEN }}
+          INST_BOT_TOKEN: ${{ secrets.INST_BOT_TOKEN }}
           MODEL_WEBHOOK_SECRET: ${{ secrets.MODEL_WEBHOOK_SECRET }}
           DIRECTOR_WEBHOOK_SECRET: ${{ secrets.DIRECTOR_WEBHOOK_SECRET }}
           SECRETARY_WEBHOOK_SECRET: ${{ secrets.SECRETARY_WEBHOOK_SECRET }}
@@ -215,6 +223,20 @@ jobs:
             --data-urlencode "secret_token=${SECRETARY_WEBHOOK_SECRET}" \
             --data-urlencode 'allowed_updates=["message","callback_query"]')"
           printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok){console.error("Secretary setWebhook failed:",j.description||"unknown error");process.exit(1)}console.log("Secretary webhook configured.")})'
+
+      - name: Configure Instagram Telegram webhook
+        shell: bash
+        env:
+          INST_BOT_TOKEN: ${{ secrets.INST_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          expected_url="https://intermodels.spotify-vlad25.workers.dev/webhook/instagram"
+          INST_WEBHOOK_SECRET="$(printf '%s' "$INST_BOT_TOKEN" | sha256sum | cut -c1-48)"
+          result="$(curl -fsS -X POST "https://api.telegram.org/bot${INST_BOT_TOKEN}/setWebhook" \
+            --data-urlencode "url=$expected_url" \
+            --data-urlencode "secret_token=${INST_WEBHOOK_SECRET}" \
+            --data-urlencode 'allowed_updates=["message"]')"
+          printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.ok){console.error("Instagram setWebhook failed:",j.description||"unknown error");process.exit(1)}console.log("Instagram webhook configured.")})'
 
       - name: Clear legacy Telegram commands and menu buttons
         shell: bash

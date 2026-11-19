@@ -1,3 +1,4 @@
+import { handleInstagramUpdate } from "./instagram";
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
 import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
 import robotoCyrillic from "@fontsource/roboto/files/roboto-cyrillic-400-normal.woff2";
@@ -13,6 +14,8 @@ interface Env {
   MODEL_BOT_TOKEN: string;
   DIRECTOR_BOT_TOKEN: string;
   SECRETARY_BOT_TOKEN: string;
+  INST_BOT_TOKEN: string;
+  INST_WEBHOOK_SECRET: string;
   DIRECTOR_TELEGRAM_ID: string;
   OWNER_TELEGRAM_ID: string;
   MODEL_WEBHOOK_SECRET: string;
@@ -3222,9 +3225,10 @@ export default {
     const isModel = url.pathname === "/webhook/model";
     const isDirector = url.pathname === "/webhook/director";
     const isSecretary = url.pathname === "/webhook/secretary";
-    if (!isModel && !isDirector && !isSecretary) return json({ error: "Not found" }, 404);
-    const route = isModel ? "model" : isDirector ? "director" : "secretary";
-    const secret = isModel ? env.MODEL_WEBHOOK_SECRET : isDirector ? env.DIRECTOR_WEBHOOK_SECRET : env.SECRETARY_WEBHOOK_SECRET;
+    const isInstagram = url.pathname === "/webhook/instagram";
+    if (!isModel && !isDirector && !isSecretary && !isInstagram) return json({ error: "Not found" }, 404);
+    const route = isModel ? "model" : isDirector ? "director" : isSecretary ? "secretary" : "instagram";
+    const secret = isModel ? env.MODEL_WEBHOOK_SECRET : isDirector ? env.DIRECTOR_WEBHOOK_SECRET : isSecretary ? env.SECRETARY_WEBHOOK_SECRET : env.INST_WEBHOOK_SECRET;
     const suppliedSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
     if (!secret || suppliedSecret !== secret) {
       console.warn("Telegram webhook authorization rejected", {
@@ -3266,6 +3270,7 @@ export default {
       if (isDirector && update.callback_query) await handleDirectorCallback(env, update.callback_query);
       if (isSecretary && update.message) await handleSecretaryMessage(env, update.message);
       if (isSecretary && update.callback_query) await handleSecretaryCallback(env, update.callback_query);
+      if (isInstagram && update.message) await handleInstagramUpdate(env, update);
       console.info("Telegram webhook update processed", { route, updateId: update.update_id ?? null });
       return json({ ok: true });
     } catch (error) {
