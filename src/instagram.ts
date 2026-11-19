@@ -99,6 +99,7 @@ async function processPlan(env: Env, m: Message): Promise<void> {
     const clean = body.replace(/\s*\((FASHION|КАТАЛОГ|ТЕСТЫ|ЭМОЦИИ|БЬЮТИ)\)\s*$/i, "").trim();
     items.push({ n, text: clean, category: n === 1 ? "FASHION_HELLO" : (cat?.[1].toUpperCase() as Category) || "FASHION" });
   }
+  if (items.length > 10) { await send(env, m, "В одной серии Telegram поддерживает максимум 10 сторис. Раздели сценарий на несколько серий."); return; }
   if (!items.length || items[0].n !== 1) { await send(env, m, "Не вижу сценарий. Отправь пункты в формате:\n1. Фэшн привет!\n2. Текст сторис (БЬЮТИ)\n3. Следующий текст (ЭМОЦИИ)"); return; }
   await env.DB.prepare("INSERT INTO instagram_plans(chat_id,thread_id,day_key,plan_json,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(chat_id,thread_id,day_key) DO UPDATE SET plan_json=excluded.plan_json,updated_at=CURRENT_TIMESTAMP")
     .bind(k.chat, k.thread, dayKey(), JSON.stringify(items)).run();
@@ -113,7 +114,7 @@ async function generate(env: Env, m: Message): Promise<void> {
   const output: Uint8Array[] = [];
   const used = new Set<string>();
   for (const item of plan) {
-    const rows = await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? AND day_key=? AND category=? ORDER BY RANDOM() LIMIT 30")
+    const rows = await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? AND day_key=? AND category=? ORDER BY RANDOM()")
       .bind(k.chat, day, item.category).all<{ telegram_file_id: string; file_unique_id: string }>();
     const available = (rows.results ?? []).filter(x => !used.has(x.file_unique_id));
     if (!available.length) { await send(env, m, "Не хватает фотографий категории " + item.category + " для пункта " + item.n + ". Загрузи фото в теме «Альбом» с подписью-категорией."); return; }
