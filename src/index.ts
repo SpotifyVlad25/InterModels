@@ -11,6 +11,7 @@ async function ensureResvg(): Promise<void> {
 }
 interface Env {
   DB: D1Database;
+  STORY_BUCKET: R2Bucket;
   MODEL_BOT_TOKEN: string;
   DIRECTOR_BOT_TOKEN: string;
   SECRETARY_BOT_TOKEN: string;
