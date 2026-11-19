@@ -103,8 +103,8 @@ jobs:
               throw new Error(`${label} must belong to @${username}. Deployment stopped before changing production.`);
             }
           }
-          if (new Set(identities.map(([, username]) => username)).size !== 3) {
-            throw new Error("The three bot token secrets must belong to three different Telegram bots. Deployment stopped.");
+          if (new Set(identities.map(([, username]) => username)).size !== 4) {
+            throw new Error("The four bot token secrets must belong to four different Telegram bots. Deployment stopped.");
           }
           NODE
 
