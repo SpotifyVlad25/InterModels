@@ -126,6 +126,12 @@ async function generate(env: Env, m: Message): Promise<void> {
   await publish(env, m, output);
   await send(env, m, "Готово! Stories собраны. Вся серия оформлена в одном стиле.");
 }
+async function currentTopic(env: Env, m: Message): Promise<string | null> {
+  if (!m.message_thread_id) return null;
+  const row = await env.DB.prepare("SELECT topic_key FROM instagram_topics WHERE chat_id=? AND thread_id=?")
+    .bind(String(m.chat.id), m.message_thread_id).first<{ topic_key: string }>();
+  return row?.topic_key ?? null;
+}
 async function registerTopic(env: Env, m: Message, topic: string): Promise<void> {
   if (!m.message_thread_id) { await send(env, m, "Команду нужно отправить внутри нужной темы группы."); return; }
   await env.DB.prepare("INSERT INTO instagram_topics(chat_id,topic_key,thread_id) VALUES(?,?,?) ON CONFLICT(chat_id,topic_key) DO UPDATE SET thread_id=excluded.thread_id")
@@ -147,8 +153,13 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
     else await send(env, m, "Допустимые темы: greeting, album, plan, generator.");
     return;
   }
-  if (command?.[1] === "generate") { await generate(env, m); return; }
+  if (command?.[1] === "generate") {
+    if (await currentTopic(env, m) !== "generator") { await send(env, m, "Команду /generate отправь в теме «Генератор». Сначала зарегистрируй её командой /topic generator."); return; }
+    await generate(env, m); return;
+  }
   if (m.photo?.length) {
+    const topic = await currentTopic(env, m);
+    if (topic !== "album" && topic !== "greeting") { await send(env, m, "Фотографии загружай в тему «Альбом» или «Fashion привет». Сначала зарегистрируй тему командой /topic album или /topic greeting."); return; }
     const caption = (m.caption ?? "").trim().toUpperCase();
     let category: Category | null = (categories as string[]).includes(caption) ? caption as Category : caption === "FASHION_HELLO" ? "FASHION_HELLO" : null;
     if (!category && !m.caption && m.from) {
@@ -156,6 +167,8 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
         .bind(String(m.chat.id), m.message_thread_id ?? 0, String(m.from.id), dayKey(), m.media_group_id ?? null).first<{ category: Category }>();
       category = context?.category ?? null;
     }
+    if (category === "FASHION_HELLO" && topic !== "greeting") { await send(env, m, "Категорию FASHION_HELLO загружай в тему «Fashion привет»."); return; }
+    if (category && category !== "FASHION_HELLO" && topic !== "album") { await send(env, m, "Категории FASHION, КАТАЛОГ, ТЕСТЫ, ЭМОЦИИ и БЬЮТИ загружай в тему «Альбом»."); return; }
     if (!category) { await send(env, m, "Не удалось определить категорию. В подписи к первому фото альбома укажи FASHION, КАТАЛОГ, ТЕСТЫ, ЭМОЦИИ, БЬЮТИ или FASHION_HELLO."); return; }
     await savePhoto(env, m, category);
     if (m.caption) await send(env, m, "Фотоальбом принят: категория " + category + ". Остальные фото альбома сохраняются автоматически.");
