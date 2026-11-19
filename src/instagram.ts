@@ -49,24 +49,37 @@ async function downloadPhoto(env: Env, fileId: string): Promise<Uint8Array> {
   if (!r.ok) throw new Error("Не удалось скачать фото.");
   return new Uint8Array(await r.arrayBuffer());
 }
-function wrap(text: string): string[] {
-  const words = text.trim().split(/\s+/); const lines: string[] = []; let line = "";
+function wrap(text: string, maxChars: number): string[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
   for (const word of words) {
-    if ((line + " " + word).trim().length > 26 && line) { lines.push(line); line = word; }
-    else line = (line + " " + word).trim();
+    if (line && (line + " " + word).length > maxChars) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = (line ? line + " " : "") + word;
+    }
   }
   if (line) lines.push(line);
-  return lines.slice(0, 5);
+  return lines;
 }
 async function render(photo: Uint8Array, text: string, style: number): Promise<Uint8Array> {
   wasmReady ??= initWasm(wasm); await wasmReady;
-  const fonts = "@font-face{font-family:R;src:url(data:font/woff2;base64," + b64(new Uint8Array(cyrillic)) + ")}@font-face{font-family:R;src:url(data:font/woff2;base64," + b64(new Uint8Array(latin)) + ")}";
-  const lines = text ? wrap(text) : [];
-  const size = style === 0 ? 58 : 52, lineHeight = Math.round(size * 1.2), height = lines.length * lineHeight + 84, y = 1920 - height - 150;
-  const tspans = lines.map((line, i) => '<tspan x="76" dy="' + (i ? lineHeight : 0) + '">' + esc(line) + "</tspan>").join("");
-  const color = style === 0 ? "#fff" : "#171717", panel = style === 0 ? "rgba(0,0,0,.42)" : "rgba(255,255,255,.88)";
+  const fonts = "@font-face{font-family:R;src:url(data:font/woff2;base64," + b64(new Uint8Array(cyrillic)) + ");font-weight:400}@font-face{font-family:R;src:url(data:font/woff2;base64," + b64(new Uint8Array(latin)) + ");font-weight:400}";
+  const baseSize = style === 0 ? 58 : 52;
+  const lines = text.trim() ? wrap(text, 26) : [];
+  const size = Math.max(34, baseSize - Math.max(0, lines.length - 2) * 4);
+  const lineHeight = Math.round(size * 1.2);
+  const paddingY = 34;
+  const panelHeight = lines.length * lineHeight + paddingY * 2;
+  const panelY = Math.round((1920 - panelHeight) / 2);
+  const firstBaseline = panelY + paddingY + Math.round(size * 0.82);
+  const tspans = lines.map((line, i) => '<tspan x="540" dy="' + (i ? lineHeight : 0) + '">' + esc(line) + "</tspan>").join("");
+  const color = style === 0 ? "#fff" : "#171717";
+  const panel = style === 0 ? "rgba(0,0,0,.46)" : "rgba(255,255,255,.74)";
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1080" height="1920"><style>' + fonts + '</style><image width="1080" height="1920" preserveAspectRatio="xMidYMid slice" xlink:href="data:image/jpeg;base64,' + b64(photo) + '"/>' +
-    (text ? '<rect x="42" y="' + (y - 40) + '" width="996" height="' + height + '" rx="' + (style === 0 ? 24 : 0) + '" fill="' + panel + '"/><text x="76" y="' + (y + 18) + '" fill="' + color + '" font-family="R,Arial" font-size="' + size + '" font-weight="700">' + tspans + "</text>" : "") + "</svg>";
+    (lines.length ? '<rect x="108" y="' + panelY + '" width="864" height="' + panelHeight + '" rx="22" fill="' + panel + '"/><text x="540" y="' + firstBaseline + '" text-anchor="middle" fill="' + color + '" font-family="R,Arial" font-size="' + size + '" font-weight="400">' + tspans + "</text>" : "") + "</svg>";
   return new Resvg(svg, { fitTo: { mode: "width", value: 1080 } }).render().asPng();
 }
 async function publish(env: Env, m: Message, images: Uint8Array[]): Promise<void> {
@@ -229,6 +242,9 @@ export async function processInstagramStoryJobs(env: Env): Promise<void> {
     if (job.next_story_index < plan.length) {
       const index = job.next_story_index;
       const item = plan[index];
+      if (index > 0 && !item.text?.trim()) {
+        throw new Error("В плане для Story " + item.n + " нет текста. Добавь текстовый пункт и запусти новую серию.");
+      }
       const rows = item.category === "ANY"
         ? await env.DB.prepare("SELECT telegram_file_id,file_unique_id FROM instagram_photos WHERE chat_id=? ORDER BY RANDOM()")
             .bind(job.chat_id).all<{ telegram_file_id: string; file_unique_id: string }>()
