@@ -168,11 +168,11 @@ async function sendModel(env: Env, chatId: string | number, text: string, thread
   let messageId:number|undefined;
   if(previous>0){
     try{await telegram(env.MODEL_BOT_TOKEN,"editMessageText",{chat_id:chatId,message_id:previous,text,disable_web_page_preview:true});messageId=previous;}
-    catch{messageId=undefined;}
+    catch{if(data.model_prompt_text===text)messageId=previous;else{try{await telegram(env.MODEL_BOT_TOKEN,"deleteMessage",{chat_id:chatId,message_id:previous});}catch{}messageId=undefined;}}
   }
   if(!messageId){const sent=await telegram(env.MODEL_BOT_TOKEN,"sendMessage",payload);messageId=sent.result?.message_id;}
   if(replyMarkup)data.model_menu_shown=true;
-  data.model_prompt_message_id=messageId;
+  data.model_prompt_message_id=messageId;data.model_prompt_text=text;
   await env.DB.prepare("INSERT INTO bot_sessions(telegram_user_id,state,data_json,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET data_json=excluded.data_json,updated_at=CURRENT_TIMESTAMP")
     .bind(uid,session?.state??"model_idle",JSON.stringify(data)).run();
 }
