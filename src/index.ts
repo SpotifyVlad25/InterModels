@@ -158,10 +158,23 @@ async function telegram(token: string, method: string, payload: Record<string, u
   return result;
 }
 async function sendModel(env: Env, chatId: string | number, text: string, threadId?: number, replyMarkup?: Record<string,unknown>): Promise<void> {
-  const payload: Record<string, unknown> = { chat_id: chatId, text, disable_web_page_preview: true };
-  if (threadId) payload.message_thread_id = threadId;
-  if(replyMarkup)payload.reply_markup=replyMarkup;
-  await telegram(env.MODEL_BOT_TOKEN, "sendMessage", payload);
+  const uid=String(chatId);
+  const session=await env.DB.prepare("SELECT state,data_json FROM bot_sessions WHERE telegram_user_id=?").bind(uid).first<{state:string;data_json:string}>();
+  let data:Record<string,any>={};try{data=JSON.parse(session?.data_json??"{}");}catch{}
+  const previous=Number(data.model_prompt_message_id);
+  const payload:Record<string,unknown>={chat_id:chatId,text,disable_web_page_preview:true};
+  if(threadId)payload.message_thread_id=threadId;
+  if(replyMarkup&&!data.model_menu_shown)payload.reply_markup=replyMarkup;
+  let messageId:number|undefined;
+  if(previous>0){
+    try{await telegram(env.MODEL_BOT_TOKEN,"editMessageText",{chat_id:chatId,message_id:previous,text,disable_web_page_preview:true});messageId=previous;}
+    catch{messageId=undefined;}
+  }
+  if(!messageId){const sent=await telegram(env.MODEL_BOT_TOKEN,"sendMessage",payload);messageId=sent.result?.message_id;}
+  if(replyMarkup)data.model_menu_shown=true;
+  data.model_prompt_message_id=messageId;
+  await env.DB.prepare("INSERT INTO bot_sessions(telegram_user_id,state,data_json,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(telegram_user_id) DO UPDATE SET data_json=excluded.data_json,updated_at=CURRENT_TIMESTAMP")
+    .bind(uid,session?.state??"model_idle",JSON.stringify(data)).run();
 }
 async function deleteModelAnswer(env:Env,chatId:number,messageId:number):Promise<void>{
   try{await telegram(env.MODEL_BOT_TOKEN,"deleteMessage",{chat_id:chatId,message_id:messageId});}
