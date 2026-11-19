@@ -10,7 +10,8 @@ type Message = {
   chat: { id: number; type: string }; from?: { id: number; first_name?: string };
   text?: string; caption?: string; photo?: Photo[];
 };
-type Update = { message?: Message; };
+type CallbackQuery = { id: string; from: { id: number }; data?: string; message?: Message };
+type Update = { message?: Message; callback_query?: CallbackQuery; };
 type Category = "FASHION_HELLO" | "FASHION" | "КАТАЛОГ" | "ТЕСТЫ" | "ЭМОЦИИ" | "БЬЮТИ" | "ANY";
 const categories: Category[] = ["FASHION", "КАТАЛОГ", "ТЕСТЫ", "ЭМОЦИИ", "БЬЮТИ"];
 const topicNames = ["greeting", "album", "plan", "generator"] as const;
@@ -64,31 +65,40 @@ function wrap(text: string, maxChars: number): string[] {
   if (line) lines.push(line);
   return lines;
 }
-async function render(photo: Uint8Array, text: string, style: number): Promise<Uint8Array> {
+type StoryRenderOptions = { position?: "top" | "center" | "bottom"; fill?: "white" | "black" | "trans_black" | "trans_white" | "pink"; mode?: "pill" | "full" };
+async function render(photo: Uint8Array, text: string, style: number, options: StoryRenderOptions = {}): Promise<Uint8Array> {
   wasmReady ??= initWasm(wasm); await wasmReady;
-  // resvg-wasm does not load CSS @font-face data URLs. Register font bytes
-  // through its font.fontBuffers option so SVG text is actually rendered.
   const fontBuffers = [new Uint8Array(cyrillic), new Uint8Array(latin)];
-  // Double the original type size and align the text to the left.
-  // Long captions are fitted vertically so the final lines remain inside the image.
-  const baseSize = 80;
-  const lines = text.trim() ? wrap(text, 23) : [];
-  const paddingY = 42;
-  const maxPanelHeight = 1680;
-  const fittedSize = lines.length
-    ? Math.floor((maxPanelHeight - paddingY * 2) / (lines.length * 1.2))
-    : baseSize;
-  const size = Math.max(48, Math.min(baseSize, fittedSize));
+  const position = options.position ?? "center";
+  const fill = options.fill ?? (style === 0 ? "trans_black" : "trans_white");
+  const mode = options.mode ?? "pill";
+  const zoneHeight = 640;
+  const zoneY = position === "top" ? 0 : position === "center" ? 640 : 1280;
+  const lines = text.trim() ? wrap(text, 22) : [];
+  const paddingY = 34;
+  const fittedSize = lines.length ? Math.floor((zoneHeight - paddingY * 2) / (lines.length * 1.2)) : 80;
+  const size = Math.max(30, Math.min(80, fittedSize));
   const lineHeight = Math.round(size * 1.2);
-  const panelHeight = lines.length * lineHeight + paddingY * 2;
-  const panelY = Math.round((1920 - panelHeight) / 2);
-  const textX = 100;
+  const textHeight = lines.length * lineHeight;
+  const panelHeight = Math.min(zoneHeight, textHeight + paddingY * 2);
+  const panelY = zoneY + Math.round((zoneHeight - panelHeight) / 2);
   const firstBaseline = panelY + paddingY + Math.round(size * 0.9);
+  const textX = 84;
   const tspans = lines.map((line, i) => '<tspan x="' + textX + '" dy="' + (i ? lineHeight : 0) + '">' + esc(line) + "</tspan>").join("");
-  const color = style === 0 ? "#fff" : "#171717";
-  const panel = style === 0 ? "rgba(0,0,0,.46)" : "rgba(255,255,255,.74)";
+  const fills: Record<string, { background: string; foreground: string }> = {
+    white: { background: "#FFFFFF", foreground: "#171717" },
+    black: { background: "#000000", foreground: "#FFFFFF" },
+    trans_black: { background: "rgba(0,0,0,.58)", foreground: "#FFFFFF" },
+    trans_white: { background: "rgba(255,255,255,.68)", foreground: "#171717" },
+    pink: { background: "#E88FB4", foreground: "#FFFFFF" },
+  };
+  const palette = fills[fill] ?? fills.trans_black;
+  const panelX = mode === "full" ? 0 : 48;
+  const panelWidth = mode === "full" ? 1080 : 984;
+  const actualPanelY = mode === "full" ? zoneY : panelY;
+  const actualPanelHeight = mode === "full" ? zoneHeight : panelHeight;
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1080" height="1920"><image width="1080" height="1920" preserveAspectRatio="xMidYMid slice" xlink:href="data:image/jpeg;base64,' + b64(photo) + '"/>' +
-    (lines.length ? '<rect x="48" y="' + panelY + '" width="984" height="' + panelHeight + '" rx="22" fill="' + panel + '"/><text x="' + textX + '" y="' + firstBaseline + '" text-anchor="start" fill="' + color + '" font-family="Roboto" font-size="' + size + '" font-weight="400">' + tspans + "</text>" : "") + "</svg>";
+    (lines.length ? '<rect x="' + panelX + '" y="' + actualPanelY + '" width="' + panelWidth + '" height="' + actualPanelHeight + '" rx="' + (mode === "full" ? 0 : 22) + '" fill="' + palette.background + '"/><text x="' + textX + '" y="' + firstBaseline + '" text-anchor="start" fill="' + palette.foreground + '" font-family="Roboto" font-size="' + size + '" font-weight="400">' + tspans + "</text>" : "") + "</svg>";
   return new Resvg(svg, { fitTo: { mode: "width", value: 1080 }, font: { fontBuffers, defaultFontFamily: "Roboto", sansSerifFamily: "Roboto" } }).render().asPng();
 }
 async function publish(env: Env, m: Message, images: Uint8Array[]): Promise<void> {
@@ -106,6 +116,70 @@ async function publish(env: Env, m: Message, images: Uint8Array[]): Promise<void
   images.forEach((v, i) => form.set("story" + i + ".png", new Blob([v], { type: "image/png" }), "story" + i + ".png"));
   const r = await fetch("https://api.telegram.org/bot" + env.INST_BOT_TOKEN + "/sendMediaGroup", { method: "POST", body: form });
   const j: any = await r.json(); if (!r.ok || !j.ok) throw new Error(j.description || "Не удалось отправить Stories.");
+}
+async function answerInstagramCallback(env: Env, callback: CallbackQuery, text: string): Promise<void> {
+  await api(env, "answerCallbackQuery", { callback_query_id: callback.id, text });
+}
+function storyKeyboard(id: string, stage: "position" | "fill" | "mode"): Record<string, unknown> {
+  if (stage === "position") return { inline_keyboard: [[
+    { text: "⬆️ Верх", callback_data: "story:" + id + ":pos:top" },
+    { text: "↕️ Центр", callback_data: "story:" + id + ":pos:center" },
+    { text: "⬇️ Низ", callback_data: "story:" + id + ":pos:bottom" },
+  ]] };
+  if (stage === "fill") return { inline_keyboard: [
+    [{ text: "Белый", callback_data: "story:" + id + ":fill:white" }, { text: "Чёрный", callback_data: "story:" + id + ":fill:black" }],
+    [{ text: "Прозрачный чёрный", callback_data: "story:" + id + ":fill:trans_black" }],
+    [{ text: "Прозрачный белый", callback_data: "story:" + id + ":fill:trans_white" }],
+    [{ text: "Розовый", callback_data: "story:" + id + ":fill:pink" }],
+  ] };
+  return { inline_keyboard: [[
+    { text: "Плашка", callback_data: "story:" + id + ":mode:pill" },
+    { text: "Полная заливка", callback_data: "story:" + id + ":mode:full" },
+  ]] };
+}
+async function editStoryPrompt(env: Env, callback: CallbackQuery, text: string, markup: Record<string, unknown>): Promise<void> {
+  const msg = callback.message!;
+  await api(env, "editMessageText", { chat_id: msg.chat.id, message_id: msg.message_id, text, reply_markup: markup });
+}
+async function handleStoryStyleCallback(env: Env, callback: CallbackQuery): Promise<void> {
+  const match = (callback.data ?? "").match(/^story:([a-f0-9]{12}):(pos|fill|mode):(top|center|bottom|white|black|trans_black|trans_white|pink|pill|full)$/);
+  if (!match || !callback.message) { await answerInstagramCallback(env, callback, "Эта кнопка устарела."); return; }
+  const [, id, action, value] = match;
+  const row = await env.DB.prepare("SELECT chat_id,thread_id,user_id,stage,photo_file_id,story_text,position,fill FROM instagram_story_style_pending WHERE id=?")
+    .bind(id).first<{ chat_id:string; thread_id:number; user_id:string; stage:string; photo_file_id:string; story_text:string; position:string|null; fill:string|null }>();
+  if (!row || row.user_id !== String(callback.from.id) || row.chat_id !== String(callback.message.chat.id) || row.thread_id !== (callback.message.message_thread_id ?? 0) || row.stage !== action) {
+    await answerInstagramCallback(env, callback, "Настройки уже изменены или принадлежат другому пользователю.");
+    return;
+  }
+  if (action === "pos") {
+    await env.DB.prepare("UPDATE instagram_story_style_pending SET position=?,stage='fill',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(value,id).run();
+    await editStoryPrompt(env, callback, "Шаг 2/3. Выбери цвет заливки:", storyKeyboard(id,"fill"));
+    await answerInstagramCallback(env, callback, "Расположение выбрано.");
+    return;
+  }
+  if (action === "fill") {
+    await env.DB.prepare("UPDATE instagram_story_style_pending SET fill=?,stage='mode',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(value,id).run();
+    await editStoryPrompt(env, callback, "Шаг 3/3. Выбери вид заливки:", storyKeyboard(id,"mode"));
+    await answerInstagramCallback(env, callback, "Цвет выбран.");
+    return;
+  }
+  await answerInstagramCallback(env, callback, "Собираю Story…");
+  try {
+    const photo = await downloadPhoto(env, row.photo_file_id);
+    const image = await render(photo, row.story_text, 0, {
+      position: row.position as "top"|"center"|"bottom",
+      fill: row.fill as "white"|"black"|"trans_black"|"trans_white"|"pink",
+      mode: value as "pill"|"full",
+    });
+    await publish(env, callback.message, [image]);
+    await env.DB.prepare("DELETE FROM instagram_story_style_pending WHERE id=?").bind(id).run();
+    await editStoryPrompt(env, callback, "✓ Готово! Story отправлена. Для следующей фотографии отправь фото с текстом.", { inline_keyboard: [] });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error("Instagram Story style render failed", { id, reason });
+    await editStoryPrompt(env, callback, "❌ Не удалось обработать фото: " + reason.slice(0,300), { inline_keyboard: [] });
+    await env.DB.prepare("DELETE FROM instagram_story_style_pending WHERE id=?").bind(id).run();
+  }
 }
 async function savePhoto(env: Env, m: Message, category: Category): Promise<void> {
   const p = m.photo?.[m.photo.length - 1]; if (!p) return;
@@ -332,6 +406,7 @@ async function registerTopic(env: Env, m: Message, topic: string): Promise<void>
   await send(env, m, "Тема зарегистрирована: " + topic);
 }
 export async function handleInstagramUpdate(env: Env, update: Update): Promise<void> {
+  if (update.callback_query?.data?.startsWith("story:")) { await handleStoryStyleCallback(env, update.callback_query); return; }
   const m = update.message; if (!m) return;
   if (m.chat.type !== "group" && m.chat.type !== "supergroup") return;
   const text = (m.text ?? "").trim();
@@ -364,14 +439,19 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
         return;
       }
       try {
-        const photo = await downloadPhoto(env, m.photo[m.photo.length - 1].file_id);
-        const image = await render(photo, storyText, 0);
-        await publish(env, m, [image]);
-        await send(env, m, "✓ Готово. Фото с подписью обработано. Отправляй следующую фотографию с её текстом.");
+        const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+        const prompt = await api(env, "sendMessage", {
+          chat_id: m.chat.id,
+          ...(m.message_thread_id ? { message_thread_id: m.message_thread_id } : {}),
+          text: "Шаг 1/3. В какой части фотографии разместить текст?",
+          reply_markup: storyKeyboard(id, "position"),
+        });
+        await env.DB.prepare("INSERT INTO instagram_story_style_pending(id,chat_id,thread_id,user_id,photo_file_id,story_text,stage,prompt_message_id) VALUES(?,?,?,?,?,?, 'position',?)")
+          .bind(id, String(m.chat.id), m.message_thread_id ?? 0, String(m.from?.id ?? 0), m.photo[m.photo.length - 1].file_id, storyText, prompt.result?.message_id ?? null).run();
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        console.error("Direct Instagram Story render failed", { messageId: m.message_id, reason });
-        await send(env, m, "❌ Не удалось обработать фото: " + reason.slice(0, 400));
+        console.error("Direct Instagram Story setup failed", { messageId: m.message_id, reason });
+        await send(env, m, "❌ Не удалось подготовить выбор оформления: " + reason.slice(0, 400));
       }
       return;
     }
