@@ -202,7 +202,7 @@ export async function processInstagramStoryJobs(env: Env): Promise<void> {
   }
 
   const job = await env.DB.prepare(
-    "SELECT job_id,chat_id,output_thread_id,plan_json,attempts,next_story_index,style,used_photo_ids_json FROM instagram_story_jobs WHERE status='pending' OR (status='processing' AND updated_at < datetime('now','-45 seconds')) ORDER BY CASE WHEN status='processing' THEN 0 ELSE 1 END,created_at LIMIT 1",
+    "SELECT job_id,chat_id,output_thread_id,plan_json,attempts,next_story_index,style,used_photo_ids_json FROM instagram_story_jobs WHERE status='pending' OR (status='processing' AND updated_at < datetime('now','-5 minutes')) ORDER BY CASE WHEN status='processing' THEN 0 ELSE 1 END,created_at LIMIT 1",
   ).first<{
     job_id: string; chat_id: string; output_thread_id: number; plan_json: string; attempts: number;
     next_story_index: number; style: number | null; used_photo_ids_json: string;
@@ -210,7 +210,7 @@ export async function processInstagramStoryJobs(env: Env): Promise<void> {
   if (!job) return;
 
   const claim = await env.DB.prepare(
-    "UPDATE instagram_story_jobs SET status='processing',attempts=attempts+1,progress='Подготовка Story',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND (status='pending' OR (status='processing' AND updated_at < datetime('now','-45 seconds')))",
+    "UPDATE instagram_story_jobs SET status='processing',attempts=attempts+1,progress='Подготовка Story',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND (status='pending' OR (status='processing' AND updated_at < datetime('now','-5 minutes')))",
   ).bind(job.job_id).run();
   if (!claim.meta.changes) return;
 
