@@ -145,25 +145,25 @@ async function handleStoryStyleCallback(env: Env, callback: CallbackQuery): Prom
   const match = (callback.data ?? "").match(/^story:([a-f0-9]{12}):(pos|fill|mode):(top|center|bottom|white|black|trans_black|trans_white|pink|pill|full)$/);
   if (!match || !callback.message) { await answerInstagramCallback(env, callback, "Эта кнопка устарела."); return; }
   const [, id, action, value] = match;
+  // Acknowledge immediately so Telegram does not leave the button spinner running
+  // while D1 and message-edit requests are processed.
+  await answerInstagramCallback(env, callback, "Обрабатываю выбор…");
   const row = await env.DB.prepare("SELECT chat_id,thread_id,user_id,stage,photo_file_id,story_text,position,fill FROM instagram_story_style_pending WHERE id=?")
     .bind(id).first<{ chat_id:string; thread_id:number; user_id:string; stage:string; photo_file_id:string; story_text:string; position:string|null; fill:string|null }>();
   if (!row || row.user_id !== String(callback.from.id) || row.chat_id !== String(callback.message.chat.id) || row.thread_id !== (callback.message.message_thread_id ?? 0) || row.stage !== (action === "pos" ? "position" : action)) {
-    await answerInstagramCallback(env, callback, "Настройки уже изменены или принадлежат другому пользователю.");
+    await editStoryPrompt(env, callback, "Эта настройка уже обработана или устарела. Отправь фотографию ещё раз, чтобы начать заново.", { inline_keyboard: [] });
     return;
   }
   if (action === "pos") {
     await env.DB.prepare("UPDATE instagram_story_style_pending SET position=?,stage='fill',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(value,id).run();
     await editStoryPrompt(env, callback, "Шаг 2/3. Выбери цвет заливки:", storyKeyboard(id,"fill"));
-    await answerInstagramCallback(env, callback, "Расположение выбрано.");
     return;
   }
   if (action === "fill") {
     await env.DB.prepare("UPDATE instagram_story_style_pending SET fill=?,stage='mode',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(value,id).run();
     await editStoryPrompt(env, callback, "Шаг 3/3. Выбери вид заливки:", storyKeyboard(id,"mode"));
-    await answerInstagramCallback(env, callback, "Цвет выбран.");
     return;
   }
-  await answerInstagramCallback(env, callback, "Собираю Story…");
   try {
     const photo = await downloadPhoto(env, row.photo_file_id);
     const image = await render(photo, row.story_text, 0, {
@@ -440,14 +440,17 @@ export async function handleInstagramUpdate(env: Env, update: Update): Promise<v
       }
       try {
         const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+        // Persist the pending choice before exposing clickable buttons to Telegram.
+        await env.DB.prepare("INSERT INTO instagram_story_style_pending(id,chat_id,thread_id,user_id,photo_file_id,story_text,stage,prompt_message_id) VALUES(?,?,?,?,?,?, 'position',NULL)")
+          .bind(id, String(m.chat.id), m.message_thread_id ?? 0, String(m.from?.id ?? 0), m.photo[m.photo.length - 1].file_id, storyText).run();
         const prompt = await api(env, "sendMessage", {
           chat_id: m.chat.id,
           ...(m.message_thread_id ? { message_thread_id: m.message_thread_id } : {}),
           text: "Шаг 1/3. В какой части фотографии разместить текст?",
           reply_markup: storyKeyboard(id, "position"),
         });
-        await env.DB.prepare("INSERT INTO instagram_story_style_pending(id,chat_id,thread_id,user_id,photo_file_id,story_text,stage,prompt_message_id) VALUES(?,?,?,?,?,?, 'position',?)")
-          .bind(id, String(m.chat.id), m.message_thread_id ?? 0, String(m.from?.id ?? 0), m.photo[m.photo.length - 1].file_id, storyText, prompt.result?.message_id ?? null).run();
+        await env.DB.prepare("UPDATE instagram_story_style_pending SET prompt_message_id=? WHERE id=?")
+          .bind(prompt.message_id ?? null, id).run();
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         console.error("Direct Instagram Story setup failed", { messageId: m.message_id, reason });
